@@ -617,7 +617,7 @@ END;
     const promptTa = document.getElementById("at-prompt");
 
     const loadSaved = () => {
-      try { return JSON.parse(localStorage.getItem(PROMPTS_KEY)) || []; }
+      try { return JSON.parse(window.Store.get(PROMPTS_KEY)) || []; }
       catch (e) { return []; }
     };
     const refreshCombo = (selectTitle) => {
@@ -649,7 +649,7 @@ END;
         return;
       }
       list.push({ title, prompt });
-      localStorage.setItem(PROMPTS_KEY, JSON.stringify(list));
+      window.Store.set(PROMPTS_KEY, JSON.stringify(list));
       refreshCombo(title);
       titleInput.value = "";
       window.Toast.show(`'${title}' 추가됨`, "success");
@@ -665,7 +665,7 @@ END;
       const idx = list.findIndex((p) => p.title === title);
       if (idx < 0) { window.Toast.show("저장된 항목을 찾을 수 없습니다", "error"); return; }
       list[idx].prompt = prompt;
-      localStorage.setItem(PROMPTS_KEY, JSON.stringify(list));
+      window.Store.set(PROMPTS_KEY, JSON.stringify(list));
       window.Toast.show(`'${title}' 수정됨`, "success");
     });
 

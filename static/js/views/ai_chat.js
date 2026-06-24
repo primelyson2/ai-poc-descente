@@ -496,7 +496,7 @@
     const configUpdateBtn = panel.querySelector("#chat-config-update");
 
     const loadConfigs = () => {
-      try { return JSON.parse(localStorage.getItem(CONFIG_KEY)) || []; }
+      try { return JSON.parse(window.Store.get(CONFIG_KEY)) || []; }
       catch (e) { return []; }
     };
     const refreshConfigs = (selectName) => {
@@ -612,7 +612,7 @@
         } else {
           list.push(entry);
         }
-        localStorage.setItem(CONFIG_KEY, JSON.stringify(list));
+        window.Store.set(CONFIG_KEY, JSON.stringify(list));
         refreshConfigs(name);
         // 위험 패턴은 차단하지 않고 경고만 (저장은 진행) — PoC, 작성자는 신뢰된 테스터
         const warns = userPromptWarnings(promptEl.value);
@@ -635,7 +635,7 @@
     const savedSel = panel.querySelector("#chat-saved");
 
     const loadSaved = () => {
-      try { return JSON.parse(localStorage.getItem(SAVED_KEY)) || []; }
+      try { return JSON.parse(window.Store.get(SAVED_KEY)) || []; }
       catch (e) { return []; }
     };
     const refreshSaved = (selectTitle) => {
@@ -667,7 +667,7 @@
         return;
       }
       list.push({ title, text });
-      localStorage.setItem(SAVED_KEY, JSON.stringify(list));
+      window.Store.set(SAVED_KEY, JSON.stringify(list));
       refreshSaved(title);
       saveTitle.value = "";
       window.Toast.show(`'${title}' 저장됨`, "success");
@@ -683,7 +683,7 @@
       const idx = list.findIndex((m) => m.title === title);
       if (idx < 0) { window.Toast.show("저장된 항목을 찾을 수 없습니다", "error"); return; }
       list[idx].text = text;
-      localStorage.setItem(SAVED_KEY, JSON.stringify(list));
+      window.Store.set(SAVED_KEY, JSON.stringify(list));
       window.Toast.show(`'${title}' 수정됨`, "success");
     });
 

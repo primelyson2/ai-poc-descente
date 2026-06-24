@@ -303,7 +303,7 @@
     const bmSavedSel = document.getElementById("bm-prompt-saved");
 
     const bmLoadSaved = () => {
-      try { return JSON.parse(localStorage.getItem(BM_PROMPTS_KEY)) || []; }
+      try { return JSON.parse(window.Store.get(BM_PROMPTS_KEY)) || []; }
       catch (e) { return []; }
     };
     const bmRefreshCombo = (selectTitle) => {
@@ -335,7 +335,7 @@
         return;
       }
       list.push({ title, prompt });
-      localStorage.setItem(BM_PROMPTS_KEY, JSON.stringify(list));
+      window.Store.set(BM_PROMPTS_KEY, JSON.stringify(list));
       bmRefreshCombo(title);
       bmTitleInput.value = "";
       window.Toast.show(`'${title}' 추가됨`, "success");
@@ -351,7 +351,7 @@
       const idx = list.findIndex((p) => p.title === title);
       if (idx < 0) { window.Toast.show("저장된 항목을 찾을 수 없습니다", "error"); return; }
       list[idx].prompt = prompt;
-      localStorage.setItem(BM_PROMPTS_KEY, JSON.stringify(list));
+      window.Store.set(BM_PROMPTS_KEY, JSON.stringify(list));
       window.Toast.show(`'${title}' 수정됨`, "success");
     });
 
@@ -394,8 +394,8 @@
       // 실행할 때마다 프롬프트 끝에 '.' 을 누적해 동일 입력 캐싱으로 인한 속도 왜곡을 방지.
       // 카운터는 localStorage 에 저장 → 새로고침/재접속 후에도 계속 증가.
       const RUN_COUNT_KEY = "profileTest.runCount";
-      const runCount = (parseInt(localStorage.getItem(RUN_COUNT_KEY) || "0", 10) || 0) + 1;
-      localStorage.setItem(RUN_COUNT_KEY, String(runCount));
+      const runCount = (parseInt(window.Store.get(RUN_COUNT_KEY) || "0", 10) || 0) + 1;
+      window.Store.set(RUN_COUNT_KEY, String(runCount));
       const promptForRun = prompt + ".".repeat(runCount);
 
       const btn = document.getElementById("bm-run");
@@ -1301,7 +1301,7 @@ END;`;
     const savedSel = backdrop.querySelector("#ptm-prompt-saved");
 
     const loadSaved = () => {
-      try { return JSON.parse(localStorage.getItem(PROMPTS_KEY)) || []; }
+      try { return JSON.parse(window.Store.get(PROMPTS_KEY)) || []; }
       catch (e) { return []; }
     };
     const refreshCombo = (selectTitle) => {
@@ -1333,7 +1333,7 @@ END;`;
         return;
       }
       list.push({ title, prompt });
-      localStorage.setItem(PROMPTS_KEY, JSON.stringify(list));
+      window.Store.set(PROMPTS_KEY, JSON.stringify(list));
       refreshCombo(title);
       titleInput.value = "";
       window.Toast.show(`'${title}' 추가됨`, "success");
@@ -1349,7 +1349,7 @@ END;`;
       const idx = list.findIndex((p) => p.title === title);
       if (idx < 0) { window.Toast.show("저장된 항목을 찾을 수 없습니다", "error"); return; }
       list[idx].prompt = prompt;
-      localStorage.setItem(PROMPTS_KEY, JSON.stringify(list));
+      window.Store.set(PROMPTS_KEY, JSON.stringify(list));
       window.Toast.show(`'${title}' 수정됨`, "success");
     });
 

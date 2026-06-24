@@ -22,6 +22,102 @@
     return Array.from(arr, (n) => chars[n % chars.length]).join("");
   }
 
+  // 콤보에 등록된 DB 목록을 채운다(연결 불필요 — 클라이언트 데이터라 unavailable 포함).
+  async function fillDbCombo() {
+    const sel = document.getElementById("ls-db");
+    if (!sel) return;
+    try {
+      const dbs = await window.API.get("/api/databases");
+      sel.innerHTML = "";
+      for (const db of dbs || []) {
+        const opt = document.createElement("option");
+        opt.value = db.name;
+        opt.textContent = db.label || db.name;
+        sel.appendChild(opt);
+      }
+      const cur = (window.DBSelector && window.DBSelector.current()) || "";
+      if (cur && (dbs || []).some((d) => d.name === cur)) sel.value = cur;
+    } catch (e) {
+      sel.innerHTML = "";
+    }
+  }
+
+  // 선택한 DB 의 데이터(키 `base::<db>`)만 모아 base 형태로 내보낸다.
+  function exportLocalStorage() {
+    const db = document.getElementById("ls-db").value;
+    if (!db) {
+      window.Toast.show("대상 DB 를 먼저 선택하세요", "warn");
+      return;
+    }
+    const suffix = "::" + db;
+    const data = {};
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k.endsWith(suffix)) data[k.slice(0, -suffix.length)] = localStorage.getItem(k);
+    }
+    if (Object.keys(data).length === 0) {
+      window.Toast.show(`"${db}" 에 내보낼 데이터가 없습니다`, "warn");
+      return;
+    }
+    const payload = { _type: "select-ai-localstorage", _version: 2, db, data };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `select-ai-localstorage-${db}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    window.Toast.show(`"${db}" 데이터를 파일로 내보냈습니다`, "success");
+  }
+
+  // 업로드한 파일의 데이터를 콤보에서 선택한 DB 스코프로 덮어쓰고(병합) 새로고침한다.
+  function importLocalStorage(ev) {
+    const input = ev.target;
+    const file = input.files && input.files[0];
+    if (!file) return;
+    const targetDb = document.getElementById("ls-db").value;
+    if (!targetDb) {
+      window.Toast.show("대상 DB 를 먼저 선택하세요", "warn");
+      input.value = "";
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const parsed = JSON.parse(reader.result);
+        const data =
+          parsed && parsed._type === "select-ai-localstorage" && parsed.data
+            ? parsed.data
+            : parsed;
+        if (!data || typeof data !== "object" || Array.isArray(data)) {
+          throw new Error("올바른 형식이 아닙니다");
+        }
+        let count = 0;
+        for (const [base, v] of Object.entries(data)) {
+          // base 가 이미 `::` 스코프를 포함하면(옛 전체덤프 파일) 그대로, 아니면 선택 DB 로 스코프.
+          const key = base.includes("::") ? base : base + "::" + targetDb;
+          localStorage.setItem(key, typeof v === "string" ? v : JSON.stringify(v));
+          count++;
+        }
+        const srcDb = parsed && parsed.db;
+        const moved = srcDb && srcDb !== targetDb ? ` ("${srcDb}" → "${targetDb}")` : "";
+        window.Toast.show(`${count}개 항목을 "${targetDb}" 로 가져왔습니다${moved}. 새로고침합니다…`, "success");
+        setTimeout(() => location.reload(), 800);
+      } catch (e) {
+        window.Toast.show("가져오기 실패: " + (e.message || "잘못된 파일"), "error");
+      } finally {
+        input.value = "";
+      }
+    };
+    reader.onerror = () => {
+      window.Toast.show("파일을 읽지 못했습니다", "error");
+      input.value = "";
+    };
+    reader.readAsText(file);
+  }
+
   function maskedView() {
     if (!currentKey) return '<span class="muted">미설정</span>';
     return revealed
@@ -35,7 +131,7 @@
 
     const title = document.createElement("div");
     title.className = "view-title";
-    title.innerHTML = `<h1>접근 키 관리</h1>
+    title.innerHTML = `<h1>Tool관리</h1>
       <span class="sub">접속에 필요한 사전공유 키를 설정·회전합니다. 사용자는 이 키를 받아 첫 화면에서 입력합니다.</span>`;
     main.appendChild(title);
 
@@ -82,11 +178,34 @@
       </div>`;
     wrap.appendChild(formPanel);
 
+    // ── 데이터 내보내기 / 가져오기 (localStorage) ──
+    const dataPanel = document.createElement("div");
+    dataPanel.className = "panel";
+    dataPanel.innerHTML = `
+      <div class="panel-header"><h2>Local Storage관리</h2></div>
+      <div class="panel-body">
+        <div class="row" style="gap:6px; flex-wrap:nowrap; align-items:center;">
+          <label for="ls-db" class="muted">대상 DB</label>
+          <select id="ls-db" style="min-width:160px;"></select>
+          <button class="btn" id="ls-export">내보내기 (.json 다운로드)</button>
+          <input type="file" id="ls-import-file" accept=".json,application/json" style="display:none;" />
+          <button class="btn btn-primary" id="ls-import">가져오기 (파일 선택)</button>
+        </div>
+        <span class="field-hint"><strong>선택한 DB</strong> 에 저장된 설정·프롬프트(localStorage)만 파일로 내보냅니다. 가져오기는 파일 내용을 <strong>선택한 DB</strong> 로 병합합니다(다른 DB·다른 사용자에게 이식 가능). 같은 이름의 항목은 덮어써지고 페이지가 새로고침됩니다.</span>
+      </div>`;
+    wrap.appendChild(dataPanel);
+
     document.getElementById("ak-gen").addEventListener("click", () => {
       document.getElementById("ak-new").value = randomKey(24);
     });
     document.getElementById("ak-save").addEventListener("click", saveKey);
     document.getElementById("ak-email-save").addEventListener("click", saveEmail);
+
+    document.getElementById("ls-export").addEventListener("click", exportLocalStorage);
+    const importFile = document.getElementById("ls-import-file");
+    document.getElementById("ls-import").addEventListener("click", () => importFile.click());
+    importFile.addEventListener("change", importLocalStorage);
+    fillDbCombo();
 
     await loadStatus();
   }
