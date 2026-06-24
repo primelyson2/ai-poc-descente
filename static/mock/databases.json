@@ -1,0 +1,5 @@
+[
+  {"name": "ADB-DEV",  "label": "개발 (ADB)",  "status": "ok"},
+  {"name": "ADB-PROD", "label": "운영 (ADB)",  "status": "ok"},
+  {"name": "ADB-SBX",  "label": "샌드박스",    "status": "unavailable"}
+]

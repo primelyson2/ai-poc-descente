@@ -1,0 +1,41 @@
+# 다중 Oracle Autonomous Database 설정
+# 실제 사용 시 이 파일을 config.yaml 로 복사한 뒤 값 채우고, wallets/<db-name>/ 에 Wallet 압축 해제.
+# Step 1 에서는 미사용. Step 2 에서 로드된다.
+
+# 접근제어용 사전공유 키. 비우면 인증 비활성(누구나 접속).
+# 보통 직접 편집하지 않고, 앱의 [접근 키 관리] 화면에서 설정/회전한다.
+access_key: ""
+
+# 키 분실 복구 시 현재 키를 받을 관리자 이메일. [접근 키 관리] 화면에서 설정 가능.
+admin_email: ""
+
+# 키 분실 신고 메일 발송용 SMTP 설정. 비우면 발송 불가(신고 버튼은 안내 오류 표시).
+# security: starttls(기본) | ssl | none
+smtp:
+  host: ""           # 예: smtp.gmail.com
+  port: 587
+  user: ""           # 인증이 필요하면 계정
+  password: ""
+  from: ""           # 보내는 사람(비우면 user 사용)
+  security: "starttls"
+
+default_database: ADB-DEV
+
+databases:
+  - name: ADB-DEV
+    label: 개발 (ADB)
+    user: ADMIN
+    password: "your-admin-password"
+    dsn: mydb_dev_high
+    wallet_location: ./wallets/adb-dev
+    wallet_password: "your-wallet-password"
+    config_dir: ./wallets/adb-dev
+
+  - name: ADB-PROD
+    label: 운영 (ADB)
+    user: AI_USER
+    password: "your-user-password"
+    dsn: mydb_prod_high
+    wallet_location: ./wallets/adb-prod
+    wallet_password: "your-wallet-password"
+    config_dir: ./wallets/adb-prod

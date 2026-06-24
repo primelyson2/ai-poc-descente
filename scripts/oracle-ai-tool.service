@@ -1,0 +1,16 @@
+[Unit]
+Description=Oracle AI Database Test Tool
+After=network.target
+
+[Service]
+Type=simple
+# 운영 환경에 맞게 User / WorkingDirectory / PATH 를 수정하세요.
+User=opc
+WorkingDirectory=/home/opc/oracle-ai-tool
+ExecStart=/home/opc/.local/bin/uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
+Restart=on-failure
+RestartSec=5
+Environment="PATH=/home/opc/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+[Install]
+WantedBy=multi-user.target

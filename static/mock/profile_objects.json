@@ -1,0 +1,53 @@
+{
+  "__default__": [
+    {"owner": "SH", "table": "CUSTOMERS", "table_comment": "고객 마스터"},
+    {"owner": "SH", "table": "SALES",     "table_comment": null},
+    {"owner": "SH", "table": "PRODUCTS",  "table_comment": "상품 마스터"}
+  ],
+  "OCI_GROK_R": [
+    {"owner": "SH", "table": "CUSTOMERS", "table_comment": "고객 마스터"},
+    {"owner": "SH", "table": "SALES",     "table_comment": null},
+    {"owner": "SH", "table": "PRODUCTS",  "table_comment": "상품 마스터"},
+    {"owner": "SH", "table": "CHANNELS",  "table_comment": null},
+    {"owner": "SH", "table": "TIMES",     "table_comment": "시간 차원"}
+  ],
+  "OPENAI_GPT4O": [
+    {"owner": "HR", "table": "EMPLOYEES", "table_comment": "직원 마스터"},
+    {"owner": "HR", "table": "DEPARTMENTS","table_comment": "부서"}
+  ],
+  "metadata": {
+    "__default__": {
+      "annotations_supported": true,
+      "table": {
+        "owner": "SH",
+        "name": "CUSTOMERS",
+        "comment": "고객 마스터",
+        "annotations": {"domain": "customer", "pii": "true"}
+      },
+      "columns": [
+        {"name": "CUST_ID",         "data_type": "NUMBER",        "comment": "고객 ID",       "annotations": {"role": "pk"}},
+        {"name": "CUST_FIRST_NAME", "data_type": "VARCHAR2(20)",  "comment": null,            "annotations": {"pii": "name"}},
+        {"name": "CUST_LAST_NAME",  "data_type": "VARCHAR2(40)",  "comment": "성",            "annotations": {"pii": "name"}},
+        {"name": "CUST_EMAIL",      "data_type": "VARCHAR2(100)", "comment": "이메일",        "annotations": {"pii": "email"}},
+        {"name": "CUST_STREET_ADDRESS", "data_type": "VARCHAR2(200)", "comment": "도로명 주소", "annotations": {"pii": "address"}},
+        {"name": "CUST_POSTAL_CODE","data_type": "VARCHAR2(10)",  "comment": "우편번호",      "annotations": {}},
+        {"name": "CUST_CITY",       "data_type": "VARCHAR2(30)",  "comment": null,            "annotations": {}}
+      ]
+    },
+    "SH.SALES": {
+      "annotations_supported": true,
+      "table": {
+        "owner": "SH",
+        "name": "SALES",
+        "comment": null,
+        "annotations": {}
+      },
+      "columns": [
+        {"name": "PROD_ID",   "data_type": "NUMBER",       "comment": "상품 ID",   "annotations": {"role": "fk", "ref": "PRODUCTS"}},
+        {"name": "CUST_ID",   "data_type": "NUMBER",       "comment": "고객 ID",   "annotations": {"role": "fk", "ref": "CUSTOMERS"}},
+        {"name": "TIME_ID",   "data_type": "DATE",         "comment": null,        "annotations": {}},
+        {"name": "AMOUNT_SOLD","data_type": "NUMBER(10,2)","comment": "판매 금액", "annotations": {"unit": "USD"}}
+      ]
+    }
+  }
+}

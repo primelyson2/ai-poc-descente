@@ -1,0 +1,246 @@
+title: "Oracle AI Database Test Tool"
+description: "Oracle Linux 컴퓨트 인스턴스에 SELECT AI / AI Agent Team PoC 도구를 배포합니다."
+schemaVersion: 1.1.0
+locale: "en"
+
+variableGroups:
+  - title: "자동 주입 (숨김)"
+    visible: false
+    variables:
+      - tenancy_ocid
+      - region
+
+  - title: "일반"
+    variables:
+      - compartment_ocid
+
+  - title: "컴퓨트"
+    variables:
+      - instance_display_name
+      - instance_shape
+      - instance_ocpus
+      - instance_memory_gbs
+      - os_version
+      - availability_domain
+      - ssh_public_key
+
+  - title: "네트워크 접근"
+    variables:
+      - vcn_id
+      - subnet_id
+      - assign_public_ip
+      - app_port
+
+  - title: "HTTPS (Load Balancer)"
+    variables:
+      - certificate_ocid
+      - https_port
+      - lb_subnet_id
+      - enable_http_redirect
+      - lb_is_private
+      - lb_min_bandwidth_mbps
+      - lb_max_bandwidth_mbps
+
+  - title: "애플리케이션 소스"
+    variables:
+      - repo_url
+      - repo_branch
+
+variables:
+  compartment_ocid:
+    type: oci:identity:compartment:id
+    title: "구획 (Compartment)"
+    description: "리소스를 생성할 구획"
+    required: true
+
+  # ───── 컴퓨트 ─────
+  instance_display_name:
+    type: string
+    title: "컴퓨트 인스턴스 표시 이름"
+    description: "생성될 컴퓨트 인스턴스 이름"
+    default: "select-ai-test"
+    required: true
+
+  instance_shape:
+    type: oci:core:instanceshape:name
+    title: "Instance shape"
+    description: "CPU/메모리 등 리소스를 결정하는 형상"
+    default: "VM.Standard.E5.Flex"
+    required: true
+    dependsOn:
+      compartmentId: ${compartment_ocid}
+
+  instance_ocpus:
+    type: number
+    title: "OCPU 수 (Flex shape 전용 — 고정 shape 은 무시됨)"
+    default: 1
+    minimum: 1
+    maximum: 64
+    required: true
+
+  instance_memory_gbs:
+    type: number
+    title: "메모리 GB (Flex shape 전용 — 고정 shape 은 무시됨)"
+    default: 8
+    minimum: 1
+    maximum: 1024
+    required: true
+
+  os_version:
+    type: enum
+    title: "Oracle Linux 버전"
+    enum:
+      - "9"
+      - "8"
+    default: "9"
+    required: true
+
+  availability_domain:
+    type: oci:identity:availabilitydomain:name
+    title: "가용 도메인"
+    description: "비우면 첫 번째 AD 사용"
+    dependsOn:
+      compartmentId: ${compartment_ocid}
+    required: false
+
+  ssh_public_key:
+    type: oci:core:ssh:publickey
+    title: "SSH public key"
+    description: "인스턴스 기본 사용자(opc)의 ~/.ssh/authorized_keys 에 추가될 공개키. 파일 업로드 또는 붙여넣기"
+    required: false
+
+  # ───── 네트워크 접근 (기존 VCN/서브넷 선택) ─────
+  vcn_id:
+    type: oci:core:vcn:id
+    title: "Virtual cloud network (VCN)"
+    description: "컴퓨트 인스턴스에 사용할 기존 VCN 선택"
+    required: true
+    dependsOn:
+      compartmentId: ${compartment_ocid}
+
+  subnet_id:
+    type: oci:core:subnet:id
+    title: "Subnet"
+    description: "인스턴스 주 VNIC 가 생성될 기존 서브넷 (앱 포트/22 인바운드 허용 필요)"
+    required: true
+    dependsOn:
+      compartmentId: ${compartment_ocid}
+      vcnId: ${vcn_id}
+
+  assign_public_ip:
+    type: boolean
+    title: "공인 IP 할당"
+    description: "public 서브넷이면 체크. private 서브넷이면 해제"
+    default: true
+    required: true
+
+  app_port:
+    type: number
+    title: "앱 포트"
+    description: "선택한 서브넷의 보안 목록에서 이 포트의 인바운드를 허용해야 합니다"
+    default: 8000
+    minimum: 1
+    maximum: 65535
+    required: true
+
+  # ───── HTTPS (Load Balancer) ─────
+  certificate_ocid:
+    type: string
+    title: "Certificate OCID"
+    description: "OCI Certificates 서비스 인증서 OCID 를 붙여넣으세요 (LB 443 리스너가 참조). 배포 리전과 동일해야 함"
+    required: true
+
+  https_port:
+    type: number
+    title: "HTTPS 포트"
+    default: 443
+    minimum: 1
+    maximum: 65535
+    required: true
+
+  lb_subnet_id:
+    type: oci:core:subnet:id
+    title: "LB 서브넷 (선택)"
+    description: "LB 를 배치할 서브넷. 비우면 위에서 고른 인스턴스 서브넷을 재사용"
+    required: false
+    dependsOn:
+      compartmentId: ${compartment_ocid}
+      vcnId: ${vcn_id}
+
+  enable_http_redirect:
+    type: boolean
+    title: "80 → 443 리다이렉트"
+    description: "HTTP(80) 요청을 HTTPS 로 301 리다이렉트"
+    default: true
+    required: true
+
+  lb_is_private:
+    type: boolean
+    title: "Private LB"
+    description: "체크 시 사설 LB (공인 IP 미할당). 기본은 공용"
+    default: false
+    required: true
+
+  lb_min_bandwidth_mbps:
+    type: number
+    title: "LB 최소 대역폭 (Mbps)"
+    default: 10
+    minimum: 10
+    required: true
+
+  lb_max_bandwidth_mbps:
+    type: number
+    title: "LB 최대 대역폭 (Mbps)"
+    default: 10
+    minimum: 10
+    required: true
+
+  # ───── 애플리케이션 소스 ─────
+  repo_url:
+    type: string
+    title: "Git 리포지토리 URL"
+    default: "https://github.com/primelyson2/select-ai-test.git"
+    required: true
+
+  repo_branch:
+    type: string
+    title: "브랜치"
+    default: "main"
+    required: true
+
+outputGroups:
+  - title: "애플리케이션"
+    outputs:
+      - https_url
+      - load_balancer_ip
+      - app_url
+      - public_ip
+      - private_ip
+      - ssh_command
+
+outputs:
+  https_url:
+    type: link
+    title: "HTTPS URL (Load Balancer)"
+
+  load_balancer_ip:
+    type: string
+    title: "Load Balancer IP"
+
+  app_url:
+    type: link
+    title: "인스턴스 직접 URL (HTTP, 디버깅용)"
+
+  public_ip:
+    type: string
+    title: "공인 IP"
+
+  private_ip:
+    type: string
+    title: "사설 IP"
+
+  ssh_command:
+    type: copyableString
+    title: "SSH 접속 명령"
+
+primaryOutputButton: https_url

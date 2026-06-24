@@ -1,0 +1,39 @@
+{
+  "conversation_id": "mock-conv-7f3a-2026-05-28",
+  "total_elapsed_ms": 8421,
+  "result": "배송 주소와 관련된 컬럼은 다음 테이블에서 발견되었습니다:\n  - SH.CUSTOMERS (CUST_STREET_ADDRESS, CUST_POSTAL_CODE, CUST_CITY)\n  - OE.ORDERS (SHIP_ADDRESS_ID — FK → ADDRESSES)\n가장 적합한 테이블은 SH.CUSTOMERS 입니다.",
+  "timeline": [
+    {"label": "DICT_SEARCH_TEAM",       "type": "team",  "level": 0, "start_ms": 0,    "end_ms": 8421},
+    {"label": "SCHEMA_SCOUT",           "type": "agent", "level": 1, "start_ms": 50,   "end_ms": 2100},
+    {"label": "FIND_CANDIDATE_TABLES",  "type": "task",  "level": 2, "start_ms": 50,   "end_ms": 1230},
+    {"label": "SEARCH_DATA_DICTIONARY", "type": "tool",  "level": 3, "start_ms": 250,  "end_ms": 980},
+    {"label": "RANK_TABLES",            "type": "task",  "level": 2, "start_ms": 1240, "end_ms": 2100},
+    {"label": "COLUMN_ANALYZER",        "type": "agent", "level": 1, "start_ms": 2110, "end_ms": 8400},
+    {"label": "EXTRACT_COLUMN_HINTS",   "type": "task",  "level": 2, "start_ms": 2110, "end_ms": 8400},
+    {"label": "GET_TABLE_COMMENT",      "type": "tool",  "level": 3, "start_ms": 2300, "end_ms": 3500}
+  ],
+  "thinking": {
+    "error": null,
+    "rows": [
+      {"team_name": "DICT_SEARCH_TEAM", "task_name": "FIND_CANDIDATE_TABLES", "agent_name": "SCHEMA_SCOUT",  "step_no": 1, "step_title": "후보 테이블 탐색", "raw_prompt": "사용자 질문: 배송 주소 관련 컬럼이 있는 테이블을 찾아줘\n데이터 사전을 검색하여 주소/우편번호 관련 컬럼을 가진 테이블을 추립니다.", "conversation_id": "mock-conv-7f3a-2026-05-28"},
+      {"team_name": "DICT_SEARCH_TEAM", "task_name": "RANK_TABLES",           "agent_name": "SCHEMA_SCOUT",  "step_no": 2, "step_title": "테이블 순위화", "raw_prompt": "후보: SH.CUSTOMERS, OE.ORDERS\n컬럼 적합도(주소 직접 보유 여부)로 순위를 매깁니다. SH.CUSTOMERS 가 CUST_STREET_ADDRESS 등을 직접 보유.", "conversation_id": "mock-conv-7f3a-2026-05-28"},
+      {"team_name": "DICT_SEARCH_TEAM", "task_name": "EXTRACT_COLUMN_HINTS",  "agent_name": "COLUMN_ANALYZER", "step_no": 3, "step_title": "컬럼 힌트 추출", "raw_prompt": "SH.CUSTOMERS 의 주소 관련 컬럼: CUST_STREET_ADDRESS, CUST_POSTAL_CODE, CUST_CITY 를 최종 후보로 제시합니다.", "conversation_id": "mock-conv-7f3a-2026-05-28"}
+    ]
+  },
+  "raw_logs": {
+    "conversation_prompts": [
+      {"prompt_id": 1, "role": "user",      "content": "배송 주소 관련 컬럼이 있는 테이블을 찾아줘",     "ts": "2026-05-28T15:20:01"},
+      {"prompt_id": 2, "role": "assistant", "content": "데이터 사전을 검색하고 있습니다...",              "ts": "2026-05-28T15:20:02"},
+      {"prompt_id": 3, "role": "assistant", "content": "SH.CUSTOMERS, OE.ORDERS 가 후보입니다",          "ts": "2026-05-28T15:20:09"}
+    ],
+    "task_history": [
+      {"task_name": "FIND_CANDIDATE_TABLES", "status": "DONE", "elapsed_ms": 1180},
+      {"task_name": "RANK_TABLES",           "status": "DONE", "elapsed_ms": 860},
+      {"task_name": "EXTRACT_COLUMN_HINTS",  "status": "DONE", "elapsed_ms": 6290}
+    ],
+    "tool_history": [
+      {"tool_name": "SEARCH_DATA_DICTIONARY", "calls": 1, "elapsed_ms": 730},
+      {"tool_name": "GET_TABLE_COMMENT",      "calls": 2, "elapsed_ms": 1200}
+    ]
+  }
+}

@@ -1,0 +1,120 @@
+{
+  "teams": [
+    {
+      "name": "DICT_SEARCH_TEAM",
+      "description": "데이터 사전 검색 팀 — 사용자 질문에 맞는 테이블/컬럼 추천",
+      "agents": [
+        {"name": "SCHEMA_SCOUT",    "tasks": ["FIND_CANDIDATE_TABLES", "RANK_TABLES"]},
+        {"name": "COLUMN_ANALYZER", "tasks": ["EXTRACT_COLUMN_HINTS"]}
+      ],
+      "tasks": [
+        {"name": "FIND_CANDIDATE_TABLES", "tools": ["SEARCH_DATA_DICTIONARY"]},
+        {"name": "RANK_TABLES",           "tools": []},
+        {"name": "EXTRACT_COLUMN_HINTS",  "tools": ["GET_TABLE_COMMENT"]}
+      ]
+    },
+    {
+      "name": "SQL_GENERATOR_TEAM",
+      "description": "자연어 → SQL 변환 팀",
+      "agents": [
+        {"name": "QUERY_PLANNER", "tasks": ["DRAFT_QUERY", "VALIDATE_QUERY"]}
+      ],
+      "tasks": [
+        {"name": "DRAFT_QUERY",    "tools": ["RUN_SQL"]},
+        {"name": "VALIDATE_QUERY", "tools": ["EXPLAIN_PLAN", "RUN_SQL"]}
+      ]
+    }
+  ],
+  "agents": {
+    "SCHEMA_SCOUT": {
+      "name": "SCHEMA_SCOUT",
+      "profile_name": "OCI_GROK_R",
+      "system_prompt": "Find candidate tables related to the user's question.",
+      "attributes": [
+        {"attribute_name": "profile_name",   "attribute_value": "OCI_GROK_R"},
+        {"attribute_name": "max_iterations", "attribute_value": "3"},
+        {"attribute_name": "tasks",          "attribute_value": "FIND_CANDIDATE_TABLES, RANK_TABLES"}
+      ]
+    },
+    "COLUMN_ANALYZER": {
+      "name": "COLUMN_ANALYZER",
+      "profile_name": "OCI_LLAMA",
+      "system_prompt": "Extract column hints from candidate tables.",
+      "attributes": [
+        {"attribute_name": "profile_name", "attribute_value": "OCI_LLAMA"},
+        {"attribute_name": "tasks",        "attribute_value": "EXTRACT_COLUMN_HINTS"}
+      ]
+    },
+    "QUERY_PLANNER": {
+      "name": "QUERY_PLANNER",
+      "profile_name": "OPENAI_GPT4O",
+      "system_prompt": "Draft and validate SQL queries.",
+      "attributes": [
+        {"attribute_name": "profile_name", "attribute_value": "OPENAI_GPT4O"},
+        {"attribute_name": "tasks",        "attribute_value": "DRAFT_QUERY, VALIDATE_QUERY"}
+      ]
+    }
+  },
+  "tasks": {
+    "FIND_CANDIDATE_TABLES": {
+      "name": "FIND_CANDIDATE_TABLES",
+      "instruction": "Search data dictionary and return up to 10 candidate tables.",
+      "attributes": [
+        {"attribute_name": "max_results", "attribute_value": "10"},
+        {"attribute_name": "tools",       "attribute_value": "SEARCH_DATA_DICTIONARY"}
+      ]
+    },
+    "RANK_TABLES": {
+      "name": "RANK_TABLES",
+      "instruction": "Re-rank candidate tables by relevance score.",
+      "attributes": [
+        {"attribute_name": "scoring", "attribute_value": "cosine"},
+        {"attribute_name": "tools",   "attribute_value": "(none)"}
+      ]
+    },
+    "EXTRACT_COLUMN_HINTS": {
+      "name": "EXTRACT_COLUMN_HINTS",
+      "instruction": "From top-K tables, extract columns matching the question.",
+      "attributes": [
+        {"attribute_name": "top_k", "attribute_value": "5"},
+        {"attribute_name": "tools", "attribute_value": "GET_TABLE_COMMENT"}
+      ]
+    },
+    "DRAFT_QUERY": {
+      "name": "DRAFT_QUERY",
+      "instruction": "Draft an Oracle SQL query.",
+      "attributes": [
+        {"attribute_name": "tools", "attribute_value": "RUN_SQL"}
+      ]
+    },
+    "VALIDATE_QUERY": {
+      "name": "VALIDATE_QUERY",
+      "instruction": "Validate the drafted query using EXPLAIN PLAN.",
+      "attributes": [
+        {"attribute_name": "tools", "attribute_value": "EXPLAIN_PLAN, RUN_SQL"}
+      ]
+    }
+  },
+  "tools": {
+    "SEARCH_DATA_DICTIONARY": {
+      "name": "SEARCH_DATA_DICTIONARY",
+      "tool_type": "SQL",
+      "attributes": [{"attribute_name": "tool_type", "attribute_value": "SQL"}]
+    },
+    "GET_TABLE_COMMENT": {
+      "name": "GET_TABLE_COMMENT",
+      "tool_type": "SQL",
+      "attributes": [{"attribute_name": "tool_type", "attribute_value": "SQL"}]
+    },
+    "RUN_SQL": {
+      "name": "RUN_SQL",
+      "tool_type": "SQL",
+      "attributes": [{"attribute_name": "tool_type", "attribute_value": "SQL"}]
+    },
+    "EXPLAIN_PLAN": {
+      "name": "EXPLAIN_PLAN",
+      "tool_type": "SQL",
+      "attributes": [{"attribute_name": "tool_type", "attribute_value": "SQL"}]
+    }
+  }
+}

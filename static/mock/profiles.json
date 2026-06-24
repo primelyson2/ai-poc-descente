@@ -1,0 +1,9 @@
+[
+  {"profile_name": "OCI_GROK_R",         "status": "ENABLED",  "description": "OCI Generative AI - Grok"},
+  {"profile_name": "OCI_LLAMA",          "status": "ENABLED",  "description": "OCI Generative AI - Llama 3.3"},
+  {"profile_name": "OCI_COHERE_CMD_R",   "status": "ENABLED",  "description": "OCI Generative AI - Cohere Command R+"},
+  {"profile_name": "OPENAI_GPT4O",       "status": "ENABLED",  "description": "OpenAI GPT-4o"},
+  {"profile_name": "OPENAI_GPT4O_MINI",  "status": "DISABLED", "description": "OpenAI GPT-4o-mini (비활성)"},
+  {"profile_name": "AZURE_GPT4_TURBO",   "status": "ENABLED",  "description": "Azure OpenAI GPT-4 Turbo"},
+  {"profile_name": "ANTHROPIC_CLAUDE",   "status": "ENABLED",  "description": "Anthropic Claude Sonnet"}
+]

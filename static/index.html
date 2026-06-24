@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Oracle AI Database Test Tool</title>
+  <link rel="stylesheet" href="/static/css/redwood.css" />
+  <link rel="stylesheet" href="/static/css/layout.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="app-header">
+      <div class="brand">
+        <div class="brand-mark">O</div>
+        <span>Oracle AI Database Test Tool</span>
+      </div>
+      <div class="db-selector">
+        <label for="db-select">DB</label>
+        <select id="db-select" aria-label="대상 데이터베이스 선택"></select>
+        <button class="btn btn-ghost btn-mini" id="logout-btn" style="display:none;">로그아웃</button>
+      </div>
+    </header>
+
+    <nav class="app-sidenav" id="sidenav">
+      <div class="nav-item" data-route="profiles">
+        <span>AI Profile Test</span>
+      </div>
+      <div class="nav-item" data-route="agents">
+        <span>AI Agent Team Test</span>
+      </div>
+      <div class="nav-item" data-route="objects">
+        <span>AI Profile Object Meta</span>
+      </div>
+      <div class="nav-item" data-route="chat">
+        <span>AI Chat</span>
+      </div>
+      <div class="nav-sep"></div>
+      <div class="nav-item" data-route="databases">
+        <span>Database 관리</span>
+      </div>
+      <div class="nav-item" data-route="access">
+        <span>접근 키 관리</span>
+      </div>
+    </nav>
+
+    <main class="app-main" id="main"></main>
+  </div>
+
+  <div class="toast-container" id="toast-container"></div>
+
+  <!-- Order matters: util → auth → deps → components → views → app -->
+  <script src="/static/js/util.js"></script>
+  <script src="/static/js/auth.js"></script>
+  <script src="/static/js/api.js"></script>
+  <script src="/static/js/db_selector.js"></script>
+  <script src="/static/js/components/toast.js"></script>
+  <script src="/static/js/components/tabs.js"></script>
+  <script src="/static/js/components/table.js"></script>
+  <script src="/static/js/components/tree.js"></script>
+  <script src="/static/js/views/object_meta.js"></script>
+  <script src="/static/js/views/profile_test.js"></script>
+  <script src="/static/js/views/agent_test.js"></script>
+  <script src="/static/js/views/ai_chat.js"></script>
+  <script src="/static/js/views/database_admin.js"></script>
+  <script src="/static/js/views/access_admin.js"></script>
+  <script src="/static/js/app.js"></script>
+</body>
+</html>

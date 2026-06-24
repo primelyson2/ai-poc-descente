@@ -1,0 +1,31 @@
+{
+  "__default__": [
+    {"attribute_name": "provider",         "attribute_value": "oci"},
+    {"attribute_name": "credential_name",  "attribute_value": "OCI_GENAI_CRED"},
+    {"attribute_name": "object_list",      "attribute_value": "[{\"owner\":\"SH\",\"name\":\"CUSTOMERS\"},{\"owner\":\"SH\",\"name\":\"SALES\"}]"},
+    {"attribute_name": "comments",         "attribute_value": "true"},
+    {"attribute_name": "annotations",      "attribute_value": "true"}
+  ],
+  "OCI_GROK_R": [
+    {"attribute_name": "provider",         "attribute_value": "oci"},
+    {"attribute_name": "model",            "attribute_value": "xai.grok-3"},
+    {"attribute_name": "credential_name",  "attribute_value": "OCI_GENAI_CRED"},
+    {"attribute_name": "object_list",      "attribute_value": "[{\"owner\":\"SH\",\"name\":\"CUSTOMERS\"},{\"owner\":\"SH\",\"name\":\"SALES\"},{\"owner\":\"SH\",\"name\":\"PRODUCTS\"}]"},
+    {"attribute_name": "comments",         "attribute_value": "true"},
+    {"attribute_name": "annotations",      "attribute_value": "true"},
+    {"attribute_name": "region",           "attribute_value": "ap-seoul-1"}
+  ],
+  "OCI_LLAMA": [
+    {"attribute_name": "provider",         "attribute_value": "oci"},
+    {"attribute_name": "model",            "attribute_value": "meta.llama-3.3-70b-instruct"},
+    {"attribute_name": "credential_name",  "attribute_value": "OCI_GENAI_CRED"},
+    {"attribute_name": "object_list",      "attribute_value": "[{\"owner\":\"SH\",\"name\":\"CUSTOMERS\"},{\"owner\":\"SH\",\"name\":\"SALES\"}]"},
+    {"attribute_name": "temperature",      "attribute_value": "0.0"}
+  ],
+  "OPENAI_GPT4O": [
+    {"attribute_name": "provider",         "attribute_value": "openai"},
+    {"attribute_name": "model",            "attribute_value": "gpt-4o"},
+    {"attribute_name": "credential_name",  "attribute_value": "OPENAI_CRED"},
+    {"attribute_name": "max_tokens",       "attribute_value": "2048"}
+  ]
+}

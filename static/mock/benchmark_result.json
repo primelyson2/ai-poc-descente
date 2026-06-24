@@ -1,0 +1,41 @@
+{
+  "iterations": 3,
+  "results": [
+    {
+      "profile_name": "OCI_GROK_R",
+      "runs": [
+        {"iteration": 1, "elapsed_ms": 1234, "response": "Oracle Corporation 은 1977 년 설립된 미국의 대형 IT 기업으로, 데이터베이스 소프트웨어와 클라우드 인프라(OCI)를 중심으로 사업을 영위합니다. 본사는 텍사스 오스틴에 있으며 자율운영 데이터베이스(Autonomous DB) 와 AI 서비스를 적극 확장 중입니다.", "error": null},
+        {"iteration": 2, "elapsed_ms": 1187, "response": "(동일 응답 - 회차 2)", "error": null},
+        {"iteration": 3, "elapsed_ms": 1290, "response": "(동일 응답 - 회차 3)", "error": null}
+      ],
+      "avg_ms": 1237, "min_ms": 1187, "max_ms": 1290
+    },
+    {
+      "profile_name": "OCI_LLAMA",
+      "runs": [
+        {"iteration": 1, "elapsed_ms": 2104, "response": "Oracle 은 글로벌 데이터베이스 및 클라우드 기업입니다. 자율운영 DB, OCI 클라우드, 응용 SW 까지 폭넓은 포트폴리오를 보유하고 있습니다.", "error": null},
+        {"iteration": 2, "elapsed_ms": 1980, "response": "(동일 응답 - 회차 2)", "error": null},
+        {"iteration": 3, "elapsed_ms": 2230, "response": "(동일 응답 - 회차 3)", "error": null}
+      ],
+      "avg_ms": 2104, "min_ms": 1980, "max_ms": 2230
+    },
+    {
+      "profile_name": "OCI_COHERE_CMD_R",
+      "runs": [
+        {"iteration": 1, "elapsed_ms": 1520, "response": "Oracle은 데이터베이스 분야의 글로벌 리더로, 최근에는 AI 기능을 내장한 Autonomous Database 와 OCI Generative AI 서비스로 확장 중입니다.", "error": null},
+        {"iteration": 2, "elapsed_ms": null,  "response": null, "error": "ORA-20100: rate limit exceeded"},
+        {"iteration": 3, "elapsed_ms": 1410, "response": "(동일 응답 - 회차 3)", "error": null}
+      ],
+      "avg_ms": 1465, "min_ms": 1410, "max_ms": 1520
+    },
+    {
+      "profile_name": "OPENAI_GPT4O",
+      "runs": [
+        {"iteration": 1, "elapsed_ms": 1850, "response": "Oracle Corporation 은 1977 년 설립된 미국의 다국적 IT 기업입니다.", "error": null},
+        {"iteration": 2, "elapsed_ms": 1742, "response": "(동일 응답 - 회차 2)", "error": null},
+        {"iteration": 3, "elapsed_ms": 1955, "response": "(동일 응답 - 회차 3)", "error": null}
+      ],
+      "avg_ms": 1849, "min_ms": 1742, "max_ms": 1955
+    }
+  ]
+}
