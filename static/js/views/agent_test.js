@@ -684,6 +684,7 @@ END;
         <div class="row" style="gap:var(--space-3);">
           <span id="at-think-count" class="muted"></span>
           <button class="btn btn-ghost" id="at-think-suggest">AI 추천</button>
+          <button class="btn btn-ghost" id="at-think-analyze">Thinking과정분석</button>
           <button class="btn btn-ghost" id="at-think-copy" disabled>복사</button>
         </div>
       </div>
@@ -698,6 +699,11 @@ END;
       const teamName = document.getElementById("at-team").value;
       const thinkingText = lastThinkingRows.length ? buildThinkingText(lastThinkingRows) : "";
       openAgentSuggestModal(teamName, thinkingText);
+    });
+    document.getElementById("at-think-analyze").addEventListener("click", () => {
+      const teamName = document.getElementById("at-team").value;
+      const thinkingText = lastThinkingRows.length ? buildThinkingText(lastThinkingRows) : "";
+      openThinkingAnalyzeModal(teamName, thinkingText);
     });
 
     const midPanel = document.createElement("div");
@@ -982,6 +988,147 @@ END;
       return;
     }
     listHost.appendChild(stack);
+  }
+
+  // ====================================================================
+  // Thinking 과정 분석 모달 — 팀 구성(Team/Agent/Task/Tool) + Thinking 트레이스를
+  //   SELECT AI(chat) 로 분석. Popup 에서 AI Profile 선택 → [분석 시작] → 결과 표시.
+  //   Thinking 에 ORA 오류가 있으면 그 원인까지 분석한다.
+  // ====================================================================
+
+  // 팀의 Agent/Task/Tool 구성을 LLM 컨텍스트용 평문으로 직렬화.
+  function buildTeamContextText(team, toolsMeta) {
+    const lines = [`TEAM: ${team.name}`];
+    if (team.description) lines.push(`설명: ${team.description}`);
+    const taskByName = {};
+    (team.tasks || []).forEach((t) => { taskByName[t.name] = t; });
+    (team.agents || []).forEach((agent) => {
+      lines.push("", `AGENT: ${agent.name}`);
+      if (agent.profile_name) lines.push(`  profile: ${agent.profile_name}`);
+      if (agent.role) lines.push(`  role: ${agent.role}`);
+      (agent.tasks || []).forEach((taskName) => {
+        const task = taskByName[taskName];
+        if (!task) return;
+        lines.push(`  TASK: ${task.name}`);
+        if (task.instruction) lines.push(`    instruction: ${task.instruction}`);
+        (task.tools || []).forEach((toolName) => {
+          const tm = (toolsMeta || {})[toolName] || {};
+          lines.push(`    TOOL: ${toolName}${tm.tool_type ? ` (${tm.tool_type})` : ""}`);
+          if (tm.instruction) lines.push(`      instruction: ${tm.instruction}`);
+        });
+      });
+    });
+    return lines.join("\n");
+  }
+
+  async function openThinkingAnalyzeModal(teamName, thinkingText) {
+    if (!teamName) { window.Toast.show("Team 을 선택하세요", "warn"); return; }
+    if (!thinkingText) {
+      window.Toast.show("분석할 Thinking 과정이 없습니다. 먼저 [실행] 하세요.", "warn");
+      return;
+    }
+
+    const backdrop = document.createElement("div");
+    backdrop.className = "modal-backdrop";
+    backdrop.innerHTML = `
+      <div class="modal" style="width:900px;">
+        <div class="modal-header">
+          <h2>Thinking 과정 분석 — ${window.escapeHtml(teamName)}</h2>
+          <button class="btn btn-ghost" id="ata-close">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="row" style="gap:12px; align-items:center; margin-bottom:var(--space-3);">
+            <label style="width:90px;">AI Profile</label>
+            <select id="ata-profile" style="min-width:240px;"><option>로딩 중…</option></select>
+            <button class="btn btn-primary" id="ata-run" disabled>분석 시작</button>
+            <button class="btn btn-ghost btn-mini" id="ata-copy" disabled>복사</button>
+          </div>
+          <div class="muted" style="font-size:var(--fs-sm); margin-bottom:var(--space-3);">
+            선택한 팀의 <b>Team / Agent / Task / Tool</b> 정보와 위 <b>Thinking 과정</b> 을 함께 분석합니다. 실행 중 오류가 있으면 원인까지 진단합니다. <b>SELECT AI(chat)</b> 로 수행됩니다.
+          </div>
+          <div id="ata-result">
+            <div class="empty-state muted">AI Profile 을 선택하고 [분석 시작] 을 누르세요.</div>
+          </div>
+        </div>
+      </div>`;
+
+    const close = () => { backdrop.remove(); document.removeEventListener("keydown", onKey); };
+    const onKey = (e) => { if (e.key === "Escape") close(); };
+    backdrop.addEventListener("click", (e) => { if (e.target === backdrop) close(); });
+    backdrop.querySelector("#ata-close").addEventListener("click", close);
+    document.addEventListener("keydown", onKey);
+    document.body.appendChild(backdrop);
+
+    const profileSel = backdrop.querySelector("#ata-profile");
+    const runBtn = backdrop.querySelector("#ata-run");
+    const copyBtn = backdrop.querySelector("#ata-copy");
+    const resultHost = backdrop.querySelector("#ata-result");
+
+    // 팀 구성 + Profile 목록 조회
+    let tree, profiles;
+    try {
+      [tree, profiles] = await Promise.all([
+        window.API.get("/api/agents/tree"),
+        window.API.get("/api/profiles").catch(() => []),
+      ]);
+    } catch (e) {
+      resultHost.innerHTML = `<div class="empty-state muted">${errMsg(e, "트리 조회 실패")}</div>`;
+      return;
+    }
+
+    const enabled = (profiles || []).filter((p) => p.status === "ENABLED");
+    const pool = enabled.length ? enabled : (profiles || []);
+    profileSel.innerHTML = pool.length
+      ? pool.map((p) => `<option value="${window.escapeAttr(p.profile_name)}">${window.escapeHtml(p.profile_name)}</option>`).join("")
+      : '<option value="">(사용 가능한 Profile 없음)</option>';
+
+    const team = (tree.teams || []).find((t) => t.name === teamName);
+    const defProfile = team ? (team.agents || []).map((a) => a.profile_name).find(Boolean) : "";
+    if (defProfile && pool.some((p) => p.profile_name === defProfile)) profileSel.value = defProfile;
+
+    const contextText = team ? buildTeamContextText(team, tree.tools_meta || {}) : "";
+    runBtn.disabled = !pool.length;
+
+    let lastAnalysis = "";
+    runBtn.addEventListener("click", async () => {
+      const profile = profileSel.value;
+      if (!profile) { window.Toast.show("AI Profile 을 선택하세요", "warn"); return; }
+      runBtn.disabled = true;
+      const prev = runBtn.textContent;
+      runBtn.innerHTML = '<span class="spinner"></span> 분석 중...';
+      copyBtn.disabled = true;
+      resultHost.innerHTML = '<div class="empty-state"><span class="spinner"></span> 분석 중...</div>';
+      try {
+        const res = await window.API.post("/api/agents/analyze-thinking", {
+          team_name: teamName, context: contextText, thinking: thinkingText, profile_name: profile,
+        });
+        lastAnalysis = res.analysis || "";
+        const box = document.createElement("div");
+        box.style.whiteSpace = "pre-wrap";
+        box.style.fontSize = "var(--fs-sm)";
+        box.style.lineHeight = "1.6";
+        box.style.background = "var(--surface-alt)";
+        box.style.padding = "var(--space-3)";
+        box.style.borderRadius = "var(--radius-md)";
+        box.style.maxHeight = "55vh";
+        box.style.overflow = "auto";
+        box.textContent = lastAnalysis || "(빈 응답)";
+        resultHost.innerHTML = "";
+        resultHost.appendChild(box);
+        copyBtn.disabled = !lastAnalysis;
+      } catch (e) {
+        resultHost.innerHTML = `<div class="empty-state" style="color:var(--danger);">분석 실패: ${window.escapeHtml(errMsg(e, ""))}</div>`;
+      } finally {
+        runBtn.disabled = false;
+        runBtn.textContent = prev;
+      }
+    });
+
+    copyBtn.addEventListener("click", async () => {
+      if (!lastAnalysis) return;
+      const ok = await copyToClipboard(lastAnalysis);
+      window.Toast.show(ok ? "분석 결과 복사됨" : "복사 실패 — 직접 선택해 복사하세요", ok ? "success" : "error");
+    });
   }
 
   // 적용(반영) 엔드포인트 — agent.role / task.instruction / tool.instruction

@@ -267,6 +267,7 @@ async def delete_column_annotation(
 _SUGGEST_SAMPLE_LIMIT = 100      # 샘플링 행 수
 _SUGGEST_VALUE_MAXLEN = 200      # 값 1건 최대 길이(프롬프트 비대화 방지)
 _SUGGEST_SAMPLES_MAXLEN = 4000   # 샘플 블록 전체 최대 길이
+_SUGGEST_CATEGORICAL_MAX = 20    # 샘플 내 구분값이 이 수 이하이면 범주형(코드/플래그)으로 보고 열거
 _GENERATE_CHAT_SQL = (
     "SELECT DBMS_CLOUD_AI.GENERATE(prompt => :p, profile_name => :pn, action => 'chat') AS r "
     "FROM dual"
@@ -365,6 +366,31 @@ async def suggest_column_comment(
     sample_block = "\n".join(f"- {s}" for s in samples) if samples else "(데이터 없음)"
     dtype_txt = f" (데이터 타입: {dtype})" if dtype else ""
 
+    # 샘플 기준 구분값(distinct) — 코드/플래그처럼 소수의 값으로 이루어진 범주형 컬럼이면
+    # 어떤 구분값들이 있는지 프롬프트에 열거해, 각 값의 의미를 코멘트에 설명하도록 유도한다.
+    # (별도 DB 쿼리 없이 이미 가져온 샘플에서 계산 — LOB GROUP BY 제약·추가 부하 회피)
+    distinct_seen: list[str] = []
+    _seen: set[str] = set()
+    for r in sample_rows:
+        s = _stringify_sample(r.get("v"))
+        if s == "" or s in _seen:
+            continue
+        _seen.add(s)
+        distinct_seen.append(s)
+    is_categorical = 0 < len(distinct_seen) <= _SUGGEST_CATEGORICAL_MAX
+    distinct_block = ""
+    category_hint = ""
+    if is_categorical:
+        distinct_block = (
+            f"\n\n샘플에서 관찰된 구분값({len(distinct_seen)}종): "
+            + ", ".join(distinct_seen)
+        )
+        category_hint = (
+            "이 컬럼은 소수의 구분값으로 이루어진 범주형(코드/플래그) 컬럼으로 보입니다. "
+            "위 '구분값' 각각이 무엇을 의미하는지 코멘트에 간단히 설명해 주세요 "
+            "(예: '회원 데이터 미보유 여부, 1=미보유(비대상), 0=보유(대상)').\n"
+        )
+
     # 날짜/시간 타입이면 데이터 형식(format)을 코멘트에 포함하도록 지시
     _du = dtype.upper()
     is_datetime = _du.startswith("DATE") or _du.startswith("TIMESTAMP")
@@ -397,9 +423,11 @@ async def suggest_column_comment(
         "샘플은 전체 데이터의 일부이므로, 값의 범위(최소·최대·건수·분포 등)에 대한 설명은 "
         "코멘트에 넣지 마세요.\n"
         f"{date_hint}"
+        f"{category_hint}"
         "코멘트 문장만 출력하고, 따옴표나 'AI:' 같은 접두어·부가 설명은 붙이지 마세요.\n"
         f"{context_block}\n\n"
         f"샘플 데이터:\n{sample_block}"
+        f"{distinct_block}"
     )
 
     # 3. SELECT AI chat mode 호출

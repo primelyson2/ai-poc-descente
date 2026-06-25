@@ -146,9 +146,22 @@
       );
 
       // 컬럼 레벨 그리드
-      const colHeader = document.createElement("h3");
-      colHeader.textContent = "컬럼 레벨";
+      const colHeader = document.createElement("div");
+      colHeader.className = "row";
+      colHeader.style.justifyContent = "space-between";
       colHeader.style.marginTop = "var(--space-5)";
+      colHeader.style.marginBottom = "var(--space-3)";
+      const annDis = data.annotations_supported ? "" : "disabled";
+      colHeader.innerHTML = `
+        <h3 style="margin:0;">컬럼 레벨</h3>
+        <div class="row" style="gap:var(--space-2);">
+          <button class="btn" data-action="download-comments" title="COLUMN, COMMENT 두 열을 xlsx 로 다운로드">Download</button>
+          <input type="file" id="om-comment-upload-file" accept=".xlsx,.xls" style="display:none;" />
+          <button class="btn" data-action="upload-comments" title="comment_upload.xlsx (COLUMN, COMMENT) 업로드">Upload</button>
+          <button class="btn" data-action="download-annotations" title="모든 컬럼 Annotation 을 COLUMN, Key, Value 로 xlsx 다운로드" ${annDis}>Annotation Download</button>
+          <input type="file" id="om-annot-upload-file" accept=".xlsx,.xls" style="display:none;" />
+          <button class="btn" data-action="upload-annotations" title="COLUMN, Key, Value xlsx 업로드 — 즉시 DB 반영(동일 키는 값 Update)" ${annDis}>Annotation Upload</button>
+        </div>`;
       body.appendChild(colHeader);
 
       const dirty = { comment: new Set() };
@@ -210,6 +223,32 @@
       }
       bulkRow.querySelector('[data-action="bulk-comment"]').addEventListener("click",
         () => bulkSaveComment(body, owner, tableName, dirty));
+
+      // Upload: comment_upload.xlsx 를 읽어 매칭되는 컬럼의 Comment 칸을 채운다(검토 후 일괄 저장).
+      const uploadFile = colHeader.querySelector("#om-comment-upload-file");
+      colHeader.querySelector('[data-action="upload-comments"]').addEventListener("click",
+        () => uploadFile.click());
+      uploadFile.addEventListener("change", (ev) =>
+        handleCommentUpload(ev, body, data.columns || [], dirty));
+
+      // Download: 현재 화면의 COLUMN/COMMENT 두 열만 xlsx 로 내보낸다(템플릿 겸 백업).
+      colHeader.querySelector('[data-action="download-comments"]').addEventListener("click",
+        () => handleCommentDownload(body, owner, tableName, data.columns || []));
+
+      // Annotation Download: 현재 테이블 모든 컬럼의 Annotation 을 COLUMN/Key/Value 로 내보낸다.
+      const annDownBtn = colHeader.querySelector('[data-action="download-annotations"]');
+      if (annDownBtn && !annDownBtn.disabled) {
+        annDownBtn.addEventListener("click",
+          () => handleAnnotationDownload(tableName, data.columns || []));
+      }
+      // Annotation Upload: COLUMN/Key/Value xlsx 를 읽어 즉시 DB 반영(ADD OR REPLACE) 후 새로고침.
+      const annUploadFile = colHeader.querySelector("#om-annot-upload-file");
+      const annUpBtn = colHeader.querySelector('[data-action="upload-annotations"]');
+      if (annUpBtn && !annUpBtn.disabled) {
+        annUpBtn.addEventListener("click", () => annUploadFile.click());
+        annUploadFile.addEventListener("change", (ev) =>
+          handleAnnotationUpload(ev, owner, tableName, () => loadDetail(owner, tableName)));
+      }
     }
 
     profileSel.addEventListener("change", loadObjectList);
@@ -579,6 +618,214 @@
       const col = d && d.failed_column ? ` (${d.failed_column} 행에서 중단)` : "";
       window.Toast.show(errMsg(err, "코멘트 일괄 저장 실패") + col, "error");
     }
+  }
+
+  // ───── Comment xlsx 업로드 ─────
+  // comment_upload.xlsx (1행 헤더 COLUMN, COMMENT) 를 읽어, 매칭되는 컬럼의
+  // Comment 입력칸을 채우고 dirty 표시만 한다. 실제 DB 반영은 "Comment 일괄 저장".
+  function handleCommentUpload(ev, body, columns, dirty) {
+    const input = ev.target;
+    const file = input.files && input.files[0];
+    if (!file) return;
+    if (typeof XLSX === "undefined") {
+      window.Toast.show("xlsx 라이브러리 로드 실패 — 새로고침 후 다시 시도하세요", "error");
+      input.value = "";
+      return;
+    }
+
+    // 테이블 실제 컬럼명(대문자) → 컬럼명 lookup. xlsx 는 CamelCase 일 수 있어 대문자로 매칭.
+    const colByUpper = new Map();
+    columns.forEach((c) => colByUpper.set(String(c.name).toUpperCase(), c.name));
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const wb = XLSX.read(reader.result, { type: "array" });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        if (!ws) throw new Error("시트를 찾을 수 없습니다");
+        const rows = XLSX.utils.sheet_to_json(ws, { header: 1, blankrows: false });
+        if (!rows.length) throw new Error("빈 파일입니다");
+
+        // 헤더 행에서 COLUMN / COMMENT 열 인덱스 탐색(대소문자·공백 무시).
+        const header = (rows[0] || []).map((h) => String(h == null ? "" : h).trim().toUpperCase());
+        const ci = header.indexOf("COLUMN");
+        const mi = header.indexOf("COMMENT");
+        if (ci === -1 || mi === -1) {
+          window.Toast.show("헤더(COLUMN, COMMENT)를 찾을 수 없습니다", "error");
+          return;
+        }
+
+        let filled = 0;
+        const unmatched = [];
+        for (let r = 1; r < rows.length; r++) {
+          const row = rows[r] || [];
+          const rawName = row[ci];
+          if (rawName == null || String(rawName).trim() === "") continue;
+          const key = String(rawName).trim().toUpperCase();
+          const colName = colByUpper.get(key);
+          if (!colName) { unmatched.push(String(rawName).trim()); continue; }
+          const comment = row[mi] == null ? "" : String(row[mi]);
+          const inp = body.querySelector(
+            `textarea[data-field="comment"][data-column="${CSS.escape(colName)}"]`);
+          if (!inp) { unmatched.push(String(rawName).trim()); continue; }
+          inp.value = comment;
+          dirty.comment.add(colName);
+          inp.parentElement.classList.add("dirty");
+          filled++;
+        }
+
+        if (filled === 0) {
+          window.Toast.show("매칭되는 컬럼이 없습니다. 컬럼명을 확인하세요.", "warn");
+        } else {
+          window.Toast.show(
+            `${filled}개 컬럼 Comment 를 채웠습니다. 검토 후 'Comment 일괄 저장' 하세요.`, "success");
+        }
+        if (unmatched.length) {
+          const shown = unmatched.slice(0, 10).join(", ");
+          const more = unmatched.length > 10 ? ` 외 ${unmatched.length - 10}개` : "";
+          window.Toast.show(`매칭 안 된 컬럼 ${unmatched.length}개: ${shown}${more}`, "warn");
+        }
+      } catch (e) {
+        window.Toast.show("업로드 실패: " + (e.message || "잘못된 파일"), "error");
+      } finally {
+        input.value = "";
+      }
+    };
+    reader.onerror = () => {
+      window.Toast.show("파일을 읽지 못했습니다", "error");
+      input.value = "";
+    };
+    reader.readAsArrayBuffer(file);
+  }
+
+  // ───── Comment xlsx 다운로드 ─────
+  // 현재 테이블의 COLUMN / COMMENT 두 열만 xlsx 로 내보낸다(Upload 템플릿과 동일 형식).
+  // 화면의 입력칸 현재값을 우선 사용(미저장 편집분 포함), 없으면 메타데이터 comment.
+  function handleCommentDownload(body, owner, tableName, columns) {
+    if (typeof XLSX === "undefined") {
+      window.Toast.show("xlsx 라이브러리 로드 실패 — 새로고침 후 다시 시도하세요", "error");
+      return;
+    }
+    if (!columns.length) {
+      window.Toast.show("내보낼 컬럼이 없습니다", "warn");
+      return;
+    }
+    const aoa = [["COLUMN", "COMMENT"]];
+    columns.forEach((c) => {
+      const inp = body.querySelector(
+        `textarea[data-field="comment"][data-column="${CSS.escape(c.name)}"]`);
+      const comment = inp ? inp.value : (c.comment || "");
+      aoa.push([c.name, comment]);
+    });
+    try {
+      const ws = XLSX.utils.aoa_to_sheet(aoa);
+      ws["!cols"] = [{ wch: 30 }, { wch: 50 }];
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Sheet1");
+      XLSX.writeFile(wb, `comment_${tableName}.xlsx`);
+      window.Toast.show(`${columns.length}개 컬럼을 xlsx 로 내보냈습니다`, "success");
+    } catch (e) {
+      window.Toast.show("다운로드 실패: " + (e.message || ""), "error");
+    }
+  }
+
+  // ───── Annotation xlsx 다운로드/업로드 ─────
+  // 현재 테이블 모든 컬럼의 Annotation 을 COLUMN / Key / Value 3열로 내보낸다(컬럼당 여러 행).
+  function handleAnnotationDownload(tableName, columns) {
+    if (typeof XLSX === "undefined") {
+      window.Toast.show("xlsx 라이브러리 로드 실패 — 새로고침 후 다시 시도하세요", "error");
+      return;
+    }
+    const aoa = [["COLUMN", "Key", "Value"]];
+    columns.forEach((c) => {
+      const ann = c.annotations || {};
+      Object.keys(ann).forEach((k) => aoa.push([c.name, k, ann[k] == null ? "" : String(ann[k])]));
+    });
+    try {
+      const ws = XLSX.utils.aoa_to_sheet(aoa);
+      ws["!cols"] = [{ wch: 30 }, { wch: 24 }, { wch: 40 }];
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Sheet1");
+      XLSX.writeFile(wb, `annotation_${tableName}.xlsx`);
+      if (aoa.length === 1) {
+        window.Toast.show("Annotation 이 없어 헤더만 내보냈습니다(템플릿)", "warn");
+      } else {
+        window.Toast.show(`${aoa.length - 1}건 Annotation 을 xlsx 로 내보냈습니다`, "success");
+      }
+    } catch (e) {
+      window.Toast.show("다운로드 실패: " + (e.message || ""), "error");
+    }
+  }
+
+  // COLUMN / Key / Value xlsx 를 읽어, 행마다 해당 컬럼 Annotation 을 즉시 DB 에 반영한다.
+  // bulk 엔드포인트가 컬럼별로 ALTER ... ANNOTATIONS (ADD OR REPLACE ...) → 동일 키는 값 Update.
+  async function handleAnnotationUpload(ev, owner, tableName, reload) {
+    const input = ev.target;
+    const file = input.files && input.files[0];
+    if (!file) return;
+    if (typeof XLSX === "undefined") {
+      window.Toast.show("xlsx 라이브러리 로드 실패 — 새로고침 후 다시 시도하세요", "error");
+      input.value = "";
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = async () => {
+      try {
+        const wb = XLSX.read(reader.result, { type: "array" });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        if (!ws) throw new Error("시트를 찾을 수 없습니다");
+        const rows = XLSX.utils.sheet_to_json(ws, { header: 1, blankrows: false });
+        if (!rows.length) throw new Error("빈 파일입니다");
+
+        const header = (rows[0] || []).map((h) => String(h == null ? "" : h).trim().toUpperCase());
+        const ci = header.indexOf("COLUMN");
+        const ki = header.indexOf("KEY");
+        const vi = header.indexOf("VALUE");
+        if (ci === -1 || ki === -1 || vi === -1) {
+          window.Toast.show("헤더(COLUMN, Key, Value)를 찾을 수 없습니다", "error");
+          return;
+        }
+
+        const items = [];
+        const skipped = [];
+        for (let r = 1; r < rows.length; r++) {
+          const row = rows[r] || [];
+          const col = row[ci] == null ? "" : String(row[ci]).trim();
+          const key = row[ki] == null ? "" : String(row[ki]).trim();
+          const val = row[vi] == null ? "" : String(row[vi]);
+          if (!col || !key) {
+            if (col || key) skipped.push(r + 1);
+            continue;
+          }
+          items.push({ name: col, annotation: { name: key, value: val } });
+        }
+        if (!items.length) {
+          window.Toast.show("반영할 Annotation 행이 없습니다(COLUMN·Key 필요)", "warn");
+          return;
+        }
+
+        await window.API.post(
+          `/api/objects/${encodeURIComponent(owner)}/${encodeURIComponent(tableName)}/columns/bulk`,
+          { columns: items }
+        );
+        window.Toast.show(`${items.length}건 Annotation 을 DB 에 반영했습니다`, "success");
+        if (skipped.length) {
+          window.Toast.show(`COLUMN/Key 누락으로 건너뛴 행: ${skipped.slice(0, 10).join(", ")}`, "warn");
+        }
+        if (typeof reload === "function") await reload();
+      } catch (e) {
+        const d = e && e.payload && e.payload.detail;
+        const at = d && d.failed_column ? ` (${d.failed_column} 에서 중단)` : "";
+        window.Toast.show(errMsg(e, "Annotation 업로드 실패") + at, "error");
+      } finally {
+        input.value = "";
+      }
+    };
+    reader.onerror = () => {
+      window.Toast.show("파일을 읽지 못했습니다", "error");
+      input.value = "";
+    };
+    reader.readAsArrayBuffer(file);
   }
 
   // ───── 유틸 ─────

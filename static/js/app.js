@@ -7,11 +7,13 @@
     profiles:  { render: () => window.Views.profileTest(),    label: "AI Profile Test" },
     agents:    { render: () => window.Views.agentTest(),      label: "AI Agent Team Test" },
     chat:      { render: () => window.Views.aiChat(),         label: "AI Chat" },
+    api:       { render: () => window.Views.apiAdmin(),       label: "API관리" },
     databases: { render: () => window.Views.databaseAdmin(),  label: "Database 관리" },
     access:    { render: () => window.Views.accessAdmin(),    label: "Tool관리" },
   };
   // DB 비의존 라우트 — 접속 가능한 DB 가 없어도 진입 가능(등록/복구/키 관리 경로).
-  const DB_INDEPENDENT = new Set(["databases", "access"]);
+  // 'api' 는 현재 서버 로직 없는 프런트 전용 테스트 버전이라 DB 없이도 진입 가능.
+  const DB_INDEPENDENT = new Set(["databases", "access", "api"]);
   const DEFAULT_ROUTE = "profiles";
 
   function currentRoute() {
