@@ -539,7 +539,7 @@ END;
     backdrop.querySelector("#fbm-pre").textContent = sql;
     const close = () => { backdrop.remove(); document.removeEventListener("keydown", onKey); };
     const onKey = (e) => { if (e.key === "Escape") close(); };
-    backdrop.addEventListener("click", (e) => { if (e.target === backdrop) close(); });
+    // 바깥 클릭으로는 닫지 않음 — 닫기는 X 버튼으로만 (실수 닫힘 방지)
     backdrop.querySelector("#fbm-close").addEventListener("click", close);
     backdrop.querySelector("#fbm-copy").addEventListener("click", async () => {
       try { await navigator.clipboard.writeText(sql); window.Toast.show("클립보드에 복사됨", "success"); }
@@ -825,7 +825,7 @@ END;
 
       const close = () => { backdrop.remove(); document.removeEventListener("keydown", onKey); };
       const onKey = (e) => { if (e.key === "Escape") close(); };
-      backdrop.addEventListener("click", (e) => { if (e.target === backdrop) close(); });
+      // 바깥 클릭으로는 닫지 않음 — 닫기는 X 버튼으로만 (실수 닫힘 방지)
       backdrop.querySelector("#fbe-close").addEventListener("click", close);
       backdrop.querySelector("#fbe-cancel").addEventListener("click", close);
 
@@ -1052,7 +1052,7 @@ END;
     `;
     const close = () => { backdrop.remove(); document.removeEventListener("keydown", onKey); };
     const onKey = (e) => { if (e.key === "Escape") close(); };
-    backdrop.addEventListener("click", (e) => { if (e.target === backdrop) close(); });
+    // 바깥 클릭으로는 닫지 않음 — 닫기는 X 버튼으로만 (실수 닫힘 방지)
     backdrop.querySelector("#mr-close").addEventListener("click", close);
     document.addEventListener("keydown", onKey);
     document.body.appendChild(backdrop);
@@ -1072,7 +1072,7 @@ END;
         </div>
       </div>
     `;
-    backdrop.addEventListener("click", (e) => { if (e.target === backdrop) backdrop.remove(); });
+    // 바깥 클릭으로는 닫지 않음 — 닫기는 X 버튼으로만 (실수 닫힘 방지)
     backdrop.querySelector("#modal-close").addEventListener("click", () => backdrop.remove());
     document.body.appendChild(backdrop);
   }
@@ -1204,7 +1204,7 @@ END;
     `;
     const close = () => { backdrop.remove(); document.removeEventListener("keydown", onKey); };
     const onKey = (e) => { if (e.key === "Escape") close(); };
-    backdrop.addEventListener("click", (e) => { if (e.target === backdrop) close(); });
+    // 바깥 클릭으로는 닫지 않음 — 닫기는 X 버튼으로만 (실수 닫힘 방지)
     backdrop.querySelector("#pd-close").addEventListener("click", close);
     document.addEventListener("keydown", onKey);
     document.body.appendChild(backdrop);
@@ -1412,7 +1412,7 @@ END;`;
         </div>
       </div>
     `;
-    backdrop.addEventListener("click", (e) => { if (e.target === backdrop) backdrop.remove(); });
+    // 바깥 클릭으로는 닫지 않음 — 닫기는 X 버튼으로만 (실수 닫힘 방지)
     backdrop.querySelector("#pt-modal-close").addEventListener("click", () => backdrop.remove());
 
     // 결과 복사 — 클립보드 API 우선, 실패 시 execCommand fallback (showSqlModal 과 동일 패턴)
@@ -1555,7 +1555,7 @@ END;`;
       </div>
     `;
     backdrop.querySelector("#sql-pre").textContent = sql;
-    backdrop.addEventListener("click", (e) => { if (e.target === backdrop) backdrop.remove(); });
+    // 바깥 클릭으로는 닫지 않음 — 닫기는 X 버튼으로만 (실수 닫힘 방지)
     backdrop.querySelector("#sql-close").addEventListener("click", () => backdrop.remove());
     backdrop.querySelector("#sql-copy").addEventListener("click", async () => {
       try {

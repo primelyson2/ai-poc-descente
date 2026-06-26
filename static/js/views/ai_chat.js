@@ -207,7 +207,7 @@
     `;
     const close = () => { backdrop.remove(); document.removeEventListener("keydown", onKey); };
     const onKey = (e) => { if (e.key === "Escape") close(); };
-    backdrop.addEventListener("click", (e) => { if (e.target === backdrop) close(); });
+    // 바깥 클릭으로는 닫지 않음 — 닫기는 X 버튼으로만 (실수 닫힘 방지)
     backdrop.querySelector("#thk-close").addEventListener("click", close);
     document.addEventListener("keydown", onKey);
     document.body.appendChild(backdrop);
@@ -572,7 +572,7 @@
       `;
       const close = () => { backdrop.remove(); document.removeEventListener("keydown", onKey); };
       const onKey = (e) => { if (e.key === "Escape") close(); };
-      backdrop.addEventListener("click", (e) => { if (e.target === backdrop) close(); });
+      // 바깥 클릭으로는 닫지 않음 — 닫기는 X 버튼으로만 (실수 닫힘 방지)
       document.addEventListener("keydown", onKey);
       document.body.appendChild(backdrop);
 
