@@ -175,7 +175,7 @@
           { key: "annotations", label: "Annotation",
             format: makeAnnotationCell(owner, tableName, data.annotations_supported) },
           { key: "_ai", label: "AI 추천", headerAlign: "center", align: "center",
-            format: makeAiSuggestCell(owner, tableName, () => profileSel.value) },
+            format: makeAiSuggestCell(owner, tableName, () => profileSel.value, dirty) },
         ],
         data.columns,
         { emptyText: "컬럼이 없습니다" }
@@ -346,8 +346,8 @@
   }
 
   // ───── 셀: AI 추천 버튼 ─────
-  //  클릭 → 모달에서 컬럼 데이터 100행 기반 코멘트 추천(SELECT AI chat) → [적용] 시 Comment 칸에 반영.
-  function makeAiSuggestCell(owner, tableName, getProfile) {
+  //  클릭 → 모달에서 컬럼 데이터 100행 기반 코멘트 추천(SELECT AI chat) → [적용] 시 Comment 칸 반영 + 즉시 DB 저장.
+  function makeAiSuggestCell(owner, tableName, getProfile, dirty) {
     return (value, row) => {
       const btn = document.createElement("button");
       btn.type = "button";
@@ -360,15 +360,28 @@
           column: row.name,
           dataType: row.data_type,
           profileName: getProfile(),
-          onApply: (text) => {
-            // 같은 행의 Comment textarea 에 반영 + dirty 표시(input 이벤트로 처리)
+          // [적용] → 같은 행 Comment 칸에 반영 후 곧바로 DB 저장(컬럼 코멘트 PUT).
+          onApply: async (text) => {
             const ta = document.querySelector(
               `#om-detail-body textarea[data-field="comment"][data-column="${CSS.escape(row.name)}"]`
             );
-            if (!ta) { window.Toast.show("Comment 칸을 찾지 못했습니다", "error"); return; }
-            ta.value = text;
-            ta.dispatchEvent(new Event("input", { bubbles: true }));
-            window.Toast.show(`${row.name} 코멘트에 적용됨 (저장 필요)`, "success");
+            if (ta) ta.value = text;
+            try {
+              await window.API.put(
+                `/api/objects/${encodeURIComponent(owner)}/${encodeURIComponent(tableName)}/columns/${encodeURIComponent(row.name)}/comment`,
+                { text }
+              );
+              // 저장 성공 → dirty 해제(강조 제거). 실패 시엔 dirty 로 남겨 일괄저장으로 재시도 가능.
+              if (dirty && dirty.comment) dirty.comment.delete(row.name);
+              if (ta && ta.parentElement) ta.parentElement.classList.remove("dirty");
+              window.Toast.show(`${row.name} 코멘트 저장됨`, "success");
+            } catch (err) {
+              if (ta) {
+                if (dirty && dirty.comment) dirty.comment.add(row.name);
+                if (ta.parentElement) ta.parentElement.classList.add("dirty");
+              }
+              window.Toast.show(errMsg(err, "저장 실패"), "error");
+            }
           },
         });
       });
@@ -392,6 +405,10 @@
             Profile <b>${escapeHtml(profileName || "(미선택)")}</b> · 컬럼 데이터 100행을 조회해 SELECT AI(chat) 로 추천합니다.
           </div>
           <div id="ai-status" class="empty-state"><span class="spinner"></span> 추천 생성 중...</div>
+          <details id="ai-prompt-wrap" style="display:none;">
+            <summary style="cursor:pointer; font-size:var(--fs-sm); color:var(--text-muted); user-select:none;">사용한 프롬프트 보기</summary>
+            <pre id="ai-prompt" style="white-space:pre-wrap; margin:var(--space-2) 0 0; font-family:var(--font-mono); font-size:var(--fs-sm); background:var(--surface-alt); padding:var(--space-3); border-radius:var(--radius-md); max-height:240px; overflow:auto;"></pre>
+          </details>
           <div class="stack-sm" id="ai-result" style="display:none;">
             <label>추천 코멘트 <span class="muted" style="font-size:var(--fs-sm);">— 적용 전 수정 가능</span></label>
             <textarea id="ai-text" rows="3" class="textarea-auto"></textarea>
@@ -414,6 +431,8 @@
     const textEl = backdrop.querySelector("#ai-text");
     const applyBtn = backdrop.querySelector("#ai-apply");
     const retryBtn = backdrop.querySelector("#ai-retry");
+    const promptWrap = backdrop.querySelector("#ai-prompt-wrap");
+    const promptEl = backdrop.querySelector("#ai-prompt");
 
     async function fetchSuggestion() {
       if (!profileName) {
@@ -426,6 +445,8 @@
       statusEl.className = "empty-state";
       statusEl.innerHTML = '<span class="spinner"></span> 추천 생성 중...';
       resultEl.style.display = "none";
+      promptWrap.style.display = "none";
+      promptWrap.open = false;
       applyBtn.disabled = true;
       retryBtn.style.display = "none";
       try {
@@ -434,6 +455,9 @@
           { profile_name: profileName }
         );
         statusEl.style.display = "none";
+        // 추천에 사용한 실제 프롬프트 — 기본 접힘, 필요 시 펼쳐 확인
+        promptEl.textContent = res.prompt || "";
+        promptWrap.style.display = res.prompt ? "" : "none";
         resultEl.style.display = "";
         textEl.value = res.suggestion || "";
         resultEl.querySelector("label").innerHTML =
