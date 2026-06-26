@@ -499,13 +499,17 @@ END;
   }
 
   // sql_text 기반 — 사전 실행 없이 프롬프트 + 기대 응답(SQL)으로 피드백 등록. 미리보기/복사용 스크립트.
-  function buildFeedbackByTextSql(profile, sqlText, feedbackType, response) {
+  //   feedbackContent 는 선택 — 값이 있을 때만 feedback_content 줄을 추가한다.
+  function buildFeedbackByTextSql(profile, sqlText, feedbackType, response, feedbackContent) {
+    const fcLine = feedbackContent
+      ? `,\n        feedback_content => '${fbSqlLit(feedbackContent)}'`
+      : "";
     return `BEGIN
     DBMS_CLOUD_AI.FEEDBACK(
         profile_name  => '${fbSqlLit(profile)}',
         sql_text      => '${fbSqlLit(sqlText)}',
         feedback_type => '${fbSqlLit(feedbackType)}',
-        response      => '${fbSqlLit(response)}'
+        response      => '${fbSqlLit(response)}'${fcLine}
     );
 END;
 /`;
@@ -621,7 +625,7 @@ END;
     directPanel.className = "panel";
     directPanel.innerHTML = `
       <div class="panel-header">
-        <h2>Feedback 추가 — 실행내역 없이 <span class="muted" style="font-size:var(--fs-sm);">sql_text + response</span></h2>
+        <h2>Feedback 추가 — 실행내역 없이 <span class="muted" style="font-size:var(--fs-sm);">sql_text + response + feedback_content</span></h2>
         <button class="btn btn-primary" id="fb-gen-direct">추가</button>
       </div>
       <div class="panel-body stack-sm">
@@ -638,6 +642,10 @@ END;
         <div class="stack-sm">
           <label>Response <span class="muted" style="font-size:var(--fs-sm);">— 기대하는(교정된) SQL. negative 일 때 권장</span></label>
           <textarea id="fb-response" rows="3" style="font-family:var(--font-mono); font-size:var(--fs-sm);">SELECT SUM(1) FROM "ADB_USER"."MOVIES"</textarea>
+        </div>
+        <div class="stack-sm">
+          <label>Feedback Content <span class="muted" style="font-size:var(--fs-sm);">— 자연어 피드백(선택). 입력 시 feedback_content 로 전달</span></label>
+          <textarea id="fb-feedback-content" rows="2"></textarea>
         </div>
       </div>
     `;
@@ -672,9 +680,9 @@ END;
         listHost.innerHTML = '<div class="empty-state muted">컬럼 정보가 없습니다.</div>';
         return;
       }
-      // 행 끝에 삭제 버튼 컬럼 추가 — sql_id 가 있는 행에만 노출.
-      cols.push({ key: "_del", label: "", headerAlign: "center",
-        format: (_v, row) => buildVectabDeleteBtn(row, loadVectab) });
+      // 행 끝에 액션(수정/삭제) 버튼 컬럼 추가.
+      cols.push({ key: "_act", label: "", headerAlign: "center",
+        format: (_v, row) => buildVectabActions(row, loadVectab) });
       listHost.appendChild(window.SimpleTable.create(cols, data.rows || [], { className: "keep-case" }));
       if (!(data.rows || []).length) {
         listHost.appendChild(divFromHtml('<div class="empty-state muted">저장된 Feedback 이 없습니다.</div>'));
@@ -736,6 +744,117 @@ END;
       return btn;
     }
 
+    // vectab 행의 액션 셀 — [수정](response 편집) + [삭제] 버튼을 한 칸에 배치.
+    function buildVectabActions(row, onDone) {
+      const sqlId = (row.sql_id || "").trim();
+      const sqlText = (row.sql_text || "").trim();
+      if (!sqlId && !sqlText) return divFromHtml('<span class="muted">—</span>');
+
+      const box = document.createElement("div");
+      box.className = "row";
+      box.style.gap = "6px";
+      box.style.justifyContent = "center";
+
+      // 수정 — response 만 바꿔 재등록(operation=add). response 전달은 sql_text 모드만 가능하므로
+      //        sql_text 가 있는 행에만 노출한다. 단 positive 는 response 가 시스템 파생값이고
+      //        positive+response 조합을 Oracle 이 거부하므로 negative 행에만 노출한다.
+      if (sqlText && (row.feedback_type || "").trim().toLowerCase() === "negative") {
+        const editBtn = document.createElement("button");
+        editBtn.className = "btn btn-ghost";
+        editBtn.textContent = "수정";
+        editBtn.title = "response 를 수정해 다시 저장 (operation=add)";
+        editBtn.addEventListener("click", () => showVectabEditModal(row, onDone));
+        box.appendChild(editBtn);
+      }
+
+      box.appendChild(buildVectabDeleteBtn(row, onDone));
+      return box;
+    }
+
+    // vectab 행의 "수정" 팝업 — content/feedback_type/sql_id/sql_text 는 읽기전용으로 보여주고
+    //   response 만 편집한다. [저장] 시 sql_text 모드로 FEEDBACK(operation=add) 재등록(같은 항목은
+    //   1건만 유지되어 response 가 갱신됨).
+    function showVectabEditModal(row, onDone) {
+      const profile = fbProfile();
+      if (!profile) { window.Toast.show("Profile 을 선택하세요", "warn"); return; }
+
+      const sqlText = (row.sql_text || "").trim();
+      const ft = row.feedback_type || "positive";
+
+      // 읽기전용 필드 한 칸을 만드는 헬퍼.
+      const roField = (label, value) => `
+        <div class="stack-sm">
+          <label style="font-size:var(--fs-sm); color:var(--text-muted);">${label}</label>
+          <pre style="white-space:pre-wrap; word-break:break-word; margin:0; font-family:var(--font-mono); font-size:var(--fs-sm); background:var(--surface-alt); padding:var(--space-2) var(--space-3); border-radius:var(--radius-md); max-height:120px; overflow:auto;">${window.escapeHtml(value || "—")}</pre>
+        </div>`;
+
+      const backdrop = document.createElement("div");
+      backdrop.className = "modal-backdrop";
+      backdrop.innerHTML = `
+        <div class="modal" style="width:760px;">
+          <div class="modal-header">
+            <h2>Feedback 수정 — response</h2>
+            <button class="btn btn-ghost" id="fbe-close">✕</button>
+          </div>
+          <div class="modal-body stack">
+            ${roField("content", row.content)}
+            <div class="row" style="gap:12px;">
+              <div style="flex:1; min-width:0;">${roField("feedback_type", row.feedback_type)}</div>
+              <div style="flex:1; min-width:0;">${roField("sql_id", row.sql_id)}</div>
+            </div>
+            ${roField("sql_text", row.sql_text)}
+            <div class="stack-sm">
+              <label>response <span class="muted" style="font-size:var(--fs-sm);">— 수정 가능</span></label>
+              <textarea id="fbe-response" rows="6" class="textarea-auto" style="font-family:var(--font-mono); font-size:var(--fs-sm);"></textarea>
+            </div>
+            <div class="stack-sm">
+              <label>feedback_content <span class="muted" style="font-size:var(--fs-sm);">— 자연어 피드백(선택). 수정 가능</span></label>
+              <textarea id="fbe-feedback-content" rows="2" class="textarea-auto"></textarea>
+            </div>
+            <div class="row end" style="gap:8px;">
+              <button class="btn btn-ghost" id="fbe-cancel">닫기</button>
+              <button class="btn btn-primary" id="fbe-save">저장</button>
+            </div>
+          </div>
+        </div>
+      `;
+      const respEl = backdrop.querySelector("#fbe-response");
+      respEl.value = row.response || "";
+      const fcEl = backdrop.querySelector("#fbe-feedback-content");
+      fcEl.value = row.feedback_content || "";
+
+      const close = () => { backdrop.remove(); document.removeEventListener("keydown", onKey); };
+      const onKey = (e) => { if (e.key === "Escape") close(); };
+      backdrop.addEventListener("click", (e) => { if (e.target === backdrop) close(); });
+      backdrop.querySelector("#fbe-close").addEventListener("click", close);
+      backdrop.querySelector("#fbe-cancel").addEventListener("click", close);
+
+      const saveBtn = backdrop.querySelector("#fbe-save");
+      saveBtn.addEventListener("click", async () => {
+        const response = respEl.value.trim();
+        if (!response) { window.Toast.show("response 가 비어 있습니다", "warn"); return; }
+        const feedbackContent = fcEl.value.trim();
+        saveBtn.disabled = true;
+        const prev = saveBtn.innerHTML;
+        saveBtn.innerHTML = '<span class="spinner"></span> 저장 중...';
+        try {
+          await window.API.post(`/api/profiles/${encodeURIComponent(profile)}/feedback`,
+            { sql_text: sqlText, feedback_type: ft, response, feedback_content: feedbackContent, operation: "add" });
+          window.Toast.show("response 수정됨", "success");
+          close();
+          if (typeof onDone === "function") onDone();
+        } catch (e) {
+          // 실패 시 모달 유지 + 버튼 복구 (사용자가 오류 확인 후 재시도)
+          window.Toast.show(errMsg(e, "수정 실패"), "error");
+          saveBtn.disabled = false;
+          saveBtn.innerHTML = prev;
+        }
+      });
+
+      document.addEventListener("keydown", onKey);
+      document.body.appendChild(backdrop);
+    }
+
     // vectab 행의 "삭제" 버튼 — 스크립트 팝업을 띄우고 [반영] 클릭 시 FEEDBACK(operation=delete) 실행.
     //   - sql_id 가 있으면 sql_id 기반 삭제
     //   - sql_id 가 없으면 sql_text + feedback_type + response 기반 삭제
@@ -795,11 +914,12 @@ END;
       if (!sqlText) { window.Toast.show("SQL Text 를 입력하세요", "warn"); return; }
       const type = document.getElementById("fb-direct-type").value;
       const response = document.getElementById("fb-response").value;
-      const sql = buildFeedbackByTextSql(profile, sqlText, type, response);
+      const feedbackContent = document.getElementById("fb-feedback-content").value.trim();
+      const sql = buildFeedbackByTextSql(profile, sqlText, type, response, feedbackContent);
       showFeedbackConfirmModal(`FEEDBACK (sql_text) — ${profile}`, sql, async () => {
         try {
           await window.API.post(`/api/profiles/${encodeURIComponent(profile)}/feedback`,
-            { sql_text: sqlText, feedback_type: type, response });
+            { sql_text: sqlText, feedback_type: type, response, feedback_content: feedbackContent });
           window.Toast.show("피드백 등록됨", "success");
           loadVectab();
         } catch (e) {
@@ -1281,7 +1401,10 @@ END;`;
             <button class="btn btn-primary" id="ptm-run">▶ 실행</button>
           </div>
           <div class="stack-sm">
-            <label>결과 <span id="ptm-elapsed" class="muted" style="font-size:var(--fs-sm);"></span></label>
+            <div class="row" style="justify-content: space-between; align-items:center;">
+              <label>결과 <span id="ptm-elapsed" class="muted" style="font-size:var(--fs-sm);"></span></label>
+              <button class="btn btn-ghost" id="ptm-result-copy">복사</button>
+            </div>
             <textarea id="ptm-result" rows="10" readonly
               style="font-family:var(--font-mono); font-size:var(--fs-sm);"
               placeholder="[실행] 후 표시됩니다."></textarea>
@@ -1291,6 +1414,22 @@ END;`;
     `;
     backdrop.addEventListener("click", (e) => { if (e.target === backdrop) backdrop.remove(); });
     backdrop.querySelector("#pt-modal-close").addEventListener("click", () => backdrop.remove());
+
+    // 결과 복사 — 클립보드 API 우선, 실패 시 execCommand fallback (showSqlModal 과 동일 패턴)
+    backdrop.querySelector("#ptm-result-copy").addEventListener("click", async () => {
+      const text = backdrop.querySelector("#ptm-result").value;
+      if (!text) { window.Toast.show("복사할 결과가 없습니다", "warn"); return; }
+      try {
+        await navigator.clipboard.writeText(text);
+        window.Toast.show("클립보드에 복사됨", "success");
+      } catch (_) {
+        const ta = document.createElement("textarea");
+        ta.value = text; document.body.appendChild(ta); ta.select();
+        try { document.execCommand("copy"); window.Toast.show("클립보드에 복사됨", "success"); }
+        catch (e) { window.Toast.show("복사 실패", "error"); }
+        ta.remove();
+      }
+    });
 
     // --- 프롬프트 저장/불러오기 (localStorage, 세션 간 유지) ---
     const PROMPTS_KEY = "profileTest.savedPrompts";

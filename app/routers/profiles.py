@@ -474,12 +474,19 @@ async def add_feedback(name: str, payload: dict, database: str = Depends(current
         if operation not in _FEEDBACK_OPS:
             raise HTTPException(status_code=400, detail={"error": "operation must be add/delete"})
         response = payload.get("response") or ""
+        feedback_content = payload.get("feedback_content") or ""
+        # feedback_content 는 선택 — 값이 있을 때만 바인드/파라미터를 추가한다(빈 문자열을 굳이 넣지 않음).
+        binds = {"pn": name, "st": sql_text, "ft": feedback_type, "resp": response, "op": operation}
+        fc_clause = ""
+        if feedback_content:
+            fc_clause = ", feedback_content => :fc"
+            binds["fc"] = feedback_content
         try:
             await db.execute(
                 database,
                 "BEGIN DBMS_CLOUD_AI.FEEDBACK(profile_name => :pn, sql_text => :st, "
-                "feedback_type => :ft, response => :resp, operation => :op); END;",
-                pn=name, st=sql_text, ft=feedback_type, resp=response, op=operation,
+                f"feedback_type => :ft, response => :resp{fc_clause}, operation => :op); END;",
+                **binds,
             )
         except Exception as exc:
             msg = _first_line(exc)
