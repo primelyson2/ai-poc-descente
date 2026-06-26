@@ -42,9 +42,48 @@ def _ident(name: str, label: str) -> str:
 
 
 def _annot_name(name: str) -> str:
-    if not name or not ANNOT_NAME_RE.match(name):
+    """annotation 이름 검증 + 정규화한 '논리 이름' 반환 (응답/표시용).
+
+    표준 ASCII 식별자(영문 시작)는 Oracle unquoted 관례대로 **대문자로 정규화**하고,
+    그 외(한글 등)는 **원문 보존**한다. DDL 보간은 _annot_sql 로 따로 처리.
+    """
+    n = (name or "").strip()
+    if not n or len(n.encode("utf-8")) > 128:
         raise HTTPException(status_code=400, detail={"error": f"invalid annotation name: {name}"})
-    return name
+    # quoted identifier 안전 — 큰따옴표/제어문자 금지
+    if '"' in n or any(ord(ch) < 0x20 for ch in n):
+        raise HTTPException(status_code=400, detail={"error": f"invalid annotation name: {name}"})
+    return n.upper() if ANNOT_NAME_RE.match(n) else n
+
+
+def _annot_sql(name: str) -> str:
+    """검증된 annotation 논리 이름을 DDL 식별자 표현으로 변환.
+
+    ASCII 식별자(대문자 정규화됨)는 그대로(unquoted), 그 외(한글 등)는 큰따옴표로 감싼
+    quoted identifier 로 보간한다(내부 " 는 "" 로 이스케이프). DB 캐릭터셋이 유니코드면 한글 키 가능.
+    """
+    if IDENT_RE.match(name):
+        return name
+    return '"' + name.replace('"', '""') + '"'
+
+
+async def _alter_keyword(database: str, owner: str, table: str) -> str:
+    """Annotation DDL 대상이 뷰면 'VIEW', 아니면 'TABLE' 를 반환.
+
+    뷰는 `ALTER TABLE` 로 변경할 수 없어 `ALTER VIEW … ANNOTATIONS (…)` 가 필요하다.
+    owner/table 은 이미 _ident 로 검증·대문자화된 값이므로 SELECT bind 로 안전하게 조회.
+    동명 객체가 있으면 TABLE 을 우선(주 케이스)하고, 없거나 VIEW 면 VIEW.
+    """
+    rows = await db.fetch_all(
+        database,
+        "SELECT object_type FROM all_objects "
+        " WHERE owner = :o AND object_name = :t "
+        "   AND object_type IN ('TABLE', 'VIEW') "
+        " ORDER BY CASE object_type WHEN 'TABLE' THEN 0 ELSE 1 END "
+        " FETCH FIRST 1 ROWS ONLY",
+        o=owner, t=table,
+    )
+    return "VIEW" if rows and rows[0].get("object_type") == "VIEW" else "TABLE"
 
 
 def _first_line(exc: Exception) -> str:
@@ -190,8 +229,8 @@ async def update_table_annotation(
     av = body.get("value", "") or ""
     if not isinstance(av, str):
         av = str(av)
-    av_esc = av.replace("'", "''")
-    sql = f"ALTER TABLE {o}.{t} ANNOTATIONS (ADD OR REPLACE {an} '{av_esc}')"
+    kw = await _alter_keyword(database, o, t)
+    sql = f"ALTER {kw} {o}.{t} ANNOTATIONS (ADD OR REPLACE {_annot_sql(an)} {_sql_literal(av)})"
     try:
         await db.execute(database, sql)
     except Exception as exc:
@@ -212,8 +251,8 @@ async def update_column_annotation(
     av = body.get("value", "") or ""
     if not isinstance(av, str):
         av = str(av)
-    av_esc = av.replace("'", "''")
-    sql = f"ALTER TABLE {o}.{t} MODIFY ({c} ANNOTATIONS (ADD OR REPLACE {an} '{av_esc}'))"
+    kw = await _alter_keyword(database, o, t)
+    sql = f"ALTER {kw} {o}.{t} MODIFY ({c} ANNOTATIONS (ADD OR REPLACE {_annot_sql(an)} {_sql_literal(av)}))"
     try:
         await db.execute(database, sql)
     except Exception as exc:
@@ -232,8 +271,9 @@ async def delete_table_annotation(
     o = _ident(owner, "owner")
     t = _ident(table, "table")
     an = _annot_name(annotation_name)
+    kw = await _alter_keyword(database, o, t)
     try:
-        await db.execute(database, f"ALTER TABLE {o}.{t} ANNOTATIONS (DROP {an})")
+        await db.execute(database, f"ALTER {kw} {o}.{t} ANNOTATIONS (DROP {_annot_sql(an)})")
     except Exception as exc:
         logger.warning("table annotation DROP failed: %s", _first_line(exc))
         raise HTTPException(status_code=400, detail={"error": _first_line(exc)})
@@ -249,10 +289,11 @@ async def delete_column_annotation(
     t = _ident(table, "table")
     c = _ident(column, "column")
     an = _annot_name(annotation_name)
+    kw = await _alter_keyword(database, o, t)
     try:
         await db.execute(
             database,
-            f"ALTER TABLE {o}.{t} MODIFY ({c} ANNOTATIONS (DROP {an}))",
+            f"ALTER {kw} {o}.{t} MODIFY ({c} ANNOTATIONS (DROP {_annot_sql(an)}))",
         )
     except Exception as exc:
         logger.warning("column annotation DROP failed: %s", _first_line(exc))
@@ -282,6 +323,21 @@ def _stringify_sample(v) -> str:
     return s
 
 
+async def _generate_comment(database: str, prompt: str, profile_name: str, log_ctx: str) -> str:
+    """DBMS_CLOUD_AI.GENERATE(chat) 실행 후 결과 양끝의 따옴표(LLM 이 종종 붙임)를 제거해 반환.
+    실패 시 ORA 첫 줄로 HTTP 400. log_ctx 는 로그 식별용(예: '(custom)')."""
+    try:
+        row = await db.fetch_one(database, _GENERATE_CHAT_SQL, p=prompt, pn=profile_name)
+    except Exception as exc:
+        logger.warning("suggest%s: GENERATE(chat) failed: db=%s profile=%s: %s",
+                       log_ctx, database, profile_name, _first_line(exc))
+        raise HTTPException(status_code=400, detail={"error": _first_line(exc)})
+    s = ((row or {}).get("r") or "").strip()
+    if len(s) >= 2 and s[0] in "\"'" and s[-1] == s[0]:
+        s = s[1:-1].strip()
+    return s
+
+
 @router.post("/{owner}/{table}/columns/{column}/suggest-comment")
 async def suggest_column_comment(
     owner: str, table: str, column: str, body: dict,
@@ -294,9 +350,23 @@ async def suggest_column_comment(
     if not profile_name:
         raise HTTPException(status_code=400, detail={"error": "profile_name required"})
 
+    # 커스텀 프롬프트 모드: 사용자가 모달에서 프롬프트를 직접 수정해 [다시 추천] 한 경우.
+    # 샘플/컨텍스트 재구성을 건너뛰고 전달된 프롬프트 그대로 GENERATE 실행.
+    override_prompt = (body.get("prompt") or "").strip()
+    if override_prompt:
+        suggestion = await _generate_comment(database, override_prompt, profile_name, "(custom)")
+        return {
+            "owner": o, "table": t, "column": c,
+            "profile_name": profile_name,
+            "sample_count": None,   # 커스텀 프롬프트 — 샘플 건수 의미 없음
+            "suggestion": suggestion,
+            "prompt": override_prompt,
+        }
+
     # 1. 데이터 타입 + 참고 컨텍스트(테이블 코멘트 / 다른 컬럼 코멘트) — 없어도 진행
     dtype = ""
     table_comment = ""
+    own_comment = ""
     other_comments: list[str] = []
     try:
         dt_rows = await db.fetch_all(
@@ -340,6 +410,20 @@ async def suggest_column_comment(
     except Exception as e:
         logger.warning("suggest: column comments query failed: %s", _first_line(e))
 
+    try:
+        # 현재(추천 대상) 컬럼 자신의 기존 코멘트 — 있으면 참고 컨텍스트에 포함해 LLM 이 참고하도록
+        oc_rows = await db.fetch_all(
+            database,
+            "SELECT comments FROM ALL_COL_COMMENTS "
+            "WHERE UPPER(owner) = :o AND UPPER(table_name) = :t "
+            "  AND UPPER(column_name) = :c",
+            o=o, t=t, c=c,
+        )
+        if oc_rows:
+            own_comment = (oc_rows[0].get("comments") or "").strip()
+    except Exception as e:
+        logger.warning("suggest: own column comment query failed: %s", _first_line(e))
+
     # 2. 컬럼 데이터 100행 샘플링 (식별자는 whitelist 검증 후 직접 보간)
     try:
         sample_rows = await db.fetch_all(
@@ -366,23 +450,49 @@ async def suggest_column_comment(
     sample_block = "\n".join(f"- {s}" for s in samples) if samples else "(데이터 없음)"
     dtype_txt = f" (데이터 타입: {dtype})" if dtype else ""
 
-    # 샘플 기준 구분값(distinct) — 코드/플래그처럼 소수의 값으로 이루어진 범주형 컬럼이면
-    # 어떤 구분값들이 있는지 프롬프트에 열거해, 각 값의 의미를 코멘트에 설명하도록 유도한다.
-    # (별도 DB 쿼리 없이 이미 가져온 샘플에서 계산 — LOB GROUP BY 제약·추가 부하 회피)
+    # 구분값(distinct) — 코드/플래그처럼 소수의 값으로 이루어진 범주형 컬럼이면 어떤 구분값들이
+    # 있는지 프롬프트에 열거해, 각 값의 의미를 코멘트에 설명하도록 유도한다.
+    # 코드성 컬럼은 **전체 데이터를 DISTINCT** 해 구분값 전부를 열거한다(샘플 100행에 없던 코드까지
+    # 포함). 단 CLOB 등 LOB 타입은 DISTINCT 불가(ORA-00932)이므로 샘플 기반 distinct 로 폴백.
+    #   - MAX+1 개까지만 조회해 카디널리티 판정: MAX 이하 → 코드성(전부 열거), 초과 → 고카디널리티(열거 안 함).
+    # distinct_src: 'full'=전체 DISTINCT 로 구한 코드목록, 'high'=고카디널리티(코드성 아님, 열거 안 함),
+    #               'sample'=DISTINCT 미수행/실패라 샘플에서 계산. (LOB/오류 시에만 샘플 폴백)
     distinct_seen: list[str] = []
-    _seen: set[str] = set()
-    for r in sample_rows:
-        s = _stringify_sample(r.get("v"))
-        if s == "" or s in _seen:
-            continue
-        _seen.add(s)
-        distinct_seen.append(s)
+    distinct_src = "sample"
+    if "LOB" not in dtype.upper():
+        try:
+            dv_rows = await db.fetch_all(
+                database,
+                f"SELECT DISTINCT {c} AS v FROM {o}.{t} "
+                f"WHERE {c} IS NOT NULL "
+                f"FETCH FIRST {_SUGGEST_CATEGORICAL_MAX + 1} ROWS ONLY",
+            )
+            vals = [s for s in (_stringify_sample(r.get("v")) for r in dv_rows) if s != ""]
+            if len(vals) <= _SUGGEST_CATEGORICAL_MAX:
+                distinct_seen = sorted(vals)
+                distinct_src = "full"
+            else:
+                distinct_src = "high"   # 고카디널리티 — 코드성 아님 확정
+        except Exception as e:
+            logger.warning("suggest: distinct query failed: %s", _first_line(e))
+
+    # 폴백: LOB 이거나 DISTINCT 쿼리가 실패한 경우에만 이미 가져온 샘플에서 distinct 계산
+    if distinct_src == "sample":
+        _seen: set[str] = set()
+        for r in sample_rows:
+            s = _stringify_sample(r.get("v"))
+            if s == "" or s in _seen:
+                continue
+            _seen.add(s)
+            distinct_seen.append(s)
+
     is_categorical = 0 < len(distinct_seen) <= _SUGGEST_CATEGORICAL_MAX
     distinct_block = ""
     category_hint = ""
     if is_categorical:
+        _src = "전체 데이터" if distinct_src == "full" else "샘플"
         distinct_block = (
-            f"\n\n샘플에서 관찰된 구분값({len(distinct_seen)}종): "
+            f"\n\n{_src}에서 관찰된 구분값({len(distinct_seen)}종): "
             + ", ".join(distinct_seen)
         )
         category_hint = (
@@ -404,21 +514,23 @@ async def suggest_column_comment(
     context_parts: list[str] = []
     if table_comment:
         context_parts.append(f"테이블 설명: {table_comment}")
+    if own_comment:
+        context_parts.append(f'현재 컬럼("{c}")의 기존 코멘트: {own_comment}')
     if other_comments:
         # 컨텍스트 비대화 방지를 위해 총량 제한
         joined = "\n".join(other_comments)
         if len(joined) > _SUGGEST_SAMPLES_MAXLEN:
             joined = joined[:_SUGGEST_SAMPLES_MAXLEN] + "\n…"
         context_parts.append("같은 테이블의 다른 컬럼 코멘트:\n" + joined)
-    context_block = ("\n\n참고 컨텍스트:\n" + "\n".join(context_parts)) if context_parts else ""
+    context_block = ("\n\n" + "\n".join(context_parts)) if context_parts else ""
 
     prompt = (
         f'다음은 Oracle 테이블 {o}.{t} 의 컬럼 "{c}"{dtype_txt} 에 저장된 실제 데이터 샘플 '
         f"{len(samples)}건입니다.\n"
-        "아래 '샘플 데이터' 의 실제 값을 1차 근거로, 참고 컨텍스트(테이블 설명·다른 컬럼 코멘트)를 "
+        "아래 '샘플 데이터' 의 실제 값을 1차 근거로, 테이블 설명·현재/다른 컬럼 코멘트를 "
         "보조 근거로 삼아 해당 컬럼의 의미를 새로 추론해 간결한 한국어 코멘트(한 문장)를 제안해 주세요.\n"
-        f'참고 컨텍스트에는 컬럼 "{c}" 자신의 기존 코멘트가 포함되어 있지 않으며, 기존 코멘트가 '
-        "있다면 참고하고, 또 데이터에서 의미를 도출하세요.\n"
+        "자신의 기존 코멘트가 있으면 참고하되, 그대로 베끼지 말고 "
+        "데이터의 실제 값에서 의미를 다시 도출해 보완하세요.\n"
         "샘플은 전체 데이터의 일부이므로, 값의 범위(최소·최대·건수·분포 등)에 대한 설명은 "
         "코멘트에 넣지 마세요.\n"
         f"{date_hint}"
@@ -430,17 +542,7 @@ async def suggest_column_comment(
     )
 
     # 3. SELECT AI chat mode 호출
-    try:
-        row = await db.fetch_one(database, _GENERATE_CHAT_SQL, p=prompt, pn=profile_name)
-    except Exception as exc:
-        logger.warning("suggest: GENERATE(chat) failed: db=%s profile=%s: %s",
-                       database, profile_name, _first_line(exc))
-        raise HTTPException(status_code=400, detail={"error": _first_line(exc)})
-
-    suggestion = ((row or {}).get("r") or "").strip()
-    # LLM 이 종종 양끝에 따옴표를 붙임 — 제거
-    if len(suggestion) >= 2 and suggestion[0] in "\"'" and suggestion[-1] == suggestion[0]:
-        suggestion = suggestion[1:-1].strip()
+    suggestion = await _generate_comment(database, prompt, profile_name, "")
 
     return {
         "owner": o, "table": t, "column": c,
@@ -466,6 +568,8 @@ async def bulk_update_columns(
     if not isinstance(cols, list) or not cols:
         raise HTTPException(status_code=400, detail={"error": "columns required"})
 
+    # annotation DDL 은 뷰면 ALTER VIEW 가 필요 — 대상 타입을 1회 판별해 루프에서 재사용.
+    kw = await _alter_keyword(database, o, t)
     pool = db.get_pool(database)
     updated = 0
     failed_column: str | None = None
@@ -520,10 +624,7 @@ async def bulk_update_columns(
                                     "updated": updated},
                         )
                     av = ann.get("value", "") or ""
-                    if not isinstance(av, str):
-                        av = str(av)
-                    av_esc = av.replace("'", "''")
-                    sql = f"ALTER TABLE {o}.{t} MODIFY ({c} ANNOTATIONS (ADD OR REPLACE {an} '{av_esc}'))"
+                    sql = f"ALTER {kw} {o}.{t} MODIFY ({c} ANNOTATIONS (ADD OR REPLACE {_annot_sql(an)} {_sql_literal(av)}))"
                     try:
                         await cur.execute(sql)
                         updated += 1
