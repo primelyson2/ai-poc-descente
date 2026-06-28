@@ -12,6 +12,7 @@ wheels/
 # App secrets & wallets
 config.yaml
 wallets/
+.secrets/
 
 # 내부 보안 문서 (공개 금지)
 SECURITY_INFO.md

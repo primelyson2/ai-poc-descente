@@ -1,0 +1,255 @@
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_tuning_assistant_extension_files_are_loaded_from_index():
+    index = (ROOT / "static/index.html").read_text(encoding="utf-8")
+
+    assert "/static/js/extensions/tuning_assistant.js" in index
+    assert "/static/js/extensions/app_extensions.js" in index
+
+
+def test_tuning_assistant_menu_is_registered_as_extension_not_hardcoded_route():
+    ext = (ROOT / "static/js/extensions/app_extensions.js").read_text(encoding="utf-8")
+    app = (ROOT / "static/js/app.js").read_text(encoding="utf-8")
+
+    assert "AI SQL Tuning Assistant" in ext
+    assert "tuning" in ext
+    assert "window.AppExtensions" in app
+    assert "Object.assign(ROUTES" in app
+
+
+def test_tuning_assistant_view_has_asta_integration_placeholder():
+    view = (ROOT / "static/js/extensions/tuning_assistant.js").read_text(encoding="utf-8")
+
+    assert "window.Views.tuningAssistant" in view
+    assert "ASTA" in view
+    assert "/api/asta/analyze" in view
+
+
+def test_tuning_assistant_uses_large_sql_editor_and_formats_before_report():
+    view = (ROOT / "static/js/extensions/tuning_assistant.js").read_text(encoding="utf-8")
+
+    assert "tuning-line-numbers" in view
+    assert "formatSql(sql)" in view
+    assert "id=\"asta-sql\"" in view
+    assert "SQL Formatting" in view
+    assert "height: clamp(520px" in view
+    assert "tuning-grid" in view
+
+
+def test_tuning_assistant_header_text_removed_and_has_reset_button():
+    view = (ROOT / "static/js/extensions/tuning_assistant.js").read_text(encoding="utf-8")
+
+    assert "SQL을 넓은 에디터에 입력하면 먼저 읽기 좋은 SQL format" not in view
+    assert "Format → Report" not in view
+    assert "id=\"asta-reset" in view
+    assert "신규분석(초기화)" in view
+    assert "id=\"asta-run" in view
+    assert "AI 분석 실행" in view
+    assert "튜닝 보고서" not in view
+    assert "튜닝보고서" not in view
+    assert "id=\"asta-current-progress\"" in view
+    assert "현재 진행" in view
+    assert "id=\"asta-jump-progress" not in view
+    assert "resetWorkspace" in view
+
+
+def test_tuning_assistant_calls_astA_api_with_detailed_report_fallbacks():
+    view = (ROOT / "static/js/extensions/tuning_assistant.js").read_text(encoding="utf-8")
+
+    assert "api\\/asta" in view
+    assert "source_db_id" in view
+    assert "source_db_link" not in view
+    assert "source_schema" not in view
+    assert "id=\"asta-source-id\"" not in view
+    assert "Endpoint 저장" not in view
+    assert "ASTA Analyze URL" not in view
+    assert "use_llm" in view
+    assert "detailed_report_markdown" in view
+    assert "pollRunProgress" in view
+    assert "id=\"asta-tuning-notes\"" in view
+    assert "tuning_context" in view
+    assert "user_notes" in view
+    assert "참고사항" in view
+    assert "tuning-spinner" in view
+    assert "현재 진행" in view
+    assert "원본 SQL Evidence 수집" in view
+    assert "원본 SQL 분석: 원본 SQL/XPLAN/metrics" not in view
+    assert "progress polling timeout" not in view
+    assert "const maxAttempts = 2400" in view
+    assert "진행 상태 확인 시간이 초과되었습니다" in view
+    assert "AI 분석이 종료되었습니다" in view
+    assert "const current = isOverallComplete ? null" in view
+    assert "!isOverallComplete &&" in view
+    assert "tuning-current-progress" in view
+    assert "steps.map((step)" not in view
+    assert "완료 단계" not in view
+    assert '["READY", "IDLE", "PENDING"].includes(overall)' in view
+
+
+
+
+def test_tuning_assistant_has_hidden_sql_only_llm_mode():
+    view = (ROOT / "static/js/extensions/tuning_assistant.js").read_text(encoding="utf-8")
+
+    assert "asta-sql-only-llm" in view
+    assert "Ctrl" not in view  # hidden feature is keyboard-only, not visible copy
+    assert "ctrlKey && event.altKey" in view
+    assert "llm-sql-only" in view
+    assert "SQL 텍스트만 LLM으로 전송 중" in view
+    assert "Oracle Database 기준으로 SQL 튜닝을 요청합니다." in view
+    assert "Oracle 옵티마이저 관점" in view
+    assert "SELECT/WITH 단일문" in view
+    assert "oracleSqlOnlyPrompt" in view
+    assert "user_prompt: oracleSqlOnlyPrompt" in view
+    assert "SQL_ONLY_LLM" in view
+    assert "FASTAPI_SQL_ONLY_LLM" not in view  # backend-only marker
+
+
+def test_tuning_assistant_progress_shows_total_elapsed_time():
+    view = (ROOT / "static/js/extensions/tuning_assistant.js").read_text(encoding="utf-8")
+
+    assert "function totalElapsedMs(progress, steps, isComplete)" in view
+    assert "elapsed_total_sec" in view
+    assert "progress?.created_at" in view
+    assert "전체 ${formatDuration(totalElapsed)}" in view
+    assert "tuning-current-total" in view
+    assert "현재 진행 단계와 전체 수행 시간을 표시합니다" in view
+
+
+def test_tuning_assistant_profiles_are_loaded_dynamically():
+    view = (ROOT / "static/js/extensions/tuning_assistant.js").read_text(encoding="utf-8")
+
+    assert "fetchJson(\"/api/asta/profiles\")" in view
+    assert "ASTA_GPT5_PROFILE" in view
+    assert "toUpperCase().startsWith(\"ASTA\")" in view
+    assert "const DEFAULT_AI_PROFILE = \"ASTA_GPT5_PROFILE\"" in view
+    assert "const preferredProfile = astaProfiles.find((profile) => profile.name === DEFAULT_AI_PROFILE)" in view
+    assert "profile.name === preferredProfile.name" in view
+    assert "profile.isDefault || profile.name === DEFAULT_AI_PROFILE" not in view
+
+
+def test_tuning_assistant_persists_detailed_error_in_result_panel():
+    view = (ROOT / "static/js/extensions/tuning_assistant.js").read_text(encoding="utf-8")
+
+    assert "renderError(result, err)" in view
+    assert "오류 상세" in view
+    assert "클립보드 복사" in view
+    assert "window.__astaLastError" in view
+    assert "err.payload" in view
+    assert "조회 endpoint" in view
+    assert "ASTA 오류 코드" in view
+
+
+def test_tuning_assistant_treats_ords_not_found_body_as_copyable_error():
+    view = (ROOT / "static/js/extensions/tuning_assistant.js").read_text(encoding="utf-8")
+
+    assert 'bodyStatus === "NOT_FOUND"' in view
+    assert 'errorCode === "RUN_NOT_FOUND"' in view
+    assert 'errorCode === "REPORT_NOT_FOUND"' in view
+    assert "err.queriedRunId = decodeURIComponent" in view
+
+
+def test_tuning_assistant_sample_sqls_include_complex_cases():
+    view = (ROOT / "static/js/extensions/tuning_assistant.js").read_text(encoding="utf-8")
+
+    assert "ASTA_SAMPLE_SQLS" in view
+    assert "ASTA_UI_MALICIOUS_01" in view
+    assert "ASTA_UI_MALICIOUS_10" in view
+    assert "악성:" in view
+    assert "DEVDO.SALES s" in view
+    assert "ASKORACLE.TIMES" not in view
+
+
+
+def test_tuning_assistant_result_report_has_large_scroll_container():
+    view = (ROOT / "static/js/extensions/tuning_assistant.js").read_text(encoding="utf-8")
+
+    assert "tuning-report-scroll" in view
+    assert "asta-report-scroll" in view
+    assert "asta-report-bottom" in view
+    assert "scrollTo({ top: reportScroller.scrollHeight" in view
+    assert "height:min(74vh, 900px)" in view
+    assert "resize:vertical" in view
+    assert "target.scrollIntoView" in view
+
+
+def test_tuning_assistant_sample_sqls_are_intentionally_inefficient():
+    view = (ROOT / "static/js/extensions/tuning_assistant.js").read_text(encoding="utf-8")
+
+    assert view.count("id: \"asta-ui-") == 10
+    assert "ASTA_UI_MALICIOUS_01_repeat_sales_8_scans" in view
+    assert "ASTA_UI_MALICIOUS_03_bad_index_hint_function_predicate" in view
+    assert "ASTA_UI_MALICIOUS_10_forced_nested_loops_bad_index" in view
+    assert "/*+ index(s SALES_PROMO_BIX)" in view
+    assert "/*+ ordered use_nl(s) use_nl(k) index(s SALES_PROMO_BIX)" in view
+    assert "join DEVDO.SALES s2" in view
+    assert "join DEVDO.SALES s3" in view
+    assert "join DEVDO.SALES s4" in view
+    assert "select /*+ materialize */" in view
+    assert "to_char(t.calendar_year)" in view
+    assert "nvl(s.channel_id,-1)" in view
+
+def test_asta_error_toast_stays_visible_longer():
+    view = (ROOT / "static/js/extensions/tuning_assistant.js").read_text(encoding="utf-8")
+
+    assert "ASTA 호출 실패: " in view
+    assert "15000" in view
+
+
+def test_tuning_assistant_keeps_async_runs_running_until_poll_completion():
+    view = (ROOT / "static/js/extensions/tuning_assistant.js").read_text(encoding="utf-8")
+
+    running_check = 'data?.run_id && ["RUNNING", "QUEUED"].includes(String(data?.status || "").toUpperCase())'
+    assert running_check in view
+    async_pos = view.index(running_check)
+    poll_pos = view.index("await pollRunProgress(baseUrl, data.run_id, progressTarget, result)")
+    premature_progress_pos = view.index("finalProgress = await fetchJson")
+    assert async_pos < poll_pos < premature_progress_pos
+    assert "sqltune_time_limit" in view
+    assert "run_advisor: true" in view
+    assert "use_sqltune: true" in view
+    assert "hasAuthoritativeInlineProgress" in view
+    assert "SOURCE_DIRECT_FALLBACK" in view
+    assert "CONTROLLED_FALLBACK" in view
+    assert "data?.run_id && !hasAuthoritativeInlineProgress" in view
+    assert "sqltune_timeout_seconds" not in view
+
+
+def test_tuning_assistant_has_iphone_mini_portrait_and_landscape_css():
+    view = (ROOT / "static/js/extensions/tuning_assistant.js").read_text(encoding="utf-8")
+    layout = (ROOT / "static/css/layout.css").read_text(encoding="utf-8")
+
+    assert "max-width: 390px" in view
+    assert "orientation: portrait" in view
+    assert "max-height: 430px" in view
+    assert "orientation: landscape" in view
+    assert "100dvh" in view
+    assert "contain:paint" not in view
+    assert ".tuning-line-numbers { display:none; }" in view
+    assert "height: 60dvh" in view
+    assert "order:-1" not in view
+    assert "grid-template-columns: 1fr; gap: 8px;" in view
+    assert "max-width: 390px" in layout
+    assert "max-height: 430px" in layout
+
+
+def test_global_side_nav_can_be_collapsed():
+    index = (ROOT / "static/index.html").read_text(encoding="utf-8")
+    app = (ROOT / "static/js/app.js").read_text(encoding="utf-8")
+    layout = (ROOT / "static/css/layout.css").read_text(encoding="utf-8")
+
+    assert "id=\"nav-toggle\"" in index
+    assert "NAV_COLLAPSED_KEY" in app
+    assert "setNavCollapsed" in app
+    assert "nav-collapsed" in layout
+
+
+def test_tuning_assistant_logs_when_final_ords_progress_would_override_inline_fallback():
+    view = (ROOT / "static/js/extensions/tuning_assistant.js").read_text(encoding="utf-8")
+
+    assert "hasAuthoritativeInlineProgress" in view
+    assert "console.warn" in view
+    assert "asta-progress-stale-ords-suppressed" in view

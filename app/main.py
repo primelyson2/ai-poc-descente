@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app import auth, db, deps
 from app.config import load_config
-from app.routers import agents, auth as auth_router, chat, databases, objects, profiles
+from app.routers import agents, asta_proxy, auth as auth_router, chat, databases, objects, profiles
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s — %(message)s")
 
@@ -46,7 +46,7 @@ _CSP = (
     "style-src 'self' 'unsafe-inline'; "
     "img-src 'self' data:; "
     "font-src 'self'; "
-    "connect-src 'self'; "
+    "connect-src 'self' https://YH0OLYBN5PQCE4N-DEVDOADB.adb.ap-seoul-1.oraclecloudapps.com; "
     "frame-ancestors 'none'; "
     "base-uri 'none'; "
     "form-action 'self'; "
@@ -75,9 +75,10 @@ def _harden(request: Request, response) -> None:
         response.headers.setdefault(
             "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
         )
-    # 민감 데이터가 담기는 API 응답은 캐시 금지.
-    if request.url.path.startswith("/api/"):
-        response.headers["Cache-Control"] = "no-store"
+    # 민감 데이터가 담기는 API 응답과 자주 바뀌는 UI/JS는 캐시 금지.
+    if request.url.path.startswith("/api/") or request.url.path == "/" or request.url.path.startswith("/static/js/"):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
 
 
 @app.middleware("http")
@@ -110,6 +111,7 @@ app.include_router(profiles.router, prefix="/api")
 app.include_router(agents.router, prefix="/api")
 app.include_router(chat.router, prefix="/api")
 app.include_router(objects.router, prefix="/api")
+app.include_router(asta_proxy.router, prefix="/api")
 
 
 @app.get("/")

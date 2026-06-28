@@ -7,12 +7,19 @@
     profiles:  { render: () => window.Views.profileTest(),    label: "AI Profile Test" },
     agents:    { render: () => window.Views.agentTest(),      label: "AI Agent Team Test" },
     chat:      { render: () => window.Views.aiChat(),         label: "AI Chat" },
+    api:       { render: () => window.Views.apiAdmin(),       label: "API관리" },
     databases: { render: () => window.Views.databaseAdmin(),  label: "Database 관리" },
     access:    { render: () => window.Views.accessAdmin(),    label: "Tool관리" },
   };
+  Object.assign(ROUTES, window.AppExtensions?.routes || {});
   // DB 비의존 라우트 — 접속 가능한 DB 가 없어도 진입 가능(등록/복구/키 관리 경로).
-  const DB_INDEPENDENT = new Set(["databases", "access"]);
+  // 'api' 는 현재 서버 로직 없는 프런트 전용 테스트 버전이라 DB 없이도 진입 가능.
+  const DB_INDEPENDENT = new Set(["databases", "access", "api"]);
+  Object.entries(window.AppExtensions?.routes || {}).forEach(([route, config]) => {
+    if (config?.dbIndependent) DB_INDEPENDENT.add(route);
+  });
   const DEFAULT_ROUTE = "profiles";
+  const NAV_COLLAPSED_KEY = "oadt2.nav.collapsed";
 
   function currentRoute() {
     const hash = (window.location.hash || "").replace(/^#\/?/, "");
@@ -22,6 +29,32 @@
   function setActiveNav(route) {
     document.querySelectorAll(".nav-item").forEach((el) => {
       el.classList.toggle("active", el.dataset.route === route);
+    });
+  }
+
+  function setNavCollapsed(collapsed, persist = true) {
+    const shell = document.querySelector(".app-shell");
+    const button = document.getElementById("nav-toggle");
+    if (!shell) return;
+    shell.classList.toggle("nav-collapsed", Boolean(collapsed));
+    if (button) {
+      button.setAttribute("aria-expanded", String(!collapsed));
+      button.setAttribute("aria-label", collapsed ? "메뉴 펼치기" : "메뉴 접기");
+      button.title = collapsed ? "메뉴 펼치기" : "메뉴 접기";
+    }
+    if (persist) localStorage.setItem(NAV_COLLAPSED_KEY, collapsed ? "1" : "0");
+  }
+
+  function initNavToggle() {
+    const saved = localStorage.getItem(NAV_COLLAPSED_KEY);
+    const shouldCollapse = saved == null ? window.matchMedia("(max-width: 720px)").matches : saved === "1";
+    setNavCollapsed(shouldCollapse, saved != null);
+    document.addEventListener("click", (event) => {
+      const button = event.target?.closest?.("#nav-toggle");
+      if (!button) return;
+      event.preventDefault();
+      const collapsed = document.querySelector(".app-shell")?.classList.contains("nav-collapsed");
+      setNavCollapsed(!collapsed);
     });
   }
 
@@ -83,6 +116,7 @@
   }
 
   function init() {
+    initNavToggle();
     document.querySelectorAll(".nav-item").forEach((el) => {
       el.addEventListener("click", () => {
         window.location.hash = `#/${el.dataset.route}`;

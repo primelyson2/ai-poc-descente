@@ -8,6 +8,10 @@
     "header header"
     "sidenav main";
   height: 100vh;
+  transition: grid-template-columns .18s ease;
+}
+.app-shell.nav-collapsed {
+  grid-template-columns: 0 1fr;
 }
 
 /* --- Header --- */
@@ -27,6 +31,27 @@
   font-weight: 600;
   font-size: var(--fs-lg);
   color: var(--text);
+  min-width: 0;
+}
+.nav-toggle {
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+}
+.nav-toggle:hover { background: var(--surface-hover); }
+.app-shell.nav-collapsed .nav-toggle {
+  background: var(--primary-light);
+  color: var(--primary);
+  border-color: var(--primary-light);
 }
 .app-header .brand-mark {
   width: 28px; height: 28px;
@@ -46,10 +71,22 @@
 /* --- Side nav --- */
 .app-sidenav {
   grid-area: sidenav;
+  width: 240px;
+  min-width: 240px;
   background: var(--surface);
   border-right: 1px solid var(--border);
   padding: var(--space-4) 0;
   overflow-y: auto;
+  overflow-x: hidden;
+  transition: transform .18s ease, opacity .18s ease, border-color .18s ease;
+}
+.app-shell.nav-collapsed .app-sidenav {
+  width: 0;
+  min-width: 0;
+  transform: translateX(-100%);
+  opacity: 0;
+  pointer-events: none;
+  border-right-color: transparent;
 }
 .nav-item {
   display: flex;
@@ -102,6 +139,36 @@
 }
 @media (max-width: 720px) {
   .db-form { grid-template-columns: 1fr; }
+  .app-shell { grid-template-rows: 52px 1fr; grid-template-columns: 220px 1fr; }
+  .app-sidenav { width: 220px; min-width: 220px; }
+  .app-shell.nav-collapsed { grid-template-columns: 0 1fr; }
+  .app-header { min-width: 0; padding: 0 var(--space-2); gap: var(--space-2); }
+  .app-header .brand { gap: var(--space-2); font-size: var(--fs-base); min-width: 0; }
+  .app-header .brand span { max-width: 38vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .app-header .db-selector { min-width: 0; gap: 4px; }
+  .app-header .db-selector label { display: none; }
+  .app-header .db-selector select { min-width: 96px; max-width: 34vw; }
+  .app-main { padding: var(--space-3); }
+}
+@media (max-width: 390px) and (orientation: portrait) {
+  .app-shell { grid-template-rows: 50px 1fr; grid-template-columns: 210px 1fr; }
+  .app-sidenav { width: 210px; min-width: 210px; }
+  .nav-toggle { width: 32px; height: 32px; }
+  .app-header .brand-mark { width: 24px; height: 24px; border-radius: 5px; font-size: 13px; }
+  .app-header .brand span { max-width: 31vw; font-size: 13px; }
+  .app-header .db-selector select { min-width: 86px; max-width: 32vw; font-size: 12px; }
+  .app-header .db-selector .btn-mini { padding-inline: 6px; }
+  .app-main { padding: 10px; }
+}
+@media (max-height: 430px) and (orientation: landscape) {
+  .app-shell { grid-template-rows: 46px 1fr; grid-template-columns: 200px 1fr; }
+  .app-sidenav { width: 200px; min-width: 200px; padding: 6px 0; }
+  .nav-item { padding-top: 7px; padding-bottom: 7px; font-size: 13px; }
+  .nav-sep { margin-block: 6px; }
+  .app-header { padding-inline: 8px; }
+  .app-header .brand span { max-width: 42vw; font-size: 13px; }
+  .app-header .db-selector select { max-width: 28vw; min-width: 90px; font-size: 12px; }
+  .app-main { padding: 8px; }
 }
 
 /* --- Main --- */

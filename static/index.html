@@ -5,13 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Oracle AI Database Test Tool</title>
   <link rel="stylesheet" href="/static/css/redwood.css" />
-  <link rel="stylesheet" href="/static/css/layout.css" />
+  <link rel="stylesheet" href="/static/css/layout.css?v=20260625_1842" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" defer></script>
 </head>
 <body>
   <div class="app-shell">
     <header class="app-header">
       <div class="brand">
+        <button class="nav-toggle" id="nav-toggle" type="button" aria-label="메뉴 접기" aria-expanded="true" title="메뉴 접기/펼치기">☰</button>
         <div class="brand-mark">O</div>
         <span>Oracle AI Database Test Tool</span>
       </div>
@@ -34,6 +36,9 @@
       </div>
       <div class="nav-item" data-route="chat">
         <span>AI Chat</span>
+      </div>
+      <div class="nav-item" data-route="api">
+        <span>API관리(개발중)</span>
       </div>
       <div class="nav-sep"></div>
       <div class="nav-item" data-route="databases">
@@ -63,8 +68,11 @@
   <script src="/static/js/views/profile_test.js"></script>
   <script src="/static/js/views/agent_test.js"></script>
   <script src="/static/js/views/ai_chat.js"></script>
+  <script src="/static/js/views/api_admin.js"></script>
   <script src="/static/js/views/database_admin.js"></script>
   <script src="/static/js/views/access_admin.js"></script>
-  <script src="/static/js/app.js"></script>
+  <script src="/static/js/extensions/tuning_assistant.js?v=20260628_0002"></script>
+  <script src="/static/js/extensions/app_extensions.js"></script>
+  <script src="/static/js/app.js?v=20260625_1805"></script>
 </body>
 </html>

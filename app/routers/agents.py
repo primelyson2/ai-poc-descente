@@ -410,6 +410,59 @@ async def suggest_attribute(payload: dict, database: str = Depends(current_db)) 
 
 
 # ====================================================================
+# Thinking 과정 분석 — Team/Agent/Task/Tool 구성 + 실행 트레이스(Thinking)를
+#   SELECT AI(chat) 로 분석. 오류가 있으면 그 원인까지 진단한다.
+# ====================================================================
+_ANALYZE_MAXLEN = 12000
+
+
+@router.post("/analyze-thinking")
+async def analyze_thinking(payload: dict, database: str = Depends(current_db)) -> dict:
+    team_name = (payload.get("team_name") or "").strip()
+    context = (payload.get("context") or "").strip()
+    thinking = (payload.get("thinking") or "").strip()
+    if not thinking:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "분석할 Thinking 과정이 없습니다. 먼저 [실행] 하세요."})
+    if len(thinking) > _ANALYZE_MAXLEN:
+        thinking = thinking[:_ANALYZE_MAXLEN] + "\n…(생략)"
+    if len(context) > _ANALYZE_MAXLEN:
+        context = context[:_ANALYZE_MAXLEN] + "\n…(생략)"
+
+    profile_name = await _pick_profile(
+        database, (payload.get("profile_name") or "").strip() or None)
+    if not profile_name:
+        raise HTTPException(status_code=400, detail={"error": "사용 가능한 AI Profile 이 없습니다"})
+
+    context_block = f"\n\n[팀 구성(Team / Agent / Task / Tool)]\n{context}" if context else ""
+    prompt = (
+        "당신은 Oracle AI Agent Team 의 실행 과정을 분석하는 전문가입니다.\n"
+        f"아래는 팀 '{team_name or '(미상)'}' 의 구성 정보와 실제 실행 과정(Thinking) 입니다.\n"
+        "다음 순서로 한국어로 분석해 주세요.\n"
+        "1. 실행 과정 요약: 각 단계에서 어떤 Agent/Task/Tool 이 무엇을 시도했는지 단계별로 정리.\n"
+        "2. 평가: 팀 구성(역할/지시문/도구)에 비추어 의도대로 동작했는지, 불필요·비효율 단계가 있었는지.\n"
+        "3. 오류 분석: ORA-오류, 실패한 Tool 호출, 잘못된 SQL/입력 등 문제가 있으면 그 **원인**을 "
+        "구체적으로 진단하고 수정 방향을 제시하세요. 오류가 없으면 '발견된 오류 없음' 이라고 명시.\n"
+        "4. 개선 제안: 팀 구성이나 프롬프트를 어떻게 바꾸면 더 좋아질지 핵심만.\n"
+        "마크다운 제목/목록을 사용해 가독성 있게 작성하세요."
+        f"{context_block}\n\n"
+        f"[실행 과정(Thinking)]\n{thinking}"
+    )
+
+    try:
+        row = await db.fetch_one(database, _GENERATE_CHAT_SQL, p=prompt, pn=profile_name)
+    except Exception as exc:
+        msg = _first_line(exc)
+        logger.warning("analyze-thinking GENERATE failed: db=%s team=%s: %s",
+                       database, team_name, msg)
+        raise HTTPException(status_code=400, detail={"error": msg})
+
+    analysis = ((row or {}).get("r") or "").strip()
+    return {"team_name": team_name, "profile_name": profile_name, "analysis": analysis}
+
+
+# ====================================================================
 # 실행
 # ====================================================================
 

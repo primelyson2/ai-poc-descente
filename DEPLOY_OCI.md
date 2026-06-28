@@ -232,3 +232,68 @@ LB/리스너/백엔드는 Terraform 이 만들지만, 다음 2가지는 **반드
 - `cloud-init.tftpl` 템플릿 치환 변수 → `repo_url` / `repo_branch` / `app_port` 3개만(나머지 bash `$VAR` 는 보존). 두 폴더 파일 내용 동일(`diff` 확인).
 - `schema.yaml` → YAML 파싱 정상 — `deploy/https` 변수 21·그룹 6, `deploy/http` 변수 14·그룹 5(HTTPS 그룹 제거)
 - HTTPS Load Balancer(443 리스너=OCI 인증서 OCID) — `deploy/https` 에만 존재, `terraform validate` 로 `certificate_ids`/`ssl_configuration` 필드 검증됨. `deploy/http` 에는 LB/인증서 리소스·변수 없음(validate 통과).
+
+---
+
+## 9. ASTA / AI SQL Tuning Assistant 운영 메모
+
+OADT2의 **AI SQL Tuning Assistant(ASTA)** 는 브라우저에서 외부 ORDS endpoint를 직접 호출하지 않고, OADT2 FastAPI의 same-origin `/api/asta/*` 라우터를 통해 ADB ORDS를 호출합니다. FastAPI는 thin proxy이며, SQL 실행/XPLAN/metrics/SQLTUNE/Vector/LLM/report canonical 생성은 ADB/Source PL/SQL 경로에서 수행됩니다.
+
+```text
+Browser
+  → OADT2 FastAPI /api/asta/*        # ORDS_PROXY_ONLY
+  → ADB ORDS /ords/asta/*            # asta.v1
+  → ADB ASTA_PKG                     # orchestration
+  → Source ASTA_SOURCE_PKG via DB Link # source evidence
+```
+
+| Endpoint | 역할 | 내부 호출 |
+|---|---|---|
+| `GET /api/asta/profiles` | ASTA DBMS_CLOUD_AI profile 목록 | ORDS `/profiles` → `ASTA_PKG.LIST_PROFILES` |
+| `POST /api/asta/analyze` | SQL 튜닝 분석 실행 | ORDS `/analyze` → `ASTA_PKG.ANALYZE_SQL` |
+| `GET /api/asta/runs/{run_id}` | 저장된 run 전체 JSON 조회 | ORDS `/runs/:run_id` → `ASTA_PKG.GET_RUN` |
+| `GET /api/asta/runs/{run_id}/progress` | 수행 이력 조회 | ORDS `/runs/:run_id/progress` → `ASTA_PKG.GET_PROGRESS` |
+| `GET /api/asta/runs/{run_id}/report` | Markdown 결과서 조회 | ORDS `/runs/:run_id/report` → `ASTA_PKG.GET_REPORT` |
+
+DB별 ASTA 설정은 `config.yaml`의 `asta` 블록에서 관리합니다.
+
+```yaml
+asta:
+  ords_base_url: "https://<adb-ords-host>/ords/asta"
+  analyze_path: "/analyze"
+  profiles_path: "/profiles"
+  timeout_seconds: 2100
+```
+
+중요 운영 원칙:
+
+```text
+- Python/FastAPI에서 Source DB 직접 접속을 하지 않습니다.
+- Python subprocess로 XPLAN/SQLTUNE을 수집하지 않습니다.
+- Source DB 실제 evidence는 ADB → allowlisted DB Link → Source helper package 경로를 사용합니다.
+- DB Link 경로에서 실패한 단계는 FAILED/SKIPPED로 표시하고 source-direct fallback을 사용하지 않습니다.
+- credential/secret/wallet/private key 값은 문서나 repository에 기록하지 않습니다.
+```
+
+배포 후 확인:
+
+```bash
+curl -sS http://127.0.0.1:8000/api/asta/profiles | python3 -m json.tool
+```
+
+Smoke 예시:
+
+```bash
+curl -sS http://127.0.0.1:8000/api/asta/analyze \
+  -H 'Content-Type: application/json' \
+  -d '{"sql":"select /* smoke */ 1 from dual","use_llm":false,"run_advisor":false,"fetch_rows":20}' \
+  | python3 -m json.tool
+```
+
+자세한 문서:
+
+```text
+docs/README.md
+docs/AI_SQL_TUNING_ASSISTANT_MANUAL.md
+docs/OADT2_ASTA_ARCHITECTURE.md
+```

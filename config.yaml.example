@@ -30,6 +30,11 @@ databases:
     wallet_location: ./wallets/adb-dev
     wallet_password: "your-wallet-password"
     config_dir: ./wallets/adb-dev
+    asta:
+      ords_base_url: "https://<adb-ords-host>/ords/asta"
+      analyze_path: "/analyze"
+      profiles_path: "/profiles"
+      timeout_seconds: 2100
 
   - name: ADB-PROD
     label: 운영 (ADB)
@@ -39,3 +44,8 @@ databases:
     wallet_location: ./wallets/adb-prod
     wallet_password: "your-wallet-password"
     config_dir: ./wallets/adb-prod
+    asta:
+      ords_base_url: "https://<adb-ords-host>/ords/asta"
+      analyze_path: "/analyze"
+      profiles_path: "/profiles"
+      timeout_seconds: 2100

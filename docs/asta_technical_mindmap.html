@@ -1,0 +1,398 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ASTA Technical Mindmap</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 24px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f8fafc;
+      color: #0f172a;
+    }
+    header {
+      margin-bottom: 18px;
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 24px;
+    }
+    .hint {
+      color: #64748b;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+    .toolbar {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin: 16px 0;
+    }
+    button {
+      border: 1px solid #cbd5e1;
+      background: white;
+      border-radius: 10px;
+      padding: 9px 12px;
+      cursor: pointer;
+      color: #0f172a;
+    }
+    button:hover {
+      background: #eff6ff;
+    }
+    #canvas {
+      transform-origin: top left;
+      transition: transform 0.12s ease;
+    }
+    .wrap {
+      background: white;
+      border: 1px solid #e2e8f0;
+      border-radius: 18px;
+      padding: 18px;
+      overflow: auto;
+      min-height: 75vh;
+      box-shadow: 0 14px 35px rgba(15, 23, 42, 0.08);
+    }
+    .error {
+      white-space: pre-wrap;
+      color: #b91c1c;
+      background: #fee2e2;
+      border: 1px solid #fecaca;
+      padding: 12px;
+      border-radius: 12px;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>ASTA Technical Mindmap</h1>
+    <div class="hint">
+      기술 상세 마인드맵입니다. Mermaid mindmap 렌더링이 VS Code Preview에서 안 될 때 이 HTML을 브라우저로 여세요.<br />
+      파일: <code>docs/asta_technical_mindmap.html</code>
+    </div>
+  </header>
+
+  <div class="toolbar">
+    <button type="button" onclick="zoom(0.1)">확대</button>
+    <button type="button" onclick="zoom(-0.1)">축소</button>
+    <button type="button" onclick="resetZoom()">원래 크기</button>
+  </div>
+
+  <div class="wrap">
+    <pre id="canvas" class="mermaid">
+mindmap
+  root((ASTA AI SQL Tuning Assistant))
+    Frontend Static Extension
+      static/index.html
+        extension script load
+          static/js/extensions/tuning_assistant.js
+          static/js/extensions/app_extensions.js
+      static/js/extensions/app_extensions.js
+        window.AppExtensions.routes
+          tuning route 등록
+          menu item 삽입
+      static/js/extensions/tuning_assistant.js
+        window.Views.tuningAssistant
+          ASTA 화면 렌더링
+          SQL editor
+          LLM 참고사항 textarea
+          AI 분석 실행 button
+          현재 진행 compact badge
+          보고서 다운로드
+        DEFAULT_STEPS
+          REQUEST_RECEIVED
+          ORDS_DISPATCH
+          SQL_GUARD
+          BEFORE_EVIDENCE
+          SQL_TUNING_ADVISOR
+          VECTOR_KB
+          LLM_REWRITE
+          AFTER_EVIDENCE
+          LLM_FINAL_REVIEW
+          FINAL_REPORT
+          VECTOR_SAVE
+        주요 JS 함수
+          formatSql
+          buildAnalyzeUrl
+          buildBaseUrl
+          fetchJson
+          pollRunProgress
+          renderProgressStack
+          renderResult
+          downloadText
+    Python FastAPI Layer
+      app/main.py
+        FastAPI app 생성
+        router include
+        static files serving
+      app/routers/asta_proxy.py
+        analyze
+          proxy run_id 즉시 생성
+          UI에 RUNNING 즉시 반환
+          ORDS analyze background task 등록
+          payload에 run_id 주입
+        _run_ords_analyze_background
+          ORDS analyze 호출
+          async run state 저장
+          audit event 기록
+        get_run_progress
+          ADB ORDS progress 우선 조회
+          ADB row 없으면 proxy local placeholder
+        get_run_report
+          ADB ORDS report 조회
+          async final result fallback
+        get_run
+          full run JSON 조회
+        list_profiles
+          ASTA profile 목록 proxy
+        _post_json_to_ords
+          urllib ORDS POST
+        _get_json_from_ords
+          ORDS GET wrapper
+      app/asta_audit.py
+        new_request_id
+        write_event
+        write_run_snapshot
+        read_run_snapshot
+        result_fields
+      app/config.py
+        AppConfig
+        DatabaseConfig
+        asta.ords_base_url
+        asta.analyze_path
+        asta.timeout_seconds
+      Python 역할
+        same-origin proxy
+        async job orchestration
+        audit and snapshot
+        deploy scripts
+        smoke and tests
+        SQL tuning logic은 ADB PL/SQL에서 수행
+    ORDS Layer
+      db/ords/asta_ords_module.sql
+        POST /analyze
+          asta_pkg.analyze_sql
+        GET /runs/:run_id
+          asta_pkg.get_run
+        GET /runs/:run_id/progress
+          asta_pkg.get_progress
+        GET /runs/:run_id/report
+          asta_pkg.get_report
+        GET /profiles
+          asta_pkg.list_profiles
+      endpoints
+        /api/asta/analyze via FastAPI
+        /ords/admin/asta/analyze via ORDS
+    ADB Repository Tables
+      db/asta/001_asta_repository.sql
+        ASTA_RUNS
+          run_id
+          status
+          input_sql
+          tuned_sql
+          detailed_report_md
+          response_json
+        ASTA_RUN_PROGRESS
+          run_id seq
+          code label status detail elapsed_ms
+      db/asta/002_asta_source_connections.sql
+        ASTA_SOURCE_CONNECTIONS
+          source_db_id
+          db_link_name
+          source_schema
+          enabled_yn
+      db/asta/004_asta_vector_tables.sql
+        ASTA_TUNING_CASES
+        ASTA_TUNING_CASE_CHUNKS
+    ADB Main Orchestration
+      db/adb/asta_pkg.sql
+        analyze_sql
+          parse payload
+          normalize_run_id
+          ASTA_RUNS insert RUNNING early COMMIT
+          SQL_GUARD
+          BEFORE_EVIDENCE
+          SQL_TUNING_ADVISOR
+          VECTOR_KB
+          LLM_REWRITE
+          AFTER_EVIDENCE
+          build_comparison_json
+          LLM_FINAL_REVIEW
+          FINAL_REPORT
+          VECTOR_SAVE
+          build_response_json
+          ASTA_RUNS update final
+        record_progress
+          autonomous transaction
+          RUNNING insert update
+          DONE FAILED SKIPPED completion
+        build_progress_array_json
+        get_progress
+        get_run
+        get_report
+        list_profiles
+    ADB SQL Guard
+      db/adb/asta_sql_guard_pkg.sql
+        assert_safe_select
+          SELECT WITH 단일문만 허용
+          DML DDL PL/SQL 차단
+        extract_candidate_sql
+          LLM candidate_sql 추출
+          safe select 검증
+        inspect_sql
+    ADB Source Bridge
+      db/adb/asta_source_bridge_pkg.sql
+        get_connection_json
+          ASTA_SOURCE_CONNECTIONS 조회
+        run_source_evidence
+          DB Link로 Source package 호출
+          source_db_id sql run_id fetch_rows run_advisor
+    Source DB Evidence Package
+      db/source/asta_source_pkg.sql
+        run_evidence
+          Source SQL 실행
+          row_count output sample
+          v$sql metrics
+          SQL_ID child cursor
+          DBMS_XPLAN.DISPLAY_CURSOR
+          object_info 수집
+          optional SQL Tuning Advisor
+        collect_object_info
+          table stats
+          column stats
+          index stats
+          index columns
+    ADB LLM Package
+      db/adb/asta_llm_pkg.sql
+        build_tuning_prompt
+          full SQL CLOB
+          compact_source_evidence
+          compact_vector_evidence
+          tuning_context.user_notes
+          object_info_excerpt
+        generate_tuning
+          DBMS_CLOUD_AI.GENERATE
+          candidate_sql extraction
+          tuning_context artifact 보존
+        compact_before_after
+          comparison metrics
+          user_notes
+          XPLAN policy
+        final_review
+          final report markdown JSON
+          raw XPLAN 재작성 금지
+    ADB Report Package
+      db/adb/asta_report_pkg.sql
+        build_report
+          final_review 우선
+          fallback deterministic report
+          user context section 보정
+          XPLAN 원문 append
+          object metadata append
+        final_review_report_markdown
+          JSON report_markdown 추출
+          malformed guard
+        enforce_user_context_section
+          user_notes 직접 출력
+        append_xplan_raw_sections
+          튜닝 전 XPLAN 원문
+          튜닝 후 XPLAN 원문
+        append_object_metadata_section
+          table_stats
+          columns
+          indexes
+        build_response_json
+          detailed_report_markdown
+          runtime_evidence
+          after_evidence
+          comparison
+          artifacts
+    ADB Vector Package
+      db/adb/asta_vector_pkg.sql
+        search_similar_cases
+          SQL fingerprint 유사 사례 검색
+        save_case
+          report 저장
+          ASTA_TUNING_CASES
+          ASTA_TUNING_CASE_CHUNKS
+        chunk_clob
+        sql_fingerprint
+    Deployment Python Scripts
+      tools/asta_deploy_adb.py
+        ADB packages compile
+        repository tables ensure
+        source connections upsert
+        ORDS module install
+        object VALID 확인
+      tools/asta_deploy_source.py
+        Source package compile
+      tools/run_asta_10_sqls.py
+        sample SQL batch run
+      tools/asta_smoke_adb.py
+        ADB smoke test
+    Tests
+      tests/test_tuning_assistant_static.py
+      tests/test_asta_ords_proxy.py
+      tests/test_asta_adb_ords_static_contracts.py
+      tests/test_asta_ords_migration_contract.py
+    Runtime Data Flow
+      UI
+        SQL and user_notes
+      FastAPI Proxy
+        run_id and background ORDS call
+      ORDS
+        asta_pkg.analyze_sql
+      ADB
+        progress and orchestration
+      Source DB
+        metrics XPLAN object stats
+      LLM
+        rewrite and final review
+      Report
+        Markdown raw XPLAN stats
+      UI
+        progress polling and download
+    Security Boundary Rules
+      Source DB direct connection prohibited
+      FastAPI is ORDS proxy only
+      ADB to Source via DB Link helper
+      SQL Guard SELECT WITH only
+      no DDL DML PL/SQL candidate
+      LLM cannot invent metrics
+      XPLAN from artifact not LLM
+      equivalence evidence wins
+    </pre>
+  </div>
+
+  <script type="module">
+    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: 'default',
+      securityLevel: 'loose',
+      mindmap: {
+        padding: 18,
+        maxNodeWidth: 260
+      }
+    });
+    window.mermaid = mermaid;
+  </script>
+  <script>
+    let scale = 1;
+    function applyZoom() {
+      document.getElementById('canvas').style.transform = `scale(${scale})`;
+    }
+    function zoom(delta) {
+      scale = Math.max(0.35, Math.min(2.5, scale + delta));
+      applyZoom();
+    }
+    function resetZoom() {
+      scale = 1;
+      applyZoom();
+    }
+    window.zoom = zoom;
+    window.resetZoom = resetZoom;
+  </script>
+</body>
+</html>

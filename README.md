@@ -71,6 +71,19 @@ Oracle Autonomous Database 23ai 의 **SELECT AI** (`DBMS_CLOUD_AI.GENERATE`), **
 - 관리자가 접근 키와 관리자 이메일을 설정·관리하는 화면.
 - 구현·운영 세부는 별도 내부 문서 `SECURITY_INFO.md` 참조(저장소 미포함).
 
+### [확장 메뉴] AI SQL Tuning Assistant
+- OADT2의 독립 extension 화면으로, SQL을 입력하면 ADB ORDS `ASTA_PKG.ANALYZE_SQL`을 호출해 상세 SQL 튜닝 결과서를 생성합니다.
+- 브라우저는 외부 ORDS/ASTA 주소를 직접 호출하지 않고 OADT2 same-origin API를 사용합니다.
+  - `POST /api/asta/analyze` → ADB ORDS `ASTA_PKG.ANALYZE_SQL` 호출 결과 pass-through (Python-local SQL 실행 없음)
+  - `GET /api/asta/profiles` → ADB ORDS `ASTA_PKG.LIST_PROFILES` 호출 결과 pass-through
+- 사용자는 endpoint/source DB를 선택하지 않습니다. Source DB는 ADB의 `ASTA_SOURCE_CONNECTIONS` 허용 목록에서 조회됩니다.
+- ADB PL/SQL package(`ASTA_PKG`)가 SQL Guard, Source evidence 수집(DB Link → Source helper package), SQL Tuning Advisor, Vector KB 검색/저장, LLM 튜닝, 보고서 생성을 담당합니다.
+- Source BaseDB 실제 XPLAN/metrics는 Source helper package(`db/source/asta_source_pkg.sql`)를 ADB DB Link로 호출해 수집합니다.
+- 모바일에서는 SQL 입력창을 full-width로 표시하고, 수행 이력은 입력/실행 영역 아래에 표시합니다.
+- 상세 사용/운영 절차: [`docs/AI_SQL_TUNING_ASSISTANT_MANUAL.md`](docs/AI_SQL_TUNING_ASSISTANT_MANUAL.md)
+- 내부 API/Procedure/순서도: [`docs/OADT2_ASTA_ARCHITECTURE.md`](docs/OADT2_ASTA_ARCHITECTURE.md)
+- 문서 맵: [`docs/README.md`](docs/README.md)
+
 ---
 
 ## 2. 기술 스택
@@ -83,6 +96,7 @@ Oracle Autonomous Database 23ai 의 **SELECT AI** (`DBMS_CLOUD_AI.GENERATE`), **
 | DB 드라이버 | `python-oracledb` **Thin mode** + Wallet (mTLS, Instant Client 불필요) |
 | 다중 DB | `config.yaml` 의 `databases:` 리스트 + `X-Database` 헤더 |
 | 패키지 관리 | `uv` |
+| ASTA 연동 | ADB ORDS `ASTA_PKG.ANALYZE_SQL` — FastAPI는 same-origin thin proxy, Python-local SQL/XPLAN/LLM 실행 없음 |
 
 ---
 
@@ -118,6 +132,32 @@ uv sync
 uv run uvicorn app.main:app --reload --port 8000
 ```
 브라우저: <http://localhost:8000>
+
+### ASTA 실행 방식
+
+ASTA/SQL Tuning Assistant는 **ADB ORDS/PL/SQL** 경로로 실행됩니다.
+
+```text
+브라우저 → POST /api/asta/analyze
+         → FastAPI thin proxy (same-origin CORS 우회만 수행)
+         → ADB ORDS ASTA_PKG.ANALYZE_SQL
+         → Source BaseDB helper package via ADB DB Link
+```
+
+FastAPI `/api/asta/*` 라우터는 same-origin thin proxy 역할만 합니다. Python에서 SQL을 직접 실행하거나 XPLAN/metrics를 수집하거나 Vector/LLM/SQLTUNE 워크플로를 수행하지 않습니다.
+
+SQL Guard, Source evidence 수집(`ASTA_SOURCE_PKG.RUN_EVIDENCE` via DB Link), SQL Tuning Advisor, Vector KB, LLM 튜닝, 보고서 생성은 ADB PL/SQL package(`db/adb/asta_pkg.sql` 등)가 담당합니다.
+
+ADB package 설치 위치: `db/adb/`, Source helper 설치 위치: `db/source/`, ORDS module: `db/ords/`.
+
+> 비밀번호, credential secret, wallet, private key는 환경변수/문서/로그에 노출하지 않습니다.
+
+### 테스트
+```bash
+node --check static/js/app.js
+node --check static/js/extensions/tuning_assistant.js
+uv run --with pytest pytest -q
+```
 
 ### 포트 점유 시
 ```bash
@@ -272,17 +312,24 @@ project/   (= GitHub 리포 select-ai-test 루트)
 ├─ DEPLOY_OCI.md              # OCI RM 배포 상세 가이드
 ├─ deploy/                    # OCI RM 스택 (방식별 폴더 — RM Working directory 로 선택)
 │   ├─ http/                  # HTTP 변형 (LB/인증서 없음, 인스턴스 직접 :app_port)
-│   │   ├─ main.tf            #   provider/컴퓨트/이미지
-│   │   ├─ variables.tf       #   입력 변수 (LB/인증서 변수 없음)
-│   │   ├─ outputs.tf         #   app_url/public_ip/private_ip/ssh_command
-│   │   ├─ schema.yaml        #   변수 입력 UI (HTTPS 그룹 없음)
-│   │   └─ cloud-init.tftpl   #   부팅 부트스트랩(clone→uv sync→systemd)
 │   └─ https/                 # HTTPS 변형 (공용 LB + 인증서 OCID, TLS 종단)
-│       ├─ main.tf            #   provider/컴퓨트/이미지 + HTTPS Load Balancer
-│       ├─ variables.tf       #   입력 변수 (+ 인증서 OCID/HTTPS/LB)
-│       ├─ outputs.tf         #   https_url/load_balancer_ip/app_url/…
-│       ├─ schema.yaml        #   변수 입력 UI (HTTPS 그룹 포함)
-│       └─ cloud-init.tftpl   #   부팅 부트스트랩 (http 와 동일)
+├─ db/                        # ADB/Source DB PL/SQL/ORDS artifacts (production)
+│  ├─ asta/                   # DDL: asta_runs, asta_run_progress, asta_source_connections, vector KB
+│  │   ├─ 001_asta_repository.sql          # asta_runs + asta_run_progress (source_db_id included)
+│  │   ├─ 002_asta_source_connections.sql  # DB Link allowlist
+│  │   ├─ 003_asta_runs_source_db_id.sql   # Additive migration: source_db_id column
+│  │   └─ 004_asta_vector_tables.sql       # asta_tuning_cases + asta_tuning_case_chunks (Vector KB)
+│  ├─ adb/                    # ADB PL/SQL packages (install on ADB ASTA schema)
+│  │   ├─ asta_sql_guard_pkg.sql    # SQL guard: SELECT/WITH only, keyword/terminator check
+│  │   ├─ asta_source_bridge_pkg.sql# DB Link bridge to Source helper via allowlist
+│  │   ├─ asta_vector_pkg.sql       # Vector KB search/save facade
+│  │   ├─ asta_llm_pkg.sql          # DBMS_CLOUD_AI orchestration (tuning + final review)
+│  │   ├─ asta_report_pkg.sql       # Markdown/JSON response builder
+│  │   └─ asta_pkg.sql              # Main ANALYZE_SQL, LIST_PROFILES, GET_RUN, GET_REPORT
+│  ├─ ords/                   # ORDS module (install via ORDS-enabled ASTA schema)
+│  │   └─ asta_ords_module.sql      # analyze/profiles/runs/:id/progress/report handlers
+│  └─ source/                 # Source BaseDB helper (install on Source BaseDB only)
+│      └─ asta_source_pkg.sql       # run_evidence: XPLAN/metrics/SQLTUNE, JSON CLOB
 ├─ pyproject.toml             # uv 관리 의존성 (fastapi, oracledb, pyyaml, uvicorn, python-multipart)
 ├─ config.yaml.example        # 설정 샘플 — config.yaml 로 복사 후 작성
 ├─ config.yaml                # 실제 설정 (git ignored — 비밀 포함)
@@ -294,6 +341,7 @@ project/   (= GitHub 리포 select-ai-test 루트)
 │  ├─ db.py                   # 비동기 풀 dict + fetch_all/fetch_one/execute
 │  ├─ deps.py                 # current_db dependency (X-Database 헤더 검증)
 │  └─ routers/
+│     ├─ asta_proxy.py        # ASTA same-origin thin proxy → ADB ORDS (Python-local 실행 없음)
 │     ├─ databases.py         # 메뉴 4 — DB 목록/등록/수정/삭제/연결테스트 + Wallet zip 업로드
 │     ├─ profiles.py          # 메뉴 1 — Profile/Attributes/Benchmark + objects(stub→실DB)
 │     ├─ agents.py            # 메뉴 2 — Tree(batch)/Detail/Run/Timeline/SET_ATTRIBUTE
@@ -302,11 +350,16 @@ project/   (= GitHub 리포 select-ai-test 루트)
 │  ├─ index.html
 │  ├─ css/  (redwood.css, layout.css)
 │  └─ js/   (app.js, api.js, db_selector.js, views/*, components/*)
+│     └─ extensions/
+│        └─ tuning_assistant.js     # ASTA UI extension (passes ADB ORDS progress/report)
+├─ tests/                     # Static contract tests (no live DB required)
+│  ├─ test_asta_ords_migration_contract.py
+│  ├─ test_asta_adb_ords_static_contracts.py
+│  └─ …
 └─ scripts/
    ├─ install.sh              # 초기 설치 (uv + uv sync + 점검)
    ├─ run.sh                  # 서버 기동
    ├─ stop.sh                 # 서버 종료
-   ├─ deploy.sh               # 로컬 → VM rsync (비밀 제외)
    └─ oracle-ai-tool.service  # systemd unit 샘플
 ```
 

@@ -27,6 +27,7 @@ class DatabaseConfig:
     wallet_location: str
     wallet_password: str
     config_dir: str
+    asta: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "DatabaseConfig":
@@ -54,6 +55,7 @@ class DatabaseConfig:
             wallet_location=_abs(d.get("wallet_location")),
             wallet_password=d.get("wallet_password", "") or "",
             config_dir=_abs(d.get("config_dir") or d.get("wallet_location")),
+            asta=d.get("asta") or {},
         )
 
 
