@@ -31,6 +31,43 @@ END;
 /
 ```
 
+## SELECT AI 데이터 접근 제어 (Data Access)
+
+SELECT AI 가 **실제 테이블 데이터에 접근**하는 것을 DB 전체 수준에서 켜고/끌 수 있습니다.
+ADMIN(관리자) 권한으로만 실행 가능하며, **세션 단위가 아니라 해당 DB 전체 사용자**에게 적용됩니다.
+
+```sql
+-- 데이터 접근 허용 (기본값) — narrate / runsql / RAG / 합성데이터 생성 모두 사용 가능
+BEGIN
+    DBMS_CLOUD_AI.ENABLE_DATA_ACCESS();
+END;
+/
+
+-- 데이터 접근 차단 — 메타데이터를 넘어서는 실데이터 접근을 막음
+BEGIN
+    DBMS_CLOUD_AI.DISABLE_DATA_ACCESS();
+END;
+/
+```
+
+- **기본 상태는 ENABLE**(데이터 접근 허용). 아무 설정도 안 했으면 켜져 있습니다.
+- `DISABLE_DATA_ACCESS()` 는 **SELECT AI 가 실제 데이터를 다루는 작업을 전면 차단**합니다.
+  차단되면 해당 action 호출 시 `ORA-20000: Data access is disabled for SELECT AI.` 가 발생합니다.
+
+  | action | 데이터 접근 차단 시 |
+  |---|---|
+  | `showsql` / `explainsql` (SQL 텍스트만, 데이터 미접근) | ✅ 동작 |
+  | `runsql` (SQL 실행 → 결과 행 반환) | ❌ 차단 (`ORA-20000`) |
+  | `narrate` (결과를 LLM 이 자연어 설명) | ❌ 차단 |
+  | RAG / 합성데이터 생성 | ❌ 차단 |
+
+> **참고(데이터 보안):** SQL 생성(`runsql`/`showsql`) 단계에서 LLM 으로 보내는 것은 **스키마 메타데이터
+> (테이블·컬럼명, Comment/Annotation)뿐**이며, **테이블/뷰의 실제 행·값은 LLM 에 전송되지 않습니다.**
+> 결과 행을 LLM 으로 보내는 action 은 `narrate`(및 RAG·합성데이터)입니다.
+> 따라서 `runsql` 이 `DISABLE_DATA_ACCESS` 에 막히는 이유는 "LLM 전송" 때문이 아니라
+> **SELECT AI 가 실데이터에 접근(쿼리 실행·결과 반환)하는 것 자체**를 차단하기 때문입니다.
+> 출처: [About Select AI — Usage Guidelines > Prompt Augmentation Data](https://docs.oracle.com/en-us/iaas/autonomous-database-serverless/doc/select-ai-about.html)
+
 ## 뷰 재정의 시 Comment / Annotation 보존 프로시저
 
 `CREATE OR REPLACE VIEW` 로 뷰를 재정의하면 뷰·컬럼에 달아둔 **Comment** 와 **Annotation(23ai)** 이

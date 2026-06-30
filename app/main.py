@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app import auth, db, deps
 from app.config import load_config
-from app.routers import agents, auth as auth_router, chat, databases, objects, profiles
+from app.routers import agents, auth as auth_router, chat, databases, nl2sql, objects, profiles
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s — %(message)s")
 
@@ -26,11 +26,23 @@ STATIC_DIR = PROJECT_ROOT / "static"
 async def lifespan(app: FastAPI):
     cfg = load_config()
     deps.set_config(cfg)
-    # 풀 병렬 초기화 — 한 항목 실패가 다른 항목을 막지 않음
-    await asyncio.gather(*(db.init_pool(d) for d in cfg.databases))
+    # 풀 초기화는 백그라운드에서 진행 — 접속 불가 DB 가 있어도 HTTP 서버 기동을
+    # 막지 않는다(이전엔 gather 를 await 하다 연결 타임아웃 동안 서버가 요청을
+    # 받지 못했다). 풀이 뜨기 전엔 status='initializing' 이라 deps.current_db 가
+    # 503 을 돌려주므로 데이터 API 만 차단되고 화면/복구 경로는 열린다.
+    for d in cfg.databases:
+        db.statuses.setdefault(d.name, "initializing")
+
+    async def _init_pools():
+        # 한 항목 실패가 다른 항목을 막지 않음 (reinit_pool 이 예외를 삼킴)
+        await asyncio.gather(*(db.init_pool(d) for d in cfg.databases))
+
+    init_task = asyncio.create_task(_init_pools())  # 서버 기동을 막지 않음
     try:
         yield
     finally:
+        if not init_task.done():
+            init_task.cancel()
         await db.close_all()
 
 
@@ -110,6 +122,7 @@ app.include_router(profiles.router, prefix="/api")
 app.include_router(agents.router, prefix="/api")
 app.include_router(chat.router, prefix="/api")
 app.include_router(objects.router, prefix="/api")
+app.include_router(nl2sql.router, prefix="/api")
 
 
 @app.get("/")

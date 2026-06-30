@@ -7,6 +7,7 @@
     profiles:  { render: () => window.Views.profileTest(),    label: "AI Profile Test" },
     agents:    { render: () => window.Views.agentTest(),      label: "AI Agent Team Test" },
     chat:      { render: () => window.Views.aiChat(),         label: "AI Chat" },
+    nl2sql:    { render: () => window.Views.nl2sql(),         label: "AI Chat - Table list" },
     api:       { render: () => window.Views.apiAdmin(),       label: "API관리" },
     databases: { render: () => window.Views.databaseAdmin(),  label: "Database 관리" },
     access:    { render: () => window.Views.accessAdmin(),    label: "Tool관리" },

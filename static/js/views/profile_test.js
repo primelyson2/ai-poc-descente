@@ -313,7 +313,8 @@
       ph.value = "";
       ph.textContent = list.length ? "저장된 프롬프트…" : "(저장된 프롬프트 없음)";
       bmSavedSel.appendChild(ph);
-      list.forEach((p) => {
+      // 제목 기준 오름차순으로 표시 (저장 순서 자체는 보존)
+      [...list].sort((a, b) => a.title.localeCompare(b.title)).forEach((p) => {
         const o = document.createElement("option");
         o.value = p.title;
         o.textContent = p.title;
@@ -1450,7 +1451,8 @@ END;`;
       ph.value = "";
       ph.textContent = list.length ? "저장된 프롬프트…" : "(저장된 프롬프트 없음)";
       savedSel.appendChild(ph);
-      list.forEach((p) => {
+      // 제목 기준 오름차순으로 표시 (저장 순서 자체는 보존)
+      [...list].sort((a, b) => a.title.localeCompare(b.title)).forEach((p) => {
         const o = document.createElement("option");
         o.value = p.title;
         o.textContent = p.title;

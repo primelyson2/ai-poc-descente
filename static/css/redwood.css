@@ -236,7 +236,11 @@ label { font-size: var(--fs-sm); color: var(--text-muted); font-weight: 500; }
   font-size: var(--fs-sm);
   font-family: var(--font-mono);
   color: var(--text);
-  white-space: nowrap;
+  /* 긴 annotation(예: IN-list 값)이 화면을 벗어나지 않도록 컨테이너 폭 안에서 줄바꿈 */
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 /* --- Tabs --- */
