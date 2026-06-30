@@ -305,3 +305,301 @@ SELECT object_name, column_name, annotation_name, annotation_value
   FROM user_annotations_usage
  WHERE object_name = 'V_FACTSALESORDERFORCRM3YVR';
 ```
+
+## Agent Team thinking 단계 제목(step title) 출력 함수
+
+AI Agent Team 의 **thinking 과정**을 화면에 보여줄 때, 각 단계(raw prompt)를
+사람이 읽기 좋은 **단계 제목**으로 변환하기 위한 함수입니다.
+`USER_AI_AGENT_*_HISTORY` 등에서 가져온 raw prompt 텍스트를 입력하면,
+그 안에 들어 있는 키워드(`Current Task:`, `Thought:`, `Action: …` 등)를 보고
+"Analyzing the prompt", "Executing the SQL query" 같은 **짧은 제목 문자열**을 돌려줍니다.
+
+- **입력**: `p_raw_prompt`(CLOB) — Agent step 의 원본 프롬프트 텍스트
+- **반환**: `VARCHAR2` — 단계 제목 (해당 없으면 `'Processing the step'`)
+- **DETERMINISTIC**: 같은 입력 → 항상 같은 결과 (부수효과 없음)
+- **판별 규칙(우선순위 순)**
+  - `Current Task:` 포함 → `Analyzing the prompt`
+  - `Thought:` + `Final Answer:` → `Preparing the final result`
+  - `Thought:` + `Action: DISTINCT_VALUES_CHECK[_SH]` → `Checking distinct values from the database`
+  - `Thought:` + `Action: SQL_SH` / `RUN_SQL` / `SQL_` / `RUN_SQL_` → `Executing the SQL query`
+  - `Thought:` + `Action: GET_SAMPLE_ROWS_SH` → `Discovering schema metadata using sample rows`
+  - `Thought:` + `Action: WEBSEARCH` → `Searching the web`
+  - `Thought:` + `Action: SUMMARIZE_CONTENT[_JS]` → `Summarizing the content`
+  - `Thought:` + `Action: SELECT_AI_RAG[_JS]` → `Querying vector index`
+  - 그 외 `Thought:` + `Action:` → 액션명을 정규식으로 추출해 `ACTION : <NAME>`
+  - 위 어디에도 안 맞으면 → `Processing the step`
+
+> 함수는 `genai` 스키마에 생성됩니다. 실제 접속 스키마에 맞춰 스키마 접두사(`genai.`)를
+> 바꾸거나 제거해서 실행하세요. 단순 텍스트 매칭(`DBMS_LOB.INSTR`)만 사용하므로
+> 별도 권한·DB 버전 의존성은 없습니다.
+
+### 함수 생성 스크립트
+
+```sql
+-- 함수
+create or replace FUNCTION genai.f_agent_step_title (
+  p_raw_prompt IN CLOB
+) RETURN VARCHAR2
+DETERMINISTIC
+AS
+  v_action_name VARCHAR2(200);
+  -- helper: CLOB contains?
+  FUNCTION has(p_txt CLOB, p_sub VARCHAR2) RETURN BOOLEAN IS
+  BEGIN
+    RETURN p_txt IS NOT NULL AND DBMS_LOB.INSTR(p_txt, p_sub) > 0;
+  END;
+BEGIN
+  IF p_raw_prompt IS NULL THEN
+    RETURN 'Processing the step';
+  END IF;
+
+  -- 1) Current Task
+  IF has(p_raw_prompt, 'Current Task:') THEN
+    RETURN 'Analyzing the prompt';
+
+  -- 2) Thought + Final Answer
+  ELSIF has(p_raw_prompt, 'Thought:') AND has(p_raw_prompt, 'Final Answer:') THEN
+    RETURN 'Preparing the final result';
+
+  -- 3) DISTINCT VALUES CHECK (2가지 케이스가 존재)
+  ELSIF has(p_raw_prompt, 'Thought:')
+        AND ( has(p_raw_prompt, 'Action: DISTINCT_VALUES_CHECK_SH')
+           OR has(p_raw_prompt, 'Action: DISTINCT_VALUES_CHECK') ) THEN
+    RETURN 'Checking distinct values from the database';
+
+  -- 4) SQL 실행 (SQL_SH / RUN_SQL / SQL_% / RUN_SQL_%)
+  ELSIF has(p_raw_prompt, 'Thought:')
+        AND ( has(p_raw_prompt, 'Action: SQL_SH')
+           OR has(p_raw_prompt, 'Action: RUN_SQL')
+           OR has(p_raw_prompt, 'Action: SQL_')
+           OR has(p_raw_prompt, 'Action: RUN_SQL_') ) THEN
+    RETURN 'Executing the SQL query';
+
+  -- 5) 샘플 로우 기반 스키마 메타 탐색
+  ELSIF has(p_raw_prompt, 'Thought:')
+        AND has(p_raw_prompt, 'Action: GET_SAMPLE_ROWS_SH') THEN
+    RETURN 'Discovering schema metadata using sample rows';
+
+  -- 6) Web search
+  ELSIF has(p_raw_prompt, 'Thought:')
+        AND has(p_raw_prompt, 'Action: WEBSEARCH') THEN
+    RETURN 'Searching the web';
+
+  -- 7) Summarize (일반/JS)
+  ELSIF has(p_raw_prompt, 'Thought:')
+        AND ( has(p_raw_prompt, 'Action: SUMMARIZE_CONTENT')
+           OR has(p_raw_prompt, 'Action: SUMMARIZE_CONTENT_JS') ) THEN
+    RETURN 'Summarizing the content';
+
+  -- 8) Vector / RAG (일반/JS)
+  ELSIF has(p_raw_prompt, 'Thought:')
+        AND ( has(p_raw_prompt, 'Action: SELECT_AI_RAG')
+           OR has(p_raw_prompt, 'Action: SELECT_AI_RAG_JS') ) THEN
+    RETURN 'Querying vector index';
+
+  -- 9) 나머지 모든 Action: 은 액션명 뽑아서 표시 (APEX 소스 동일 컨셉)
+  ELSIF has(p_raw_prompt, 'Thought:')
+        AND has(p_raw_prompt, 'Action:') THEN
+
+    v_action_name :=
+      REGEXP_SUBSTR(
+        DBMS_LOB.SUBSTR(p_raw_prompt, 32000, 1),
+        'Action:\s*([A-Z0-9_]+)',
+        1, 1, NULL, 1
+      );
+
+    IF v_action_name IS NOT NULL THEN
+      RETURN 'ACTION : ' || v_action_name;
+    ELSE
+      RETURN 'Processing the step';
+    END IF;
+
+  ELSE
+    RETURN 'Processing the step';
+  END IF;
+END;
+/
+```
+
+## Select AI Test - Predefined Query 용 테이블 / 함수
+
+메뉴 **Select AI Test - Predefined Query** 가 사용하는 객체입니다. 사전정의 SQL(case)을
+`T_PREDEFINED_QUERY` 에 등록해 두고, `f_predefined_query(p_id, p_question, p_profile_name)` 가
+① ID로 SQL·추출프롬프트·답변예시를 조회 → ② 질의에서 엔티티 추출(chat) → ③ 이름 기반 바인딩으로
+SQL 완성·실행 → ④ FEW_SHOT 을 예시로 결과를 자연어 답변으로 생성해 반환합니다.
+
+- **접속 사용자 스키마에 생성**합니다(앱은 스키마 접두사 없이 호출 — 객체는 접속 사용자가 소유해야 함).
+- **선행 권한**: 위 [DB 패키지 실행 권한 부여](#db-패키지-실행-권한-부여)의 `DBMS_CLOUD_AI` EXECUTE 권한과,
+  호출 시 넘기는 **AI Profile(`p_profile_name`)이 생성·ENABLED** 되어 있어야 합니다.
+- 자세한 설계·해설은 `CJ ENM 산출물/과제1.자연어 to SQL 생성-4.predefined query function.md` 참고.
+
+### 1) 테이블 생성
+
+```sql
+-- 이미 존재하면 ORA-00955 — 무시 가능
+CREATE TABLE T_PREDEFINED_QUERY(
+    ID            NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY, -- 자동 증가 PK
+    DESCRIPTION   VARCHAR2(4000) NOT NULL,    -- 설명 (드롭다운 표시)
+    NL_QUESTION   VARCHAR2(4000) NOT NULL,    -- 자연어 질의 예시
+    SQL_TEXT      CLOB           NOT NULL,    -- 정답 SQL (named 바인드 :변수 포함)
+    ENTITY_PROMPT VARCHAR2(4000) NOT NULL,    -- 질의에서 엔티티를 추출하는 프롬프트
+    FEW_SHOT      VARCHAR2(4000) NOT NULL,    -- 답변 형식·톤 예시 (Few-shot)
+    INS_DTM       TIMESTAMP DEFAULT SYSTIMESTAMP, -- 입력 일시
+    MOD_DTM       TIMESTAMP DEFAULT SYSTIMESTAMP  -- 수정 일시
+);
+```
+
+### 2) 함수 생성 — `f_predefined_query`
+
+> **PL/SQL 주의**: ① JSON 은 `RETURN JSON_OBJECT(...)` 로 직접 반환하면 PLS-00684 → `SELECT JSON_OBJECT(...) INTO v FROM DUAL` 로 받습니다. ② 바인드 중복 검사는 연관 배열 `EXISTS` 사용(VARRAY 의 `MEMBER OF` 는 불가).
+
+```sql
+CREATE OR REPLACE FUNCTION f_predefined_query(
+    p_id           IN NUMBER,        -- 실행할 T_PREDEFINED_QUERY.ID (사전정의 SQL 지정)
+    p_question     IN VARCHAR2,      -- 엔티티 추출·답변 생성에 쓰는 사용자 질의
+    p_profile_name IN VARCHAR2       -- chat 에 사용할 AI Profile
+) RETURN CLOB
+IS
+    v_sql_text    CLOB;              -- 사전정의 SQL (이름 바인드 :변수 포함)
+    v_entity_prom VARCHAR2(4000);    -- 엔티티 추출 프롬프트
+    v_few_shot    VARCHAR2(4000);    -- 답변 형식·톤 예시
+    v_entity_json CLOB;              -- 추출된 엔티티 JSON
+    v_result      CLOB;              -- 조회결과 JSON / 상태 JSON 반환 버퍼
+    v_answer      CLOB;              -- 최종 LLM 답변 (정상 반환값)
+    v_missing     VARCHAR2(4000);    -- 추출 실패한 엔티티 이름들 (CSV)
+    v_err         VARCHAR2(4000);    -- SQLERRM 보관용
+
+    -- 동적 실행 / 이름 기반 바인딩
+    v_cur  INTEGER;
+    v_rows INTEGER;
+    v_bind VARCHAR2(200);
+    v_val  VARCHAR2(4000);
+    v_occ  PLS_INTEGER := 1;
+    TYPE t_seen IS TABLE OF BOOLEAN INDEX BY VARCHAR2(200);
+    v_seen t_seen;                   -- 같은 바인드 중복 처리 방지
+BEGIN
+    -- [1] ID 로 사전정의 SQL·추출프롬프트·답변예시 조회 (없으면 not_found)
+    BEGIN
+        SELECT SQL_TEXT, ENTITY_PROMPT, FEW_SHOT
+          INTO v_sql_text, v_entity_prom, v_few_shot
+          FROM T_PREDEFINED_QUERY
+         WHERE ID = p_id;
+    EXCEPTION
+        WHEN NO_DATA_FOUND THEN
+            SELECT JSON_OBJECT('status' VALUE 'not_found',
+                     'result' VALUE JSON_OBJECT('id' VALUE p_id, 'question' VALUE p_question)
+                     RETURNING CLOB)
+              INTO v_result FROM DUAL;
+            RETURN v_result;
+    END;
+
+    -- [2] ENTITY_PROMPT + 질의로 엔티티 추출(chat). 마크다운 펜스 제거.
+    v_entity_json := DBMS_CLOUD_AI.GENERATE(
+        prompt       => v_entity_prom || CHR(10) || '질문: "' || p_question || '"',
+        profile_name => p_profile_name,
+        action       => 'chat');
+    v_entity_json := REGEXP_REPLACE(v_entity_json, '```[a-z]*|```', '');
+
+    -- [3] 결과를 JSON 배열로 직렬화하도록 사전정의 SQL 을 래핑해 파싱
+    --     (CHR(10) 로 감싸 SQL_TEXT 끝의 -- 줄주석이 닫는 괄호를 삼키지 않게 함)
+    v_cur := DBMS_SQL.OPEN_CURSOR;
+    DBMS_SQL.PARSE(v_cur,
+        'SELECT JSON_ARRAYAGG(JSON_OBJECT(*) RETURNING CLOB) AS result FROM ('
+        || CHR(10) || v_sql_text || CHR(10) || ')',
+        DBMS_SQL.NATIVE);
+
+    -- SQL 의 :바인드를 순회하며 엔티티 값으로 이름 바인딩. 값 없으면 v_missing 에 모은다.
+    LOOP
+        v_bind := REGEXP_SUBSTR(v_sql_text, ':([A-Za-z0-9_$#가-힣]+)', 1, v_occ, NULL, 1);
+        EXIT WHEN v_bind IS NULL;
+        v_occ := v_occ + 1;
+        CONTINUE WHEN v_seen.EXISTS(v_bind);   -- 같은 이름은 한 번만 처리
+        v_seen(v_bind) := TRUE;
+
+        v_val := JSON_VALUE(v_entity_json, '$."' || v_bind || '"');
+        IF v_val IS NULL OR TRIM(v_val) IS NULL THEN
+            v_missing := v_missing || CASE WHEN v_missing IS NOT NULL THEN ', ' END || v_bind;
+        ELSE
+            DBMS_SQL.BIND_VARIABLE(v_cur, ':' || v_bind, v_val);
+        END IF;
+    END LOOP;
+
+    -- [3-1] 추출 안 된 엔티티가 있으면 어떤 값이 빠졌는지 알리고 중단 (실행 시 ORA-01008 예방)
+    IF v_missing IS NOT NULL THEN
+        DBMS_SQL.CLOSE_CURSOR(v_cur);
+        SELECT JSON_OBJECT('status' VALUE 'entity_missing',
+                 'result' VALUE JSON_OBJECT(
+                     'id' VALUE p_id, 'question' VALUE p_question,
+                     'missing_entities' VALUE v_missing,
+                     'entity_json' VALUE NVL(SUBSTR(v_entity_json, 1, 1000), 'null'))
+                 RETURNING CLOB)
+          INTO v_result FROM DUAL;
+        RETURN v_result;
+    END IF;
+
+    -- [4] 실행 → 결과 JSON (없으면 빈 배열). 래핑 덕에 결과 컬럼은 단일 CLOB.
+    DBMS_SQL.DEFINE_COLUMN(v_cur, 1, v_result);
+    v_rows := DBMS_SQL.EXECUTE(v_cur);
+    IF DBMS_SQL.FETCH_ROWS(v_cur) > 0 THEN
+        DBMS_SQL.COLUMN_VALUE(v_cur, 1, v_result);
+    END IF;
+    DBMS_SQL.CLOSE_CURSOR(v_cur);
+    v_result := NVL(v_result, '[]');
+
+    -- [5] FEW_SHOT + 질문 + 조회결과로 chat 호출 → 자연어 답변 반환
+    v_answer := DBMS_CLOUD_AI.GENERATE(
+        prompt => '아래 [조회결과]를 근거로 [질문]에 한국어로 답변하세요.' || CHR(10)
+               || '[Few shot]' || CHR(10) || v_few_shot || CHR(10)
+               || '[질문]' || CHR(10) || p_question || CHR(10)
+               || '[조회결과(JSON)]' || CHR(10) || v_result || CHR(10)
+               || '규칙: 조회결과의 값만 사용하고 추측 금지. 빈 배열([])이면 데이터 없음으로 답하세요.',
+        profile_name => p_profile_name,
+        action       => 'chat');
+    RETURN v_answer;
+
+EXCEPTION
+    -- 엔티티 추출·SQL 실행 등 모든 예외 → 오류 내용을 JSON 으로 반환 (호출 측이 인식 가능)
+    WHEN OTHERS THEN
+        v_err := SQLERRM;   -- SQLERRM 은 SQL 안에서 직접 못 쓰므로 변수에 담아 전달
+        IF DBMS_SQL.IS_OPEN(v_cur) THEN DBMS_SQL.CLOSE_CURSOR(v_cur); END IF;
+        SELECT JSON_OBJECT('status' VALUE 'error',
+                 'result' VALUE JSON_OBJECT(
+                     'error' VALUE v_err, 'question' VALUE p_question,
+                     'entity_json' VALUE NVL(SUBSTR(v_entity_json, 1, 1000), 'null'))
+                 RETURNING CLOB)
+          INTO v_result FROM DUAL;
+        RETURN v_result;
+END;
+/
+```
+
+### 3) 검증용 샘플 데이터 (자기완결형 — DUAL 사용, 특정 테이블 불필요)
+
+```sql
+INSERT INTO T_PREDEFINED_QUERY (DESCRIPTION, NL_QUESTION, SQL_TEXT, ENTITY_PROMPT, FEW_SHOT) VALUES (
+    '기간/상품코드 에코 (검증용)',
+    '전일자 상품 P001 조회',
+    'SELECT :상품코드 AS "상품코드", :시작일 AS "시작일", :종료일 AS "종료일" FROM DUAL',
+    '기준일은 오늘이다. 아래 질문에서 조회 기간과 상품코드를 추출하라.' || CHR(10) ||
+    '반드시 아래 JSON 형식으로만 응답하라(설명 없이 JSON만):' || CHR(10) ||
+    '{"시작일":"YYYYMMDD","종료일":"YYYYMMDD","상품코드":"상품코드값"}' || CHR(10) ||
+    '- 전일자: 시작일=기준일-1일, 종료일=기준일',
+    '예) 질문: "전일자 상품 P002 조회" → 답변: "상품 P002, 조회기간 …~… 기준입니다."'
+);
+COMMIT;
+```
+
+### 4) 동작 검증
+
+```sql
+SET SERVEROUTPUT ON
+-- 등록된 ID 확인
+SELECT ID, DESCRIPTION FROM T_PREDEFINED_QUERY ORDER BY ID;
+
+-- 함수 호출 (p_id, p_question, p_profile_name). 프로파일명은 실제 ENABLED 프로파일로.
+SELECT f_predefined_query(1, '전일자 상품 P001 조회', 'AIF_NL2SQL') AS result FROM DUAL;
+```
+
+- 정상: 조회결과를 근거로 한 **자연어 답변(CLOB)** 반환
+- 엔티티 미추출: `{"status":"entity_missing","result":{"missing_entities":"…"}}`
+- 함수/테이블 미존재·권한 오류 등: `{"status":"error","result":{"error":"ORA-…"}}`

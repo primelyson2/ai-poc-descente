@@ -1,4 +1,4 @@
-/** views/nl2sql.js — 메뉴 [AI Chat - Table list].
+/** views/nl2sql.js — 메뉴 [Select AI Test - Table list].
  * Chat설정(AI Profile + User Prompt 템플릿)을 골라 질문/조회할 컬럼/정렬기준을 입력하고
  * Data요청을 누르면 백엔드(/api/nl2sql/run)가 DBMS_CLOUD_AI.GENERATE(action=>'showsql')로
  * SQL을 만들고 그 SELECT를 실행해 컬럼 헤더 + 데이터 행을 Table list에 렌더한다.

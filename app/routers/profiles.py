@@ -18,6 +18,7 @@ import json
 
 from app import db
 from app.deps import current_db
+from app.plsql import first_line
 
 logger = logging.getLogger(__name__)
 
@@ -240,6 +241,165 @@ async def benchmark(payload: dict, database: str = Depends(current_db)) -> dict:
         runs = await _run_iterations(database, prompt, pn, action, iterations)
         results.append(_summarize(runs, profile_name=pn))
     return {"iterations": iterations, "results": results}
+
+
+# --- Profile 평가 (메뉴 [2] 탭 3) — showsql 로 생성된 SQL 을 평가수행 Profile 이 적정/비적정 판정 ---
+def _clean_sql(raw: str) -> str:
+    """showsql 반환값 정리 — 마크다운 펜스/후행 세미콜론·공백 제거.
+    (nl2sql._clean_sql 와 동일 로직 — profiles→nl2sql 역참조는 순환 import 라 로컬 복제.)"""
+    s = (raw or "").strip()
+    if s.startswith("```"):
+        s = s.strip("`").strip()
+        if s[:3].lower() == "sql":
+            s = s[3:].lstrip()
+    return s.rstrip().rstrip(";").rstrip()
+
+
+def _parse_verdict(raw: str) -> tuple[str, str]:
+    """평가수행 chat 응답 → (verdict, reason).
+    1) 마크다운 펜스 제거 후 JSON({"verdict","reason"}) 파싱 시도.
+    2) 실패 시 본문에서 '비적정'/'적정' 부분문자열 탐색.
+    3) 그래도 없으면 ('판정불가', 원문 앞부분)."""
+    s = (raw or "").strip()
+    body = re.sub(r"```[a-zA-Z]*|```", "", s).strip()
+    try:
+        obj = json.loads(body)
+        if isinstance(obj, dict):
+            v = str(obj.get("verdict") or "").strip()
+            reason = str(obj.get("reason") or "").strip()
+            verdict = "적정" if v == "적정" else "비적정" if v == "비적정" else ""
+            if verdict:
+                return verdict, reason or body
+    except Exception:
+        pass
+    if "비적정" in body:
+        return "비적정", body
+    if "적정" in body:
+        return "적정", body
+    return "판정불가", body[:500] if body else "평가 응답이 비어 있습니다"
+
+
+@router.post("/profiles/evaluate")
+async def evaluate(payload: dict, database: str = Depends(current_db)) -> dict:
+    """평가대상 Profile 이 질의를 변환한 SQL(showsql)을, 평가수행 Profile 이 적정/비적정으로 판정.
+
+    흐름: target model 설정(원본 백업) → showprompt 1회 → N회 [showsql → 평가 chat] → model 원복.
+    """
+    question = (payload.get("question") or "").strip()
+    target_profile = (payload.get("target_profile") or "").strip()
+    target_model = (payload.get("target_model") or "").strip()
+    judge_profile = (payload.get("evaluator_profile") or payload.get("judge_profile") or "").strip()
+    iterations = max(1, min(int(payload.get("iterations") or 1), 10))
+    if not question:
+        raise HTTPException(status_code=400, detail={"error": "question required"})
+    if not target_profile:
+        raise HTTPException(status_code=400, detail={"error": "target_profile required"})
+    if not judge_profile:
+        raise HTTPException(status_code=400, detail={"error": "evaluator_profile required"})
+
+    # 측정 종료 후 복원할 원래 model 백업
+    orig_rows = await db.fetch_all(
+        database,
+        "SELECT attribute_value FROM USER_CLOUD_AI_PROFILE_ATTRIBUTES "
+        "WHERE profile_name = :n AND attribute_name = 'model'",
+        n=target_profile,
+    )
+    orig_model = orig_rows[0].get("attribute_value") if orig_rows else None
+
+    prompt_text = ""
+    results: list[dict] = []
+    try:
+        # 평가대상 model 을 선택 모델로 변경 (지정된 경우)
+        if target_model:
+            await db.execute(database, _SET_MODEL_SQL, pn=target_profile, av=target_model)
+
+        # showprompt 1회 — 스키마 컨텍스트가 포함된 구성 프롬프트 (Question 부분에 사용자 질의 포함)
+        try:
+            row = await db.fetch_one(database, _GENERATE_SQL, p=question, pn=target_profile, a="showprompt")
+            prompt_text = (row or {}).get("r") or ""
+        except Exception as exc:
+            prompt_text = ""
+            logger.warning("evaluate showprompt failed: db=%s profile=%s: %s",
+                           database, target_profile, first_line(exc))
+
+        for i in range(1, iterations + 1):
+            # showsql — 회차마다 '.' 누적으로 동일 질의 캐싱 무력화 (프런트의 누적 '.' 위에 추가)
+            showsql_prompt = question + ("." * i)
+            entry = {
+                "iteration": i,
+                "showsql_prompt": showsql_prompt,   # 1단계: 평가대상에 전달한 프롬프트
+                "sql": "",                            # 1단계 응답(생성 SQL)
+                "showsql_ms": None,                   # 1단계 showsql 생성 소요시간(ms)
+                "eval_prompt": "",                    # 2단계: 평가수행에 전달한 프롬프트
+                "eval_response": "",                  # 2단계 응답(LLM 원문)
+                "verdict": "오류", "reason": "", "error": None,
+            }
+            # 1) showsql 로 SQL 생성 (생성시간 측정)
+            t0 = time.perf_counter()
+            try:
+                row = await db.fetch_one(
+                    database, _GENERATE_SQL, p=showsql_prompt, pn=target_profile, a="showsql")
+                entry["showsql_ms"] = int((time.perf_counter() - t0) * 1000)
+                entry["sql"] = _clean_sql((row or {}).get("r") or "")
+            except Exception as exc:
+                entry["showsql_ms"] = int((time.perf_counter() - t0) * 1000)
+                entry["error"] = first_line(exc)
+                entry["reason"] = "showsql 생성 실패"
+                results.append(entry)
+                continue
+            if not entry["sql"]:
+                entry["verdict"] = "판정불가"
+                entry["reason"] = "모델이 SQL 을 생성하지 못했습니다 (빈 응답)"
+                results.append(entry)
+                continue
+            # 2) 평가수행 Profile chat 으로 적정/비적정 판정
+            eval_prompt = (
+                "당신은 Oracle SQL 품질 심사관입니다. 아래 [프롬프트]는 자연어 질문과 스키마 컨텍스트이고, "
+                "[생성SQL]은 그에 대해 생성된 SQL 입니다.\n"
+                "[프롬프트]\n" + (prompt_text or question) + "\n"
+                "[생성SQL]\n" + entry["sql"] + "\n"
+                "생성SQL 이 질문 의도와 스키마에 비추어 적절한지 평가하세요. "
+                "반드시 JSON 만 응답: {\"verdict\":\"적정\"|\"비적정\",\"reason\":\"한국어 사유\"}"
+            )
+            entry["eval_prompt"] = eval_prompt
+            try:
+                row = await db.fetch_one(database, _GENERATE_SQL, p=eval_prompt, pn=judge_profile, a="chat")
+                eval_raw = (row or {}).get("r") or ""
+                entry["eval_response"] = eval_raw
+                verdict, reason = _parse_verdict(eval_raw)
+                entry["verdict"] = verdict
+                entry["reason"] = reason
+            except Exception as exc:
+                entry["error"] = first_line(exc)
+                entry["verdict"] = "오류"
+                entry["reason"] = "평가 호출 실패"
+            results.append(entry)
+    finally:
+        # 원래 model 로 복원 (실패해도 결과는 반환)
+        if target_model and orig_model is not None:
+            try:
+                await db.execute(database, _SET_MODEL_SQL, pn=target_profile, av=orig_model)
+            except Exception as exc:
+                logger.error("evaluate restore model failed: db=%s profile=%s model=%s: %s",
+                             database, target_profile, orig_model, exc)
+
+    summary = {
+        "appropriate": sum(1 for r in results if r["verdict"] == "적정"),
+        "inappropriate": sum(1 for r in results if r["verdict"] == "비적정"),
+        "unknown": sum(1 for r in results if r["verdict"] == "판정불가"),
+        "error": sum(1 for r in results if r["verdict"] == "오류"),
+    }
+    return {
+        "target_profile": target_profile,
+        "target_model": target_model,
+        "restored_model": orig_model,
+        "evaluator_profile": judge_profile,
+        "iterations": iterations,
+        "question": question,
+        "prompt_text": prompt_text,
+        "summary": summary,
+        "results": results,
+    }
 
 
 # --- 메뉴 [1] (Object Meta) — Profile 의 object_list + 각 테이블 코멘트 요약 ---

@@ -1,4 +1,4 @@
-"""AI Chat - Table list — User Prompt 템플릿의 자리표시자를 입력값으로 병합 →
+"""Select AI Test - Table list — User Prompt 템플릿의 자리표시자를 입력값으로 병합 →
 DBMS_CLOUD_AI.GENERATE(action=>'showsql') 로 SQL 생성 → 그 SELECT 를 직접 실행해
 정렬된 컬럼 헤더 + 위치 기반 행 배열을 반환한다.
 
