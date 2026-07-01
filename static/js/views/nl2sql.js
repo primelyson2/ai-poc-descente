@@ -145,6 +145,7 @@
           <button class="btn btn-primary" id="nl-run" type="button" style="flex:1; min-width:120px; font-size:2em; display:flex; align-items:center; justify-content:center; text-align:center;">실행</button>
         </div>
       </div>
+      <label style="font-weight:600;">답변</label>
       <div id="nl-sql-area"></div>
       <div class="row" id="nl-download-bar" style="display:none; justify-content:space-between;">
         <span id="nl-timing" class="muted" style="font-size:var(--fs-sm);"></span>

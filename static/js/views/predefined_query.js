@@ -9,11 +9,11 @@
   const Q_KEY = "predefined.savedQuestions";
   // 편집 폼 필드 (T_PREDEFINED_QUERY 컬럼, 모두 NOT NULL)
   const FIELDS = [
-    { key: "description", label: "DESCRIPTION (설명)", rows: 1 },
-    { key: "nl_question", label: "NL_QUESTION (자연어 질의 예시)", rows: 2 },
-    { key: "sql_text", label: "SQL_TEXT (바인드 :변수 포함 SQL)", rows: 6 },
-    { key: "entity_prompt", label: "ENTITY_PROMPT (엔티티 추출 프롬프트)", rows: 4 },
-    { key: "few_shot", label: "FEW_SHOT (답변 형식·톤 예시)", rows: 3 },
+    { key: "description", label: "설명", rows: 2 },
+    { key: "sql_text", label: "기준 SQL (:바인드 포함)", rows: 10 },
+    { key: "entity_spec", label: "질의에서 추출할 항목", rows: 8 },
+    { key: "exception_rules", label: "예외 규칙", rows: 4 },
+    { key: "nl_question", label: "자연어 질의 예시", rows: 2 },
   ];
 
   function errMsg(err, fallback) {
@@ -33,6 +33,68 @@
     d.style.whiteSpace = "pre-wrap";
     d.textContent = msg;
     return d;
+  }
+
+  // 실행 시간표 — "총시간 X ms (SQL생성 Y ms, SQL실행 Z ms)"
+  function fmtTiming(res) {
+    const ms = (v) => (v == null ? "-" : Number(v).toLocaleString() + " ms");
+    return `총시간 ${ms(res.total_ms)} (SQL생성 ${ms(res.gen_ms)}, SQL실행 ${ms(res.exec_ms)})`;
+  }
+
+  // 실행 SQL 접이식 표시 + Copy (nl2sql 과 동일한 UI)
+  function renderSql(sqlArea, sql) {
+    sqlArea.innerHTML = "";
+    if (!sql) return;
+    const det = document.createElement("details");
+    det.style.position = "relative";
+    const sum = document.createElement("summary");
+    sum.className = "muted";
+    sum.style.fontSize = "var(--fs-sm)";
+    sum.style.cursor = "pointer";
+    sum.textContent = "실행 SQL";
+    const copyBtn = document.createElement("button");
+    copyBtn.className = "btn";
+    copyBtn.type = "button";
+    copyBtn.textContent = "Copy";
+    copyBtn.style.position = "absolute";
+    copyBtn.style.top = "0";
+    copyBtn.style.right = "0";
+    copyBtn.style.fontSize = "var(--fs-sm)";
+    copyBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      navigator.clipboard.writeText(sql).then(
+        () => window.Toast.show("SQL 복사됨", "success"),
+        () => window.Toast.show("복사 실패", "error")
+      );
+    });
+    const pre = document.createElement("pre");
+    pre.style.whiteSpace = "pre-wrap";
+    pre.textContent = sql;
+    det.appendChild(sum);
+    det.appendChild(copyBtn);
+    det.appendChild(pre);
+    sqlArea.appendChild(det);
+  }
+
+  // 결과 테이블 → CSV 다운로드 (Excel 호환 위해 BOM 추가)
+  function downloadCsv(columns, rows, baseName) {
+    const esc = (v) => {
+      const s = v === null || v === undefined ? "" : String(v);
+      return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+    };
+    const lines = [columns.map(esc).join(",")];
+    rows.forEach((r) => lines.push(r.map(esc).join(",")));
+    const csv = "﻿" + lines.join("\r\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = (baseName || "predefined").replace(/[^\w가-힣.-]+/g, "_") + ".csv";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
   }
 
   // 입력 필드 + (제목/추가/수정/콤보) 저장 프롬프트 연결 — nl2sql 화면과 동일 규약 [{title,prompt}]
@@ -111,6 +173,7 @@
       <div class="row" style="align-items:center;">
         <label style="width:160px; font-weight:600;">AI Profile</label>
         <select id="pq-profile" style="min-width:220px;"></select>
+        <span class="muted" style="font-size:var(--fs-sm);">조건절 반영된 SQL재생성시 사용</span>
       </div>
       <div class="row" style="align-items:stretch; gap:var(--space-4);">
         <div class="stack" style="flex:1;">
@@ -132,7 +195,12 @@
         </div>
       </div>
       <label style="font-weight:600;">답변</label>
-      <div id="pq-answer" style="border:1px solid var(--border); border-radius:var(--radius-md); min-height:260px; padding:var(--space-3);">
+      <div id="pq-sql-area"></div>
+      <div class="row" id="pq-download-bar" style="display:none; justify-content:space-between;">
+        <span id="pq-timing" class="muted" style="font-size:var(--fs-sm);"></span>
+        <a id="pq-download" role="button" tabindex="0" style="color:#0066cc; text-decoration:underline; cursor:pointer;">Download</a>
+      </div>
+      <div id="pq-result" style="border:1px solid var(--border); border-radius:var(--radius-md); min-height:260px; padding:var(--space-3);">
         <div class="empty-state muted">Predefined Query 와 AI Profile 을 고르고 질문을 입력한 뒤 실행을 누르세요.</div>
       </div>
     `;
@@ -141,7 +209,12 @@
     const selectEl = panel.querySelector("#pq-select");
     const profileEl = panel.querySelector("#pq-profile");
     const questionEl = panel.querySelector("#pq-question");
-    const answerEl = panel.querySelector("#pq-answer");
+    const sqlArea = panel.querySelector("#pq-sql-area");
+    const resultArea = panel.querySelector("#pq-result");
+    const downloadBar = panel.querySelector("#pq-download-bar");
+    const timingEl = panel.querySelector("#pq-timing");
+    const downloadLink = panel.querySelector("#pq-download");
+    let lastResult = null;  // 최근 실행 결과 (다운로드용 — sql/entities 보관)
 
     let rows = [];  // T_PREDEFINED_QUERY 행 캐시 (선택 시 질문 자동입력에 사용)
 
@@ -218,19 +291,75 @@
 
       const btn = panel.querySelector("#pq-run");
       btn.disabled = true;
-      answerEl.innerHTML = `<div class="empty-state muted"><span class="spinner"></span> 실행 중… (엔티티 추출 + SQL 실행 + 답변 생성)</div>`;
+      sqlArea.innerHTML = "";
+      downloadBar.style.display = "none";
+      resultArea.innerHTML = `<div class="empty-state muted"><span class="spinner"></span> 실행 중… (SQL 생성 + 실행)</div>`;
+
+      let res;
       try {
-        const data = await window.API.post("/api/predefined/execute", { id, question, profile_name });
-        answerEl.innerHTML = "";
-        const pre = document.createElement("pre");
-        pre.style.cssText = "white-space:pre-wrap; word-break:break-word; margin:0; font-family:var(--font);";
-        pre.textContent = data.result || "(빈 응답)";
-        answerEl.appendChild(pre);
+        res = await window.API.post("/api/predefined/execute", { id, question, profile_name });
       } catch (e) {
-        answerEl.innerHTML = "";
-        answerEl.appendChild(errBox(errMsg(e, "실행 실패")));
-      } finally {
+        resultArea.innerHTML = "";
+        resultArea.appendChild(errBox(errMsg(e, "실행 실패")));
         btn.disabled = false;
+        return;
+      }
+      btn.disabled = false;
+      lastResult = res;
+
+      // 실행 SQL 표시 (접이식)
+      renderSql(sqlArea, res.sql);
+
+      // 결과 표 렌더
+      resultArea.innerHTML = "";
+      if (res.error) {
+        resultArea.appendChild(errBox(res.error));
+      } else {
+        const cols = (res.columns || []).map((nm, i) => ({ key: (row) => row[i], label: nm }));
+        if (res.truncated) {
+          const note = document.createElement("div");
+          note.className = "muted";
+          note.style.fontSize = "var(--fs-sm)";
+          note.style.marginBottom = "var(--space-2)";
+          note.textContent = "※ 처음 100행만 표시합니다. (전체는 Download)";
+          resultArea.appendChild(note);
+        }
+        const table = window.SimpleTable.create(cols, res.rows || [], { emptyText: "결과가 없습니다" });
+        resultArea.appendChild(table);
+      }
+
+      // 실행 시간표 + Download (요청이 완료된 경우에만)
+      if (res && res.total_ms != null) {
+        timingEl.textContent = fmtTiming(res);
+        const hasRows = !res.error && (res.rows || []).length > 0;
+        downloadLink.style.display = hasRows ? "" : "none";
+        downloadBar.style.display = "flex";
+      } else {
+        downloadBar.style.display = "none";
+      }
+    });
+
+    // Download — 표시용 100행이 아니라 SQL 을 다시 실행해 전체 row 를 CSV 로 받는다.
+    downloadLink.addEventListener("click", async () => {
+      if (!lastResult || !lastResult.sql || lastResult.error) {
+        window.Toast.show("다운로드할 데이터가 없습니다", "error");
+        return;
+      }
+      const orig = downloadLink.textContent;
+      downloadLink.textContent = "전체 조회 중…";
+      downloadLink.style.pointerEvents = "none";
+      try {
+        const exp = await window.API.post("/api/predefined/export", { sql: lastResult.sql });
+        if (!exp || !(exp.rows || []).length) {
+          window.Toast.show("다운로드할 데이터가 없습니다", "error");
+          return;
+        }
+        downloadCsv(exp.columns, exp.rows, "predefined_" + (selectEl.value || "query"));
+      } catch (err) {
+        window.Toast.show(errMsg(err, "다운로드 실패"), "error");
+      } finally {
+        downloadLink.textContent = orig;
+        downloadLink.style.pointerEvents = "";
       }
     });
   }
@@ -249,8 +378,16 @@
           <button class="btn btn-ghost" id="pm-close" type="button">✕</button>
         </div>
         <div class="modal-body stack">
-          <div id="pm-list" style="max-height:200px; overflow:auto; border:1px solid var(--border); border-radius:var(--radius-md);"></div>
+          <style>
+            #pm-list tbody tr { cursor: pointer; }
+            #pm-list tr.is-selected-row td { background: #fdeee9; }
+          </style>
           <div class="row" style="justify-content:space-between; align-items:center;">
+            <strong>저장된 Predefined Query 목록</strong>
+            <span id="pm-count" class="muted" style="font-size:var(--fs-sm);"></span>
+          </div>
+          <div id="pm-list" style="min-height:120px; max-height:240px; overflow:auto; border:1px solid var(--border); border-radius:var(--radius-md);"></div>
+          <div class="row" style="justify-content:space-between; align-items:center; margin-top:var(--space-2);">
             <strong id="pm-form-title">새 항목 추가</strong>
             <button class="btn" id="pm-new" type="button">＋ 새로 추가</button>
           </div>
@@ -295,6 +432,14 @@
       deleteBtn.style.display = id == null ? "none" : "";
     };
 
+    // 목록 행 클릭 → 편집 모드 진입(+선택 행 강조, 편집 폼으로 스크롤)
+    const selectRow = (id, tr) => {
+      listHost.querySelectorAll("tr.is-selected-row").forEach((t) => t.classList.remove("is-selected-row"));
+      if (tr) tr.classList.add("is-selected-row");
+      setMode(id);
+      formHost.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    };
+
     const refreshList = async (keepId) => {
       listHost.innerHTML = `<div class="empty-state muted">불러오는 중…</div>`;
       try {
@@ -307,20 +452,26 @@
       }
       const cols = [
         { key: "id", label: "ID" },
-        { key: "description", label: "DESCRIPTION" },
-        { key: "nl_question", label: "NL_QUESTION" },
+        { key: "description", label: "설명" },
+        { key: "nl_question", label: "자연어 질의 예시" },
       ];
       const table = window.SimpleTable.create(cols, list, {
-        emptyText: "등록된 항목이 없습니다",
-        onRowClick: (row) => setMode(row.id),
+        emptyText: "등록된 항목이 없습니다 — 아래 [＋ 새로 추가]로 등록하세요",
+        rowClassName: (row) => (String(row.id) === String(keepId) ? "is-selected-row" : ""),
+        onRowClick: (row, tr) => selectRow(row.id, tr),
       });
       listHost.innerHTML = "";
       listHost.appendChild(table);
+      const countEl = backdrop.querySelector("#pm-count");
+      if (countEl) countEl.textContent = list.length ? `총 ${list.length}건` : "";
       setMode(keepId != null ? keepId : null);
     };
     await refreshList();
 
-    backdrop.querySelector("#pm-new").addEventListener("click", () => setMode(null));
+    backdrop.querySelector("#pm-new").addEventListener("click", () => {
+      listHost.querySelectorAll("tr.is-selected-row").forEach((t) => t.classList.remove("is-selected-row"));
+      setMode(null);
+    });
     backdrop.querySelector("#pm-close").addEventListener("click", close);
     backdrop.querySelector("#pm-cancel").addEventListener("click", close);
 
@@ -328,7 +479,7 @@
       const body = {};
       for (const f of FIELDS) {
         const v = fieldEl(f.key).value;
-        if (!v.trim()) { window.Toast.show(`${f.label} 는 필수입니다`, "error"); fieldEl(f.key).focus(); return; }
+        if (!f.optional && !v.trim()) { window.Toast.show(`${f.label} 는 필수입니다`, "error"); fieldEl(f.key).focus(); return; }
         body[f.key] = v;
       }
       try {

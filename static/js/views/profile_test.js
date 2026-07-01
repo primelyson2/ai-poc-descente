@@ -4,6 +4,27 @@
   let REGIONS = [];  // region 속성 드롭다운 후보 (project/regions.txt)
   let MODELS = {};   // region -> model 후보 (project/models.txt)
 
+  // Tool관리 > "Select AI Action 관리" 에서 체크한 action 만 Action 드롭다운에 노출한다.
+  // runsql·narrate 는 실제 SQL 실행/데이터 노출을 동반하므로 기본 숨김(전역 localStorage 키).
+  const GATED_ACTIONS = ["runsql", "narrate"];
+  function actionEnabled(name) {
+    try { return JSON.parse(localStorage.getItem("oai.selectai.actions") || "{}")[name] === true; }
+    catch (_) { return false; }
+  }
+  function applyActionGate(selectEl) {
+    if (!selectEl) return;
+    GATED_ACTIONS.forEach((a) => {
+      const opt = selectEl.querySelector(`option[value="${a}"]`);
+      if (!opt) return;
+      const on = actionEnabled(a);
+      opt.hidden = !on;
+      opt.disabled = !on;
+    });
+    // 현재 선택이 숨겨진 action 이면 기본값(chat)으로 되돌림
+    const cur = selectEl.querySelector(`option[value="${selectEl.value}"]`);
+    if (cur && cur.disabled) selectEl.value = "chat";
+  }
+
   // region/model 후보 로드. force=true 면 항상 재요청, false 면 비어 있을 때만.
   async function ensureMeta(force) {
     if (force || !REGIONS.length) {
@@ -206,6 +227,7 @@
       </div>
     `;
     wrap.appendChild(formPanel);
+    applyActionGate(document.getElementById("bm-action"));
 
     // object_list 가 필요한 action — 해당 action 선택 시 has_object_list='Y' 만 노출
     const OBJECT_LIST_ACTIONS = new Set(["runsql", "narrate", "showsql"]);
@@ -2050,6 +2072,7 @@ END;`;
     });
 
     document.body.appendChild(backdrop);
+    applyActionGate(backdrop.querySelector("#ptm-action"));
     setTimeout(() => backdrop.querySelector("#ptm-prompt").focus(), 50);
   }
 
