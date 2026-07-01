@@ -109,6 +109,43 @@ CREATE OR REPLACE PACKAGE BODY asta_sql_guard_pkg AS
     RETURN l_out;
   END scrub_guard_text;
 
+  PROCEDURE assert_safe_leading_annotations(p_sql IN VARCHAR2) IS
+    l_pos PLS_INTEGER := 1;
+    l_mark PLS_INTEGER;
+    l_close PLS_INTEGER;
+    l_body VARCHAR2(32767);
+    l_sql_body VARCHAR2(32767);
+    l_expected PLS_INTEGER := 1;
+    l_number PLS_INTEGER;
+  BEGIN
+    l_sql_body := strip_leading_comments(p_sql);
+    IF INSTR(l_sql_body, 'ASTA_TUNING_CHANGE_') > 0 THEN
+      RAISE_APPLICATION_ERROR(-20001, 'ASTA_SQL_GUARD: ASTA tuning change annotation must be in leading header');
+    END IF;
+    LOOP
+      l_mark := INSTR(p_sql, 'ASTA_TUNING_CHANGE_', l_pos);
+      EXIT WHEN l_mark = 0;
+      IF l_mark < 4 OR SUBSTR(p_sql, l_mark - 3, 3) <> '/* ' THEN
+        RAISE_APPLICATION_ERROR(-20001, 'ASTA_SQL_GUARD: malformed ASTA tuning change annotation');
+      END IF;
+      l_close := INSTR(p_sql, '*/', l_mark + LENGTH('ASTA_TUNING_CHANGE_'));
+      IF l_close = 0 THEN
+        RAISE_APPLICATION_ERROR(-20001, 'ASTA_SQL_GUARD: malformed ASTA tuning change annotation');
+      END IF;
+      l_body := SUBSTR(p_sql, l_mark, l_close - l_mark);
+      IF INSTR(l_body, '/*') > 0
+         OR NOT REGEXP_LIKE(l_body, '^ASTA_TUNING_CHANGE_[0-9]+:[[:space:]]*.+[[:space:]]+->[[:space:]]+.+[[:space:]]+->[[:space:]]+.+$', 'n') THEN
+        RAISE_APPLICATION_ERROR(-20001, 'ASTA_SQL_GUARD: malformed ASTA tuning change annotation');
+      END IF;
+      l_number := TO_NUMBER(REGEXP_SUBSTR(l_body, '[0-9]+'));
+      IF l_number <> l_expected THEN
+        RAISE_APPLICATION_ERROR(-20001, 'ASTA_SQL_GUARD: ASTA tuning change annotations must be sequential from 1');
+      END IF;
+      l_expected := l_expected + 1;
+      l_pos := l_close + 2;
+    END LOOP;
+  END assert_safe_leading_annotations;
+
   PROCEDURE assert_safe_select(p_sql IN CLOB) IS
     l_head      VARCHAR2(32767);
     l_stripped  VARCHAR2(32767);
@@ -134,6 +171,7 @@ CREATE OR REPLACE PACKAGE BODY asta_sql_guard_pkg AS
     END IF;
 
     l_head := DBMS_LOB.SUBSTR(p_sql, 32767, 1);
+    assert_safe_leading_annotations(l_head);
     l_stripped := strip_leading_comments(l_head);
     l_guard := scrub_guard_text(l_head);
     l_first := UPPER(REGEXP_SUBSTR(l_stripped, '^\w+'));

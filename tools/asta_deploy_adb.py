@@ -13,6 +13,15 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 
+DEPLOY_PACKAGE_ORDER = [
+    "db/adb/asta_sql_guard_pkg.sql",
+    "db/adb/asta_source_bridge_pkg.sql",
+    "db/adb/asta_vector_pkg.sql",
+    "db/adb/asta_llm_pkg.sql",
+    "db/adb/asta_report_pkg.sql",
+    "db/adb/asta_pkg.sql",
+]
+
 
 def connect():
     """환경변수와 wallet 설정을 사용해 Oracle DB 연결을 연다."""
@@ -128,14 +137,10 @@ def main():
         else:
             log.append("skip vector tables existing")
 
-        for rel in [
-            "db/adb/asta_sql_guard_pkg.sql",
-            "db/adb/asta_source_bridge_pkg.sql",
-            "db/adb/asta_vector_pkg.sql",
-            "db/adb/asta_llm_pkg.sql",
-            "db/adb/asta_report_pkg.sql",
-            "db/adb/asta_pkg.sql",
-        ]:
+        run_script(cur, "db/asta/005_asta_async_run_columns.sql")
+        log.append("applied db/asta/005_asta_async_run_columns.sql")
+
+        for rel in DEPLOY_PACKAGE_ORDER:
             run_script(cur, rel)
             log.append(f"compiled {rel}")
 
@@ -202,3 +207,4 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+

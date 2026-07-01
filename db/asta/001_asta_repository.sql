@@ -14,7 +14,12 @@ CREATE TABLE asta_runs (
   error_code          VARCHAR2(128),
   error_message       VARCHAR2(4000),
   detailed_report_md  CLOB,
-  response_json       CLOB CHECK (response_json IS JSON)
+  response_json       CLOB CHECK (response_json IS JSON),
+  request_json        CLOB CHECK (request_json IS JSON),
+  idempotency_key     VARCHAR2(128),
+  job_name            VARCHAR2(128),
+  submitted_at        TIMESTAMP,
+  CONSTRAINT ASTA_RUNS_IDEMPOTENCY_UK UNIQUE (idempotency_key)
 );
 
 CREATE TABLE asta_run_progress (
@@ -29,3 +34,4 @@ CREATE TABLE asta_run_progress (
   elapsed_ms   NUMBER,
   CONSTRAINT asta_run_progress_pk PRIMARY KEY (run_id, seq)
 );
+

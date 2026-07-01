@@ -35,7 +35,7 @@ DECLARE
   l_offset   PLS_INTEGER := 1;
   l_chunk    VARCHAR2(32767);
 BEGIN
-  l_response := ASTA_PKG.ANALYZE_SQL(:body_text);
+  l_response := ASTA_PKG.SUBMIT_RUN(:body_text);
 
   OWA_UTIL.mime_header('application/json; charset=utf-8', FALSE);
   HTP.p('Cache-Control: no-store');
@@ -57,7 +57,7 @@ BEGIN
   END LOOP;
 END;
 ]',
-    p_comments    => 'Calls ASTA_PKG.ANALYZE_SQL(:body_text)'
+    p_comments    => 'Calls ASTA_PKG.SUBMIT_RUN(:body_text)'
   );
 
   ORDS.DEFINE_TEMPLATE(
@@ -231,3 +231,4 @@ END;
 /
 
 COMMIT;
+

@@ -72,10 +72,27 @@ def test_bridge_and_llm_validate_sql_before_runtime_boundaries():
     cloud_ai_pos = llm.index("DBMS_CLOUD_AI.GENERATE")
     assert llm_guard_pos < prompt_pos < cloud_ai_pos
     assert "candidate_sql must be a single safe Oracle SELECT or WITH statement" in llm
-    assert "Use only the supplied Source evidence, Vector cases, and tuning context" in llm
+    assert "Use only the supplied input for prompt mode" in llm
     assert llm.count("Return JSON only; do not wrap the response in Markdown fences.") == 3
     assert '"contract_version":"asta.v1"' in llm
     assert '"execution_boundary":"ADB_DBMS_CLOUD_AI"' in llm
+
+
+def test_llm_prompt_modes_separate_sql_metrics_and_full_evidence():
+    """A/B/C 실험은 후보 실행 경로를 유지하면서 LLM 입력 정보량만 변경한다."""
+    llm = _read("db/adb/asta_llm_pkg.sql")
+    assert "FUNCTION prompt_mode(p_context_json IN CLOB) RETURN VARCHAR2" in llm
+    assert "'$.prompt_mode'" in llm
+    assert "Prompt mode A: SQL text and user objective only" in llm
+    assert "Prompt mode B: SQL plus compact runtime metrics only" in llm
+    assert "Prompt mode C: current ASTA compact full evidence" in llm
+    assert "compact_source_metrics(p_source_evidence_json)" in llm
+    assert "compact_source_evidence(p_source_evidence_json)" in llm
+    assert "compact_vector_evidence(p_vector_json)" in llm
+    assert ',\"prompt_mode\":' in llm
+    main = _read("db/adb/asta_pkg.sql")
+    assert main.count("asta_llm_pkg.generate_sql_only_tuning(") == 1
+    assert "l_sql_only_llm_json" not in main
 
 
 def test_source_bridge_does_not_rollback_caller_owned_run_persistence():
@@ -165,7 +182,7 @@ def test_report_and_main_carry_final_review_json_artifact():
         "## 튜닝 후 XPLAN",
         "원본 재수행 XPLAN",
         "## 상세 분석",
-        "### Vector 유사 사례",
+        "### 과거 유사 튜닝 사례 — 참고 정보",
         "### Oracle SQL Tuning Advisor 요약",
         "### DBA 검토 사항",
         "## 작업 수행 이력",
@@ -229,10 +246,10 @@ def test_report_and_main_carry_final_review_json_artifact():
     ]:
         assert fragment in main
 
-def test_main_comparison_uses_runtime_last_metrics_before_final_review():
+def test_main_comparison_uses_runtime_last_metrics_before_vector_search():
     """ASTA 계약/회귀 조건을 검증한다: main comparison uses runtime last metrics before final review."""
     src = _read("db/adb/asta_pkg.sql")
-    assert "FUNCTION build_comparison_json(p_before_json IN CLOB, p_after_json IN CLOB) RETURN CLOB" in src
+    assert "FUNCTION build_comparison_json(p_before_json IN CLOB, p_after_json IN CLOB," in src
     assert "JSON_VALUE(p_before_json, '$.last_cr_buffer_gets' RETURNING NUMBER NULL ON ERROR)" in src
     assert "JSON_VALUE(p_after_json, '$.last_elapsed_time_us' RETURNING NUMBER NULL ON ERROR)" in src
     assert '"buffer_gets_delta":' in src
@@ -242,9 +259,10 @@ def test_main_comparison_uses_runtime_last_metrics_before_final_review():
     assert '"execution_boundary":"ADB_COMPARISON_PLSQL"' in src
     assert '"contract_version":"asta.v1"' in src
     after_pos = src.index("l_after_json := asta_source_bridge_pkg.run_source_evidence")
-    comparison_pos = src.index("l_comparison_json := build_comparison_json(l_source_json, l_after_json)")
-    review_pos = src.index("l_final_review_json := asta_llm_pkg.final_review")
-    assert after_pos < comparison_pos < review_pos
+    comparison_pos = src.index("l_comparison_json := build_comparison_json(l_source_json, l_after_json, l_workload_type)")
+    vector_pos = src.index("l_vector_json := asta_vector_pkg.search_similar_cases")
+    assert after_pos < comparison_pos < vector_pos
+    assert "asta_llm_pkg.final_review(" not in src
 
 
 def test_report_reads_canonical_comparison_json_fields():
@@ -270,19 +288,19 @@ def test_report_reads_canonical_comparison_json_fields():
     for stale_path in ["$.before.status", "$.after.status", "$.row_count_equal"]:
         assert stale_path not in report
 
-def test_vector_save_receives_final_report_markdown_after_report_generation():
-    """ASTA 계약/회귀 조건을 검증한다: vector save receives final report markdown after report generation."""
+def test_vector_save_receives_report_ref_before_final_report_generation():
+    """Vector stores a stable ref; final report receives actual save status."""
     src = _read("db/adb/asta_pkg.sql")
     report_pos = src.index("l_report_markdown := asta_report_pkg.build_report(")
     save_pos = src.index("l_vector_save_json := asta_vector_pkg.save_case(")
     response_pos = src.index("l_response_json := asta_report_pkg.build_response_json(")
-    assert report_pos < save_pos < response_pos
-    assert "p_tuning_context_json  => l_context_json" in src
+    assert save_pos < report_pos < response_pos
     assert "generate_sql_only_tuning" in src
     assert "sql_needs_sql_only_retry" in src
-    assert "l_llm_json := l_sql_only_llm_json" in src
+    assert src.count("asta_llm_pkg.generate_sql_only_tuning(") == 1
+    assert "l_llm_json := l_sql_only_llm_json" not in src
     assert ',"tuning_context":' in src
-    assert "p_report_markdown => l_report_markdown" in src
+    assert "p_report_markdown => TO_CLOB('/api/asta/runs/')" in src
     assert "p_report_markdown => NULL" not in src
 
 
@@ -303,11 +321,14 @@ def test_adb_public_lookup_endpoints_validate_run_id_and_emit_boundary_metadata(
     src = _read("db/adb/asta_pkg.sql")
     assert "FUNCTION normalize_run_id(p_run_id IN VARCHAR2) RETURN VARCHAR2" in src
     assert "ASTA_PKG: invalid run_id" in src
-    assert src.count("l_run_id := normalize_run_id(p_run_id)") == 3
+    # 조회 3개와 Scheduler 실행 진입점 1개가 동일한 run_id 검증을 사용한다.
+    assert src.count("l_run_id := normalize_run_id(p_run_id)") == 4
     assert "IF p_status IN ('DONE', 'FAILED', 'SKIPPED') THEN\n      l_elapsed_ms := NULL;" in src
     assert "JSON_VALUE(p_body_json, '$.run_id' RETURNING VARCHAR2(64) NULL ON ERROR)" in src
     assert "l_run_id := normalize_run_id(l_run_id);" in src
-    assert "    );\n    COMMIT;\n\n    record_progress(l_run_id, 3, 'SQL_GUARD'" in src
+    assert "AND    status = 'RUNNING';" in src
+    assert "ASTA_PKG: run was not claimed for execution" in src
+    assert "COMMIT;\n\n    record_progress(l_run_id, 3, 'SQL_GUARD'" in src
     assert "FUNCTION migration_boundary_json RETURN VARCHAR2" in src
     assert '"contract_version":"asta.v1"' in src
     assert '"architecture":"ADB_ORDS_PLSQL"' in src
@@ -418,13 +439,24 @@ def test_source_helper_collects_object_metadata_for_llm_evidence():
 def test_report_elapsed_judgement_and_original_rerun_xplan_wording():
     """ASTA 계약/회귀 조건을 검증한다: report elapsed judgement and original rerun xplan wording."""
     report = _read("db/adb/asta_report_pkg.sql")
-    assert "l_elapsed_delta IS NOT NULL AND l_elapsed_delta > 0" in report
-    assert "개선실패 - 튜닝 후 수행시간이 기존보다 느려져 원본 SQL 유지 권장" in report
-    assert "WHEN l_elapsed_delta < 0 THEN '개선'" in report
-    assert "WHEN l_elapsed_delta > 0 THEN '개선실패/증가'" in report
+    # elapsed_time_us_delta는 before-after이므로 음수이면 튜닝 후 수행시간 증가다.
+    assert "l_elapsed_delta IS NOT NULL AND l_elapsed_delta < 0" in report
+    assert "l_buffer_reduction_num IS NOT NULL AND l_buffer_reduction_num <= 0" in report
+    assert "개선실패 - Buffer Gets와 수행시간이 모두 개선되지 않아 원본 SQL 유지 권장" in report
+    assert "WHEN l_elapsed_delta > 0 THEN '개선'" in report
+    assert "WHEN l_elapsed_delta < 0 THEN '개선실패/증가'" in report
     assert "ELSE '동일'" in report
+    assert "- SQL 변경 내용: " in report
+    assert "- 변경 위치: " in report
     assert "append_xplan_raw_section(l_report, '원본 재수행 XPLAN', p_after_evidence_json)" in report
     assert "선택 메모가 아니라 명시적 튜닝 목표" in report
+
+
+def test_llm_report_explanations_are_requested_in_korean():
+    """보고서 설명 필드는 모두 한국어로 생성하도록 프롬프트에서 강제한다."""
+    llm = _read("db/adb/asta_llm_pkg.sql")
+    assert "rationale (Korean), and risk_notes (Korean)" in llm
+    assert "All explanatory text fields must be written in Korean" in llm
 
 
 def test_bridge_resolves_allowlist_before_dynamic_sql_and_execute_immediate():
@@ -500,7 +532,7 @@ def test_sqltune_advisor_explicit_policy_and_report_contract():
     after_call = main[after_pos : after_pos + 500]
     assert "p_run_advisor      => 'N'" in after_call
     assert "advisor_progress_detail(l_source_json, l_run_advisor)" in main
-    assert "set run_advisor/use_sqltune=true" in main
+    assert "run_advisor/use_sqltune=true" in main
 
     assert "l_advisor_fragment CLOB" in source
     assert "json_str(DBMS_LOB.SUBSTR(l_advisor_report, 30000, 1))" not in source
@@ -705,3 +737,111 @@ def test_source_docs_and_reports_pin_devdo_dblink_contract():
     assert "Source helper schema `ADMIN` was pre-fix" in latest_report
     assert "DB0903_LINK/DEVDO" in deploy_tool
     assert "DB0903_LINK/ADMIN" not in deploy_tool
+
+
+def test_sql_only_workflow_order_and_no_production_final_review():
+    """검증/비교 뒤에만 Vector를 조회하고 production 2차 LLM은 호출하지 않는다."""
+    src = _read("db/adb/asta_pkg.sql")
+    analyze = src[src.index("FUNCTION analyze_sql(p_body_json IN CLOB) RETURN CLOB"):]
+    markers = ["'BEFORE_EVIDENCE'", "'SQL_TUNING_ADVISOR'", "'LLM_REWRITE'",
+               "'AFTER_EVIDENCE'", "'BEFORE_AFTER_COMPARE'", "'VECTOR_KB'",
+               "'FINAL_REPORT'", "'VECTOR_SAVE'"]
+    positions = [analyze.index(marker) for marker in markers]
+    assert positions == sorted(positions)
+    assert "asta_llm_pkg.final_review(" not in analyze
+    assert analyze.index("build_comparison_json(") < analyze.index("asta_vector_pkg.search_similar_cases(")
+
+
+def test_canonical_rewrite_call_has_no_evidence_or_vector_arguments():
+    src = _read("db/adb/asta_pkg.sql")
+    pos = src.index("l_llm_json := asta_llm_pkg.generate_sql_only_tuning(")
+    call = src[pos:src.index(");", pos)]
+    assert "p_source_evidence_json" not in call
+    assert "p_vector_json" not in call
+
+
+def test_no_candidate_skips_only_after_and_compare_then_continues():
+    src = _read("db/adb/asta_pkg.sql")
+    no_candidate = src.index("'No structural rewrite candidate'")
+    vector = src.index("asta_vector_pkg.search_similar_cases(", no_candidate)
+    save = src.index("asta_vector_pkg.save_case(", vector)
+    report = src.index("asta_report_pkg.build_report(", save)
+    assert no_candidate < vector < save < report
+    window = src[no_candidate - 700:no_candidate + 700]
+    assert "'AFTER_EVIDENCE'" in window
+    assert "'BEFORE_AFTER_COMPARE'" in window
+
+
+def test_sql_only_prompt_and_deterministic_verdict_contracts():
+    llm = _read("db/adb/asta_llm_pkg.sql")
+    main = _read("db/adb/asta_pkg.sql")
+    for field in ['\"rewrite_available\"', '\"candidate_sql\"', '\"change_summary\"', '\"semantic_risks\"']:
+        assert field in llm
+    for prohibition in ["인덱스", "옵티마이저 힌트", "DDL", "통계", "SQL Profile"]:
+        assert prohibition in llm
+    assert "FUNCTION structural_sql_key" in llm
+    assert "NO_REWRITE" in llm
+    for verdict in ["IMPROVED", "NOT_IMPROVED", "NON_EQUIVALENT", "CANDIDATE_FAILED", "NO_REWRITE", "INSUFFICIENT_EVIDENCE"]:
+        assert verdict in main
+    for field in ['\"verdict\"', '\"verdict_reason\"', '\"equivalence_status\"', '\"retain_original_sql\"']:
+        assert field in main
+    assert "l_after_elapsed > l_before_elapsed" in main
+
+
+def test_vector_cases_return_verified_summary_and_internal_report_reference():
+    vector = _read("db/adb/asta_vector_pkg.sql")
+    for field in ["'case_id' VALUE", "'verdict' VALUE", "'change_summary' VALUE",
+                  "'before_buffer_gets' VALUE", "'after_buffer_gets' VALUE",
+                  "'before_elapsed_time_us' VALUE", "'after_elapsed_time_us' VALUE",
+                  "'report_ref' VALUE"]:
+        assert field in vector
+    assert "'/api/asta/runs/' || case_id || '/report'" in vector
+    assert "http://" not in vector.lower() and "https://" not in vector.lower()
+
+
+def test_vector_case_ux_is_summary_first_and_never_returns_full_artifacts():
+    vector = _read("db/adb/asta_vector_pkg.sql")
+    report = _read("db/adb/asta_report_pkg.sql")
+    for field in ["'run_id' VALUE", "'workload_type' VALUE", "'primary_metric' VALUE",
+                  "'sql_preview' VALUE"]:
+        assert field in vector
+    assert "C_SQL_PREVIEW_CHARS CONSTANT PLS_INTEGER := 500" in vector
+    assert "C_SQL_PREVIEW_LINES CONSTANT PLS_INTEGER := 10" in vector
+    search_json = vector[vector.index("FUNCTION search_similar_cases("):vector.index("END search_similar_cases;")]
+    assert "'source_sql' VALUE" not in search_json
+    assert "'report_markdown' VALUE" not in search_json
+    assert "'chunk_text' VALUE" not in search_json
+    assert "REGEXP_REPLACE" in vector and "sql_preview" in vector
+
+    assert "### 과거 유사 튜닝 사례 — 참고 정보" in report
+    assert "유사 사례는 과거 실행의 참고 정보이며, 현재 SQL의 개선 판정은 이번 Before/After 실제 실행 결과를 기준으로 합니다." in report
+    assert "<details><summary>축약 SQL 보기</summary>" in report
+    assert "[전체 결과서 보기]" in report
+    assert "유사 사례 없음" in report
+    assert "REGEXP_LIKE(v.report_ref, '^/api/asta/runs/" in report
+
+
+def test_vector_save_metadata_and_semantic_chunks_cover_all_verdicts():
+    vector = _read("db/adb/asta_vector_pkg.sql")
+    main = _read("db/adb/asta_pkg.sql")
+    for path in ["$.verdict", "$.equivalence_status", "$.before_buffer_gets",
+                 "$.after_buffer_gets", "$.before_elapsed_time_us",
+                 "$.after_elapsed_time_us", "$.before_plan_hash_value",
+                 "$.after_plan_hash_value", "$.rewrite_type"]:
+        assert path in vector
+    for chunk in ["STRUCTURE", "VERDICT", "ADVISOR", "FAILURE_REASON"]:
+        assert f"'{chunk}'" in vector
+    assert "build_vector_metadata(" in main
+    assert "p_metadata_json   => l_vector_metadata_json" in main
+
+
+def test_report_conclusion_is_deterministic_and_vector_is_reference_only():
+    report = _read("db/adb/asta_report_pkg.sql")
+    assert "json_vc(p_comparison_json, '$.verdict'" in report
+    for verdict in ["IMPROVED", "NOT_IMPROVED", "NON_EQUIVALENT", "CANDIDATE_FAILED", "NO_REWRITE", "INSUFFICIENT_EVIDENCE"]:
+        assert verdict in report
+    assert "개선 SQL 없음" in report
+    assert "튜닝 후 XPLAN" in report and "SKIPPED" in report
+    assert "report_ref" in report
+    assert "참고 자료" in report
+    assert "final_review_report_markdown(p_final_review_json)" not in report

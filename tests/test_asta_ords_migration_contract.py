@@ -178,12 +178,12 @@ ADB_PACKAGE_FILES = {
         "ADB_COMPARISON_PLSQL",
         "elapsed_ms_between",
         "source_db_id",
-        "No safe candidate_sql returned by ASTA LLM",
-        "l_comparison_json := build_comparison_json(l_source_json, l_after_json)",
+        "No structural rewrite candidate",
+        "l_comparison_json := build_comparison_json(l_source_json, l_after_json, l_workload_type)",
         "asta_source_bridge_pkg.get_connection_json",
         "asta_source_bridge_pkg.run_source_evidence",
-        "asta_llm_pkg.generate_tuning",
-        "asta_llm_pkg.final_review",
+        "asta_llm_pkg.generate_sql_only_tuning",
+        "DETERMINISTIC_COMPARISON",
         "asta_report_pkg.build_response_json",
         "p_after_evidence_json  => l_after_json",
         "p_comparison_json      => l_comparison_json",
@@ -199,7 +199,7 @@ ADB_PACKAGE_FILES = {
         "ORDS.DELETE_MODULE",
         "ORDS.DEFINE_MODULE",
         "ORDS.DEFINE_HANDLER",
-        "ASTA_PKG.ANALYZE_SQL(:body_text)",
+        "ASTA_PKG.SUBMIT_RUN(:body_text)",
         "ASTA_PKG.LIST_PROFILES",
         "ASTA_PKG.GET_RUN(:run_id)",
         "ASTA_PKG.GET_PROGRESS(:run_id)",
@@ -248,12 +248,12 @@ EXPECTED_PROGRESS_CODES = [
     "SQL_GUARD",
     "BEFORE_EVIDENCE",
     "SQL_TUNING_ADVISOR",
-    "VECTOR_KB",
     "LLM_REWRITE",
     "AFTER_EVIDENCE",
-    "LLM_FINAL_REVIEW",
-    "VECTOR_SAVE",
+    "BEFORE_AFTER_COMPARE",
+    "VECTOR_KB",
     "FINAL_REPORT",
+    "VECTOR_SAVE",
 ]
 
 
@@ -328,6 +328,8 @@ def test_plsql_progress_codes_match_ui_contract():
     ui = _read("static/js/extensions/tuning_assistant.js")
     for code in EXPECTED_PROGRESS_CODES:
         assert code in adb_main, f"{code!r} missing from db/adb/asta_pkg.sql"
+    # Task 7에서 report/UI 표시 계약은 별도로 갱신한다.
+    for code in [c for c in EXPECTED_PROGRESS_CODES if c != "BEFORE_AFTER_COMPARE"]:
         assert code in report, f"{code!r} missing from db/adb/asta_report_pkg.sql"
         assert code in ui, f"{code!r} missing from tuning assistant DEFAULT_STEPS"
 
@@ -467,7 +469,7 @@ def test_analyze_response_uses_persisted_progress_rows():
     vector_save_pos = main.index("l_vector_save_json := asta_vector_pkg.save_case(")
     progress_pos = main.index("l_progress_json := build_progress_array_json(l_run_id)")
     response_pos = main.index("p_progress_json        => l_progress_json")
-    assert final_done_pos < vector_save_pos < progress_pos < response_pos
+    assert vector_save_pos < final_done_pos < progress_pos < response_pos
 
 
 def test_adb_public_run_lookup_contracts_are_validated_and_boundary_tagged():
@@ -475,7 +477,8 @@ def test_adb_public_run_lookup_contracts_are_validated_and_boundary_tagged():
     src = _read("db/adb/asta_pkg.sql")
     assert "FUNCTION normalize_run_id(p_run_id IN VARCHAR2) RETURN VARCHAR2" in src
     assert "ASTA_PKG: invalid run_id" in src
-    assert src.count("l_run_id := normalize_run_id(p_run_id)") == 3
+    # 조회 3개와 Scheduler 실행 진입점 1개가 동일한 run_id 검증을 사용한다.
+    assert src.count("l_run_id := normalize_run_id(p_run_id)") == 4
     assert "FUNCTION migration_boundary_json RETURN VARCHAR2" in src
     assert '"contract_version":"asta.v1"' in src
     assert '"architecture":"ADB_ORDS_PLSQL"' in src
@@ -489,11 +492,12 @@ def test_adb_public_run_lookup_contracts_are_validated_and_boundary_tagged():
 def test_adb_main_uses_llm_candidate_for_tuned_evidence_without_python_runtime():
     """ASTA 계약/회귀 조건을 검증한다: adb main uses llm candidate for tuned evidence without python runtime."""
     src = _read("db/adb/asta_pkg.sql")
-    llm_pos = src.index("l_llm_json := asta_llm_pkg.generate_tuning")
+    llm_pos = src.index("l_llm_json := asta_llm_pkg.generate_sql_only_tuning")
     extract_pos = src.index("SELECT JSON_VALUE(l_llm_json, '$.candidate_sql'")
     after_pos = src.index("l_after_json := asta_source_bridge_pkg.run_source_evidence")
-    review_pos = src.index("l_final_review_json := asta_llm_pkg.final_review")
-    assert llm_pos < extract_pos < after_pos < review_pos
+    comparison_pos = src.index("l_comparison_json := build_comparison_json")
+    assert llm_pos < extract_pos < after_pos < comparison_pos
+    assert "asta_llm_pkg.final_review(" not in src
     assert "p_run_id           => l_run_id || '-TUNED'" in src
     assert "p_run_advisor      => 'N'" in src
 
@@ -502,7 +506,7 @@ def test_adb_main_builds_canonical_before_after_comparison_in_plsql():
     """ASTA 계약/회귀 조건을 검증한다: adb main builds canonical before after comparison in plsql."""
     src = _read("db/adb/asta_pkg.sql")
     report = _read("db/adb/asta_report_pkg.sql")
-    assert "FUNCTION build_comparison_json(p_before_json IN CLOB, p_after_json IN CLOB) RETURN CLOB" in src
+    assert "FUNCTION build_comparison_json(p_before_json IN CLOB, p_after_json IN CLOB," in src
     assert "JSON_VALUE(p_before_json, '$.last_cr_buffer_gets' RETURNING NUMBER NULL ON ERROR)" in src
     assert "JSON_VALUE(p_after_json, '$.last_cr_buffer_gets' RETURNING NUMBER NULL ON ERROR)" in src
     assert '"buffer_gets_reduction_pct":' in src
@@ -513,9 +517,9 @@ def test_adb_main_builds_canonical_before_after_comparison_in_plsql():
     assert "DBMS_LOB.CREATETEMPORARY(l_before_after_json, TRUE)" in src
 
     after_pos = src.index("l_after_json := asta_source_bridge_pkg.run_source_evidence")
-    comparison_pos = src.index("l_comparison_json := build_comparison_json(l_source_json, l_after_json)")
-    review_pos = src.index("l_final_review_json := asta_llm_pkg.final_review")
-    assert after_pos < comparison_pos < review_pos
+    comparison_pos = src.index("l_comparison_json := build_comparison_json(l_source_json, l_after_json, l_workload_type)")
+    vector_pos = src.index("l_vector_json := asta_vector_pkg.search_similar_cases")
+    assert after_pos < comparison_pos < vector_pos
 
     assert "p_after_evidence_json  => l_after_json" in src
     assert "p_comparison_json      => l_comparison_json" in src

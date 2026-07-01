@@ -20,9 +20,10 @@ CREATE OR REPLACE PACKAGE asta_llm_pkg AUTHID DEFINER AS
   ) RETURN CLOB;
 
   FUNCTION generate_sql_only_tuning(
-    p_sql         IN CLOB,
-    p_llm_profile IN VARCHAR2,
-    p_use_llm     IN VARCHAR2 DEFAULT 'Y'
+    p_sql           IN CLOB,
+    p_llm_profile   IN VARCHAR2,
+    p_workload_type IN VARCHAR2 DEFAULT 'OLTP',
+    p_use_llm       IN VARCHAR2 DEFAULT 'Y'
   ) RETURN CLOB;
 
   FUNCTION final_review(
@@ -210,6 +211,28 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
       RETURN LOWER(TRIM(DBMS_LOB.SUBSTR(p_sql, 32767, 1)));
   END sql_compare_key;
 
+  FUNCTION structural_sql_key(p_sql IN CLOB) RETURN VARCHAR2 IS
+    l_v VARCHAR2(32767);
+  BEGIN
+    IF p_sql IS NULL THEN RETURN NULL; END IF;
+    l_v := DBMS_LOB.SUBSTR(p_sql, 32767, 1);
+    -- 주석과 optimizer hint만 다른 후보는 구조 변경이 아니다.
+    l_v := REGEXP_REPLACE(l_v, '/\*\+(.|[[:space:]])*?\*/', ' ', 1, 0, 'n');
+    l_v := REGEXP_REPLACE(l_v, '/\*(.|[[:space:]])*?\*/', ' ', 1, 0, 'n');
+    l_v := REGEXP_REPLACE(l_v, '(^|' || CHR(10) || ')[[:space:]]*--[^' || CHR(10) || ']*', ' ');
+    RETURN LOWER(TRIM(REGEXP_REPLACE(l_v, '[[:space:]]+', ' ')));
+  END structural_sql_key;
+
+  FUNCTION leading_change_annotation_count(p_sql IN CLOB) RETURN PLS_INTEGER IS
+    l_text VARCHAR2(32767);
+  BEGIN
+    IF p_sql IS NULL THEN RETURN 0; END IF;
+    l_text := DBMS_LOB.SUBSTR(p_sql, 32767, 1);
+    RETURN REGEXP_COUNT(l_text, '/\*[[:space:]]*ASTA_TUNING_CHANGE_[0-9]+:');
+  EXCEPTION
+    WHEN OTHERS THEN RETURN 0;
+  END leading_change_annotation_count;
+
   PROCEDURE append_json_pair_vc(p_out IN OUT NOCOPY CLOB, p_key IN VARCHAR2, p_val IN VARCHAR2, p_first IN OUT BOOLEAN) IS
   BEGIN
     IF NOT p_first THEN
@@ -257,6 +280,39 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
     clob_app(l_out, '}');
     RETURN l_out;
   END compact_source_evidence;
+
+  FUNCTION compact_source_metrics(p_json IN CLOB) RETURN CLOB IS
+    l_out   CLOB;
+    l_first BOOLEAN := TRUE;
+  BEGIN
+    DBMS_LOB.CREATETEMPORARY(l_out, TRUE);
+    clob_app(l_out, '{');
+    append_json_pair_vc(l_out, 'status', json_vc(p_json, '$.status'), l_first);
+    append_json_pair_vc(l_out, 'execution_boundary', json_vc(p_json, '$.execution_boundary'), l_first);
+    append_json_pair_num(l_out, 'row_count', json_vc(p_json, '$.row_count'), l_first);
+    append_json_pair_num(l_out, 'last_output_rows', json_vc(p_json, '$.last_output_rows'), l_first);
+    append_json_pair_num(l_out, 'last_cr_buffer_gets', json_vc(p_json, '$.last_cr_buffer_gets'), l_first);
+    append_json_pair_num(l_out, 'last_cu_buffer_gets', json_vc(p_json, '$.last_cu_buffer_gets'), l_first);
+    append_json_pair_num(l_out, 'last_disk_reads', json_vc(p_json, '$.last_disk_reads'), l_first);
+    append_json_pair_num(l_out, 'last_elapsed_time_us', json_vc(p_json, '$.last_elapsed_time_us'), l_first);
+    clob_app(l_out, '}');
+    RETURN l_out;
+  END compact_source_metrics;
+
+  FUNCTION prompt_mode(p_context_json IN CLOB) RETURN VARCHAR2 IS
+    l_mode VARCHAR2(1);
+  BEGIN
+    SELECT UPPER(JSON_VALUE(p_context_json, '$.prompt_mode' RETURNING VARCHAR2(1) NULL ON ERROR))
+    INTO l_mode
+    FROM dual;
+    IF l_mode NOT IN ('A', 'B', 'C') THEN
+      RETURN 'C';
+    END IF;
+    RETURN l_mode;
+  EXCEPTION
+    WHEN OTHERS THEN
+      RETURN 'C';
+  END prompt_mode;
 
   FUNCTION compact_vector_evidence(p_json IN CLOB) RETURN CLOB IS
     l_out CLOB;
@@ -333,31 +389,58 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
     p_tuning_context_json  IN CLOB DEFAULT NULL
   ) RETURN CLOB IS
     l_prompt CLOB;
+    l_mode   VARCHAR2(1) := prompt_mode(p_tuning_context_json);
   BEGIN
     DBMS_LOB.CREATETEMPORARY(l_prompt, TRUE);
+    IF l_mode IN ('A', 'B') THEN
+      clob_app(l_prompt, '다음 Oracle SQL을 더 효율적인 단일 SELECT/WITH SQL로 재작성하세요. SQL 의미를 유지하세요.' || CHR(10) || CHR(10));
+      clob_app_clob(l_prompt, p_sql);
+      IF l_mode = 'B' THEN
+        clob_app(l_prompt, CHR(10) || CHR(10) || '참고할 핵심 실행 메트릭(JSON):' || CHR(10));
+        clob_app_clob(l_prompt, compact_source_metrics(p_source_evidence_json));
+      END IF;
+      RETURN l_prompt;
+    END IF;
     clob_app(l_prompt, 'You are ASTA running inside Oracle ADB PL/SQL.' || CHR(10));
-    clob_app(l_prompt, 'Return concise JSON with candidate_sql, change_reason (Korean), change_summary (Korean), change_location (Korean), rationale, and risk_notes.' || CHR(10));
+    clob_app(l_prompt, 'Return concise JSON with candidate_sql, change_reason (Korean), change_summary (Korean), change_location (Korean), rationale (Korean), and risk_notes (Korean).' || CHR(10));
+    clob_app(l_prompt, 'All explanatory text fields must be written in Korean. Keep only SQL identifiers, Oracle keywords, object names, and metric field names in their original form.' || CHR(10));
     clob_app(l_prompt, 'Return JSON only; do not wrap the response in Markdown fences.' || CHR(10));
     clob_app(l_prompt, 'candidate_sql must be a single safe Oracle SELECT or WITH statement; do not return DML, DDL, PL/SQL, or statement terminators.' || CHR(10));
     clob_app(l_prompt, 'candidate_sql must not include a semicolon or standalone SQL*Plus slash terminator.' || CHR(10));
     clob_app(l_prompt, 'Prepend candidate_sql with a SQL comment block: -- change_reason: <Korean>, -- change_summary: <Korean>, -- change_location: <Korean>.' || CHR(10));
     clob_app(l_prompt, 'Do not auto-apply DDL, SQL Profiles, or DBMS_STATS; tuning recommendation only.' || CHR(10));
-    clob_app(l_prompt, 'If disk_reads > 0 in Source evidence, prioritize buffer_gets reduction over elapsed_time improvement.' || CHR(10));
-    clob_app(l_prompt, 'Use only the supplied Source evidence, Vector cases, and tuning context; do not invent runtime metrics.' || CHR(10));
+    IF l_mode <> 'A' THEN
+      clob_app(l_prompt, 'If disk_reads > 0 in supplied metrics, prioritize buffer_gets reduction over elapsed_time improvement.' || CHR(10));
+    END IF;
+    clob_app(l_prompt, 'Use only the supplied input for prompt mode ' || l_mode || '; do not invent runtime metrics.' || CHR(10));
     clob_app(l_prompt, 'If User tuning context JSON contains user_notes, treat it as a hard optimization objective, not an optional hint. Use it to focus rewrite choices and mention how it affected or did not affect the recommendation. Evidence wins when user_notes conflicts with measured runtime evidence.' || CHR(10));
-    clob_app(l_prompt, 'If user_notes asks to reduce reads/accesses of a specific table, explicitly inspect the SQL text and Source XPLAN for repeated accesses to that table. Prefer a candidate_sql that reduces that table access count, or explain why such a rewrite is impossible in candidate_error/risk_notes.' || CHR(10));
+    IF l_mode = 'C' THEN
+      clob_app(l_prompt, 'If user_notes asks to reduce reads/accesses of a specific table, explicitly inspect the SQL text and Source XPLAN for repeated accesses to that table. Prefer a candidate_sql that reduces that table access count, or explain why such a rewrite is impossible in candidate_error/risk_notes.' || CHR(10));
+    ELSE
+      clob_app(l_prompt, 'If user_notes asks to reduce reads/accesses of a specific table, inspect the SQL text for repeated accesses to that table and prefer a structural rewrite that reduces them.' || CHR(10));
+    END IF;
     clob_app(l_prompt, 'Recognize these rewrite families and apply them when the input SQL matches:' || CHR(10));
     clob_app(l_prompt, '- CORRELATED_SCALAR_SUBQUERIES_REPEATING_FACT_TABLE: replace repeated correlated scalar subqueries with a fact-table pre-aggregation CTE grouped by the correlation key, then LEFT JOIN it to the driving table. For year/count metrics, join the dimension once and use conditional aggregation.' || CHR(10));
     clob_app(l_prompt, '- UNION_ALL_REPEATED_FACT_TABLE_AGGREGATION: replace multiple UNION ALL aggregate branches over the same fact table with one base CTE/fact scan plus conditional aggregation, then unpivot/UNION the already-computed aggregate row only if the output shape requires buckets.' || CHR(10));
     clob_app(l_prompt, '- REPEATED_EXISTS_OR_SEMIJOIN_FACT_PATTERN: preserve EXISTS semantics with semi-joins or DISTINCT key CTEs so joins do not multiply fact rows.' || CHR(10));
     clob_app(l_prompt, 'When applying these rewrites, preserve output columns, ordering semantics, NULL behavior, COUNT(DISTINCT ...) semantics, and aggregate results. Do not replace a table-read reduction objective with mere hints unless a structural rewrite is impossible.' || CHR(10));
-    clob_app(l_prompt, 'Object metadata JSON for table/column statistics and indexes is included in Source evidence as object_info_excerpt; use it to reason about stale stats, cardinality, column selectivity, and available indexes, but do not recommend auto-applying DBMS_STATS or DDL.' || CHR(10));
+    IF l_mode = 'C' THEN
+      clob_app(l_prompt, 'Object metadata JSON for table/column statistics and indexes is included in Source evidence as object_info_excerpt; use it to reason about stale stats, cardinality, column selectivity, and available indexes, but do not recommend auto-applying DBMS_STATS or DDL.' || CHR(10));
+    END IF;
     clob_app(l_prompt, 'Input SQL (full CLOB, chunked; not truncated):' || CHR(10));
     clob_app_clob(l_prompt, p_sql);
-    clob_app(l_prompt, CHR(10) || 'Compact Source evidence JSON (raw evidence remains preserved outside the prompt):' || CHR(10));
-    clob_app_clob(l_prompt, compact_source_evidence(p_source_evidence_json));
-    clob_app(l_prompt, CHR(10) || 'Compact Vector KB evidence JSON (raw vector result remains preserved outside the prompt):' || CHR(10));
-    clob_app_clob(l_prompt, compact_vector_evidence(p_vector_json));
+    IF l_mode = 'A' THEN
+      clob_app(l_prompt, CHR(10) || 'Prompt mode A: SQL text and user objective only. XPLAN, runtime metrics, object metadata, Advisor, and Vector evidence are intentionally withheld.' || CHR(10));
+    ELSIF l_mode = 'B' THEN
+      clob_app(l_prompt, CHR(10) || 'Prompt mode B: SQL plus compact runtime metrics only. Raw XPLAN, object metadata, Advisor report, and Vector cases are intentionally withheld.' || CHR(10));
+      clob_app_clob(l_prompt, compact_source_metrics(p_source_evidence_json));
+    ELSE
+      clob_app(l_prompt, CHR(10) || 'Prompt mode C: current ASTA compact full evidence.' || CHR(10));
+      clob_app(l_prompt, 'Compact Source evidence JSON (raw evidence remains preserved outside the prompt):' || CHR(10));
+      clob_app_clob(l_prompt, compact_source_evidence(p_source_evidence_json));
+      clob_app(l_prompt, CHR(10) || 'Compact Vector KB evidence JSON (raw vector result remains preserved outside the prompt):' || CHR(10));
+      clob_app_clob(l_prompt, compact_vector_evidence(p_vector_json));
+    END IF;
     IF p_tuning_context_json IS NOT NULL THEN
       clob_app(l_prompt, CHR(10) || 'User tuning context JSON:' || CHR(10));
       clob_app_clob(l_prompt, p_tuning_context_json);
@@ -374,11 +457,13 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
     p_use_llm              IN VARCHAR2 DEFAULT 'Y'
   ) RETURN CLOB IS
     l_prompt          CLOB;
+    l_prompt_vc       VARCHAR2(32767);
     l_response        CLOB;
     l_result          CLOB;
     l_candidate_sql   CLOB;
     l_candidate_error VARCHAR2(4000);
     l_profile         VARCHAR2(128);
+    l_llm_call_count  PLS_INTEGER := 0;
   BEGIN
     IF UPPER(NVL(p_use_llm, 'Y')) <> 'Y' THEN
       RETURN TO_CLOB(
@@ -400,17 +485,17 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
       p_vector_json,
       p_tuning_context_json
     );
+    l_prompt_vc := DBMS_LOB.SUBSTR(l_prompt, 32767, 1);
 
-    EXECUTE IMMEDIATE q'[
-      BEGIN
-        :out_response := DBMS_CLOUD_AI.GENERATE(
-          :in_prompt,
-          profile_name => :in_profile,
-          action       => 'chat'
-        );
-      END;
-    ]'
-    USING OUT l_response, IN l_prompt, IN l_profile;
+    FOR i IN 1..3 LOOP
+      l_response := NULL;
+      l_llm_call_count := i;
+      EXECUTE IMMEDIATE
+        'SELECT DBMS_CLOUD_AI.GENERATE(prompt => :in_prompt, profile_name => :in_profile, action => ''chat'') FROM dual'
+        INTO l_response
+        USING IN l_prompt_vc, IN l_profile;
+      EXIT WHEN l_response IS NOT NULL AND NVL(DBMS_LOB.GETLENGTH(l_response), 0) > 0;
+    END LOOP;
 
     BEGIN
       l_candidate_sql := asta_sql_guard_pkg.extract_candidate_sql(l_response);
@@ -430,6 +515,10 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
     DBMS_LOB.CREATETEMPORARY(l_result, TRUE);
     clob_app(l_result, '{"status":"COMPLETED","code":"LLM_TUNE","contract_version":"asta.v1","execution_boundary":"ADB_DBMS_CLOUD_AI","profile":');
     clob_app(l_result, json_str(l_profile));
+    clob_app(l_result, ',"prompt_mode":');
+    clob_app(l_result, json_str(prompt_mode(p_tuning_context_json)));
+    clob_app(l_result, ',"prompt_chars":' || TO_CHAR(NVL(DBMS_LOB.GETLENGTH(l_prompt), 0)));
+    clob_app(l_result, ',"llm_call_count":' || TO_CHAR(l_llm_call_count));
     clob_app(l_result, ',"response_contract":');
     clob_app(l_result, json_str(C_RESPONSE_CONTRACT));
     clob_app(l_result, ',"candidate_guard_policy":');
@@ -455,21 +544,31 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
   END generate_tuning;
 
   FUNCTION generate_sql_only_tuning(
-    p_sql         IN CLOB,
-    p_llm_profile IN VARCHAR2,
-    p_use_llm     IN VARCHAR2 DEFAULT 'Y'
+    p_sql           IN CLOB,
+    p_llm_profile   IN VARCHAR2,
+    p_workload_type IN VARCHAR2 DEFAULT 'OLTP',
+    p_use_llm       IN VARCHAR2 DEFAULT 'Y'
   ) RETURN CLOB IS
     l_prompt          CLOB;
     l_response        CLOB;
     l_result          CLOB;
     l_candidate_sql   CLOB;
+    l_change_summary  CLOB;
+    l_semantic_risks  CLOB;
     l_candidate_error VARCHAR2(4000);
     l_profile         VARCHAR2(128);
     l_try_profile     VARCHAR2(128);
+    l_profile_errors  CLOB;
+    l_error_count     PLS_INTEGER := 0;
+    l_call_succeeded  VARCHAR2(1) := 'N';
+    l_workload_type   VARCHAR2(10) := CASE WHEN UPPER(TRIM(p_workload_type)) = 'BATCH' THEN 'BATCH' ELSE 'OLTP' END;
+    l_optimization_goal VARCHAR2(40);
+    l_annotation_count PLS_INTEGER := 0;
   BEGIN
+    l_optimization_goal := CASE WHEN l_workload_type = 'BATCH' THEN 'MINIMIZE_ELAPSED_TIME' ELSE 'MINIMIZE_BUFFER_READS' END;
     IF UPPER(NVL(p_use_llm, 'Y')) <> 'Y' THEN
       RETURN TO_CLOB(
-        '{"status":"SKIPPED","code":"SQL_ONLY_REWRITE","contract_version":"asta.v1","execution_boundary":"ADB_DBMS_CLOUD_AI","response_contract":"JSON_ONLY","candidate_guard_policy":"SELECT_WITH_SINGLE_STATEMENT","message":"No ASTA LLM profile selected","candidate_sql":null}'
+        '{"status":"SKIPPED","code":"SQL_ONLY_REWRITE","contract_version":"asta.v1","execution_boundary":"ADB_DBMS_CLOUD_AI","response_contract":"JSON_ONLY","candidate_guard_policy":"SELECT_WITH_SINGLE_STATEMENT","message":"LLM disabled","candidate_sql":null}'
       );
     END IF;
 
@@ -478,14 +577,31 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
     DBMS_LOB.CREATETEMPORARY(l_prompt, TRUE);
     clob_app(l_prompt, 'Oracle Database 기준으로 SQL 튜닝을 요청합니다.' || CHR(10));
     clob_app(l_prompt, '아래 SQL만 보고 Oracle 옵티마이저 관점에서 구조적 SQL rewrite 후보를 제안하세요.' || CHR(10));
-    clob_app(l_prompt, 'ASTA evidence, XPLAN, SQLTUNE, Vector 정보는 의도적으로 제공하지 않습니다. SQL 구조 자체의 반복 스캔, correlated subquery, UNION ALL 반복 집계, 불필요한 정렬/중복 제거 가능성을 우선 검토하세요.' || CHR(10));
-    clob_app(l_prompt, 'Return concise JSON with candidate_sql, change_reason (Korean), change_summary (Korean), change_location (Korean), rationale, and risk_notes.' || CHR(10));
+    clob_app(l_prompt, '입력은 원본 SQL과 이 고정 구조 재작성 지시뿐입니다. 반복 상관 서브쿼리, 반복 집계/조인/UNION ALL 스캔을 의미 보존 가능한 경우에만 축소하세요.' || CHR(10));
+    clob_app(l_prompt, '원본 출력 컬럼의 datatype과 문자열 format 의미를 보존하세요. TO_CHAR 등 NLS 의존 변환을 새로 도입하지 말고, 불가피하면 semantic_risks에 구체적으로 기록하세요.' || CHR(10));
+    clob_app(l_prompt, '인덱스, 옵티마이저 힌트, DDL, 통계, SQL Profile/Plan Baseline 제안은 금지합니다.' || CHR(10));
+    clob_app(l_prompt, 'Do not add hints or index DDL.' || CHR(10));
+    clob_app(l_prompt, '구조를 변경한 candidate_sql 맨 앞, 첫 SQL token 이전에 연속된 Oracle block comment 헤더를 넣으세요: /* ASTA_TUNING_CHANGE_1: [기존 문제] -> [변경 방식] -> [기대 효과] */' || CHR(10));
+    clob_app(l_prompt, '모든 변경을 헤더에 모으고 본문 중간에는 ASTA_TUNING_CHANGE 주석을 넣지 마세요. 번호는 1부터 빈 번호 없이 순차 증가시킵니다.' || CHR(10));
+    clob_app(l_prompt, '각 항목은 원래 반복 횟수/스캔/서브쿼리/조인/집계 패턴, 변경한 구조, 기대되는 elapsed/buffer/temp 개선을 한국어로 구체적으로 설명하세요.' || CHR(10));
+    clob_app(l_prompt, '예: /* ASTA_TUNING_CHANGE_1: 행마다 반복되던 상관 서브쿼리 집계 -> 1회 조건부 집계 CTE와 JOIN으로 통합 -> 반복 접근 감소에 따른 buffer 및 elapsed 개선 기대 */' || CHR(10));
+    clob_app(l_prompt, '첫 LLM에는 실행 측정 결과가 없으므로 수치나 실제 측정값을 날조하지 말고 반드시 기대 효과로 표현하세요. 막연한 "성능 개선" 설명은 금지합니다.' || CHR(10));
+    clob_app(l_prompt, '주석 내용에는 중첩 comment delimiter를 넣지 마세요. 원문과 구조가 같은 no-rewrite이면 marker를 넣지 말고 candidate_sql을 null로 반환하세요.' || CHR(10));
+    IF l_workload_type = 'BATCH' THEN
+      clob_app(l_prompt, 'BATCH objective: minimize elapsed time / wall-clock duration. Reduce large repeated scans/aggregations and temp-heavy work; buffer gets is a supporting metric.' || CHR(10));
+    ELSE
+      clob_app(l_prompt, 'OLTP objective: minimize logical buffer reads / last_cr_buffer_gets per execution, repeated access, and random table lookups; elapsed is secondary.' || CHR(10));
+    END IF;
+    clob_app(l_prompt, 'Return JSON with status, rewrite_available(boolean), candidate_sql, change_summary(array), semantic_risks(array).' || CHR(10));
+    clob_app(l_prompt, 'All explanatory text fields must be written in Korean. Keep only SQL identifiers, Oracle keywords, object names, and metric field names in their original form.' || CHR(10));
     clob_app(l_prompt, 'Return JSON only; do not wrap the response in Markdown fences.' || CHR(10));
     clob_app(l_prompt, 'candidate_sql must be a single safe Oracle SELECT or WITH statement; do not return DML, DDL, PL/SQL, or statement terminators.' || CHR(10));
     clob_app(l_prompt, 'candidate_sql must not include a semicolon or standalone SQL*Plus slash terminator.' || CHR(10));
     clob_app(l_prompt, 'Preserve output columns, ordering semantics, NULL behavior, COUNT(DISTINCT ...) semantics, and aggregate results. If no safe rewrite is possible, return candidate_sql as null and explain why.' || CHR(10));
     clob_app(l_prompt, 'Input SQL:' || CHR(10));
     clob_app_clob(l_prompt, p_sql);
+    DBMS_LOB.CREATETEMPORARY(l_profile_errors, TRUE);
+    clob_app(l_profile_errors, '[');
 
     FOR i IN 1..4 LOOP
       l_try_profile := CASE i
@@ -498,16 +614,29 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
         CONTINUE;
       END IF;
 
-      EXECUTE IMMEDIATE q'[
-        BEGIN
-          :out_response := DBMS_CLOUD_AI.GENERATE(
-            :in_prompt,
-            profile_name => :in_profile,
-            action       => 'chat'
-          );
-        END;
-      ]'
-      USING OUT l_response, IN l_prompt, IN l_try_profile;
+      l_response := NULL;
+      l_candidate_sql := NULL;
+      BEGIN
+        EXECUTE IMMEDIATE q'[
+          BEGIN
+            :out_response := DBMS_CLOUD_AI.GENERATE(
+              :in_prompt,
+              profile_name => :in_profile,
+              action       => 'chat'
+            );
+          END;
+        ]'
+        USING OUT l_response, IN l_prompt, IN l_try_profile;
+        l_call_succeeded := 'Y';
+      EXCEPTION
+        WHEN OTHERS THEN
+          -- Preserve a non-sensitive per-profile diagnostic and continue.
+          IF l_error_count > 0 THEN clob_app(l_profile_errors, ','); END IF;
+          clob_app(l_profile_errors, '{"profile":' || json_str(l_try_profile) ||
+            ',"error_code":' || TO_CHAR(SQLCODE) || ',"message":"profile invocation failed"}');
+          l_error_count := l_error_count + 1;
+          CONTINUE;
+      END;
 
       IF l_response IS NULL OR NVL(DBMS_LOB.GETLENGTH(l_response), 0) = 0 THEN
         CONTINUE;
@@ -522,19 +651,54 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
           l_candidate_sql := NULL;
       END;
 
-      IF l_candidate_sql IS NOT NULL AND sql_compare_key(p_sql) <> sql_compare_key(l_candidate_sql) THEN
-        l_profile := l_try_profile;
-        EXIT;
+      IF l_candidate_sql IS NOT NULL AND structural_sql_key(p_sql) <> structural_sql_key(l_candidate_sql) THEN
+        IF leading_change_annotation_count(l_candidate_sql) < 1
+           OR DBMS_LOB.INSTR(l_candidate_sql, '/* ASTA_TUNING_CHANGE_1:', 1, 1) = 0 THEN
+          l_candidate_error := 'NO_REWRITE: structural candidate missing required leading ASTA_TUNING_CHANGE_1 header';
+          l_candidate_sql := NULL;
+          CONTINUE;
+        END IF;
+        BEGIN
+          asta_sql_guard_pkg.assert_safe_select(l_candidate_sql);
+          l_profile := l_try_profile;
+          EXIT;
+        EXCEPTION
+          WHEN OTHERS THEN
+            l_candidate_error := 'NO_REWRITE: candidate failed structural safety validation';
+            l_candidate_sql := NULL;
+            CONTINUE;
+        END;
       END IF;
     END LOOP;
+    clob_app(l_profile_errors, ']');
 
     DBMS_LOB.CREATETEMPORARY(l_result, TRUE);
-    clob_app(l_result, '{"status":"COMPLETED","code":"SQL_ONLY_REWRITE","contract_version":"asta.v1","execution_boundary":"ADB_DBMS_CLOUD_AI","response_contract":"JSON_ONLY","candidate_guard_policy":"SELECT_WITH_SINGLE_STATEMENT"');
+    clob_app(l_result, '{"status":' || json_str(CASE WHEN l_call_succeeded = 'N' THEN 'FAILED' ELSE 'COMPLETED' END) || ',"code":"SQL_ONLY_REWRITE","contract_version":"asta.v1","execution_boundary":"ADB_DBMS_CLOUD_AI","response_contract":"JSON_ONLY","candidate_guard_policy":"SELECT_WITH_SINGLE_STATEMENT"');
     clob_app(l_result, ',"llm_profile":' || json_str(l_profile));
+    clob_app(l_result, ',"workload_type":' || json_str(l_workload_type));
+    clob_app(l_result, ',"optimization_goal":' || json_str(l_optimization_goal));
+    IF l_candidate_sql IS NOT NULL AND structural_sql_key(p_sql) = structural_sql_key(l_candidate_sql) THEN
+      l_candidate_sql := NULL;
+      l_candidate_error := 'NO_REWRITE: identical, comment-only, or hint-only candidate';
+    END IF;
+    l_annotation_count := leading_change_annotation_count(l_candidate_sql);
+    clob_app(l_result, ',"rewrite_available":' || CASE WHEN l_candidate_sql IS NULL THEN 'false' ELSE 'true' END);
+    clob_app(l_result, ',"leading_change_annotations_present":' || CASE WHEN l_annotation_count > 0 THEN 'true' ELSE 'false' END);
+    clob_app(l_result, ',"leading_change_annotation_count":' || TO_CHAR(l_annotation_count));
     clob_app(l_result, ',"candidate_sql":');
     clob_app_json_str(l_result, l_candidate_sql);
+    -- Preserve model arrays as arrays; malformed/missing fields become [].
+    SELECT JSON_QUERY(l_response, '$.change_summary' RETURNING CLOB NULL ON ERROR),
+           JSON_QUERY(l_response, '$.semantic_risks' RETURNING CLOB NULL ON ERROR)
+    INTO l_change_summary, l_semantic_risks FROM dual;
+    clob_app(l_result, ',"change_summary":');
+    clob_app_clob(l_result, NVL(l_change_summary, TO_CLOB('[]')));
+    clob_app(l_result, ',"semantic_risks":');
+    clob_app_clob(l_result, NVL(l_semantic_risks, TO_CLOB('[]')));
     clob_app(l_result, ',"candidate_error":');
-    clob_app(l_result, json_str(l_candidate_error));
+    clob_app(l_result, json_str(CASE WHEN l_call_succeeded = 'N' THEN 'NO_REWRITE: all configured profiles failed' ELSE l_candidate_error END));
+    clob_app(l_result, ',"profile_errors":');
+    clob_app_clob(l_result, l_profile_errors);
     clob_app(l_result, ',"raw_response":');
     clob_app_json_str(l_result, l_response);
     clob_app(l_result, '}');
@@ -574,7 +738,9 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
     DBMS_LOB.CREATETEMPORARY(l_prompt, TRUE);
     clob_app(l_prompt, 'You are ASTA running inside Oracle ADB PL/SQL.' || CHR(10));
     clob_app(l_prompt, 'Compare before and after SQL evidence and write the final Korean SQL tuning report.' || CHR(10));
+    clob_app(l_prompt, 'All explanatory text fields must be written in Korean. Keep only SQL identifiers, Oracle keywords, object names, and metric field names in their original form.' || CHR(10));
     clob_app(l_prompt, 'Return JSON only; do not wrap the response in Markdown fences.' || CHR(10));
+    clob_app(l_prompt, 'Use only the provided before/after JSON metrics; do not invent Source runtime evidence.' || CHR(10));
     clob_app(l_prompt, 'Return JSON only with report_markdown, equivalence_risk, performance_readout, and recommendation.' || CHR(10));
     clob_app(l_prompt, 'report_markdown must exactly follow this section format and use only supplied evidence:' || CHR(10));
     clob_app(l_prompt, '# SQL 튜닝 결과서' || CHR(10));

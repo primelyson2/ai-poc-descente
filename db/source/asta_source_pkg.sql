@@ -1,20 +1,20 @@
 -- db/source/asta_source_pkg.sql
--- Source BaseDB runtime evidence helper for OADT2 ASTA.
+-- OADT2 ASTA용 Source BaseDB 런타임 실행 근거 수집 도우미.
 --
--- ARCHITECTURE: Install on Source BaseDB only.
---   ADB calls this package via DB Link: asta_source_pkg.run_evidence@<db_link>(...)
---   Python/FastAPI must NEVER call this directly.
+-- 아키텍처: Source BaseDB에만 설치한다.
+--   ADB는 DB Link를 통해 이 패키지를 호출한다: asta_source_pkg.run_evidence@<db_link>(...)
+--   Python/FastAPI는 이 패키지를 절대 직접 호출해서는 안 된다.
 --
--- Required grants (run as DBA on Source BaseDB):
+-- 필요 권한(Source BaseDB에서 DBA가 실행):
 --   GRANT SELECT  ON v_$sql                     TO <owner>;
 --   GRANT SELECT  ON v_$sql_plan_statistics_all TO <owner>;
 --   GRANT EXECUTE ON dbms_xplan                 TO <owner>;
---   GRANT EXECUTE ON dbms_sqltune               TO <owner>;  -- only when p_run_advisor='Y'
+--   GRANT EXECUTE ON dbms_sqltune               TO <owner>;  -- p_run_advisor='Y'일 때만 필요
 --
--- Compatible: Oracle 12.2+  (Source BaseDB).
---   AUTHID DEFINER ensures grantees only need EXECUTE on this package.
+-- 호환 버전: Oracle 12.2 이상(Source BaseDB).
+--   AUTHID DEFINER를 사용하므로 권한을 부여받는 사용자는 이 패키지의 EXECUTE 권한만 있으면 된다.
 --
--- See db/source/README.md for installation and grant instructions.
+-- 설치 및 권한 부여 방법은 db/source/README.md를 참고한다.
 
 CREATE OR REPLACE PACKAGE asta_source_pkg AUTHID CURRENT_USER AS
 
@@ -28,22 +28,22 @@ CREATE OR REPLACE PACKAGE asta_source_pkg AUTHID CURRENT_USER AS
   /*
    * run_evidence
    *
-   * Execute p_sql safely on the Source BaseDB, collect actual runtime evidence,
-   * and return a JSON CLOB with:
+   * Source BaseDB에서 p_sql을 안전하게 실행하고 실제 런타임 근거를 수집한 뒤,
+   * 다음 항목을 포함한 JSON CLOB을 반환한다.
    *   run_id, sql_id, child_number, plan_hash_value,
    *   fetch_rows_limit, row_count, elapsed_wall_ms,
    *   last_output_rows, last_cr_buffer_gets, last_disk_reads, last_elapsed_time_us,
-   *   plan_text  (DBMS_XPLAN.DISPLAY_CURSOR format),
+   *   plan_text  (DBMS_XPLAN.DISPLAY_CURSOR 형식),
    *   advisor    { status, report },
    *   error      { code, message } | null
    *
-   * Parameters:
-   *   p_sql              Input SQL — must be SELECT or WITH only.
-   *   p_run_id           Unique run identifier injected as marker in the exec SQL.
-   *   p_fetch_rows       Maximum rows to bound execution (1-10000). Default: 100.
-   *   p_repeat_policy    'AUTO' (2 warm runs) | 'ONCE' | 'REPEAT:<n>' (n=1-5).
-   *   p_run_advisor      'Y' to run DBMS_SQLTUNE, 'N' to skip. Default: 'N'.
-   *   p_sqltune_time_sec DBMS_SQLTUNE time limit in seconds (60-1800). Default: 1800.
+   * 매개변수:
+   *   p_sql              입력 SQL. SELECT 또는 WITH 문만 허용한다.
+   *   p_run_id           실행 SQL에 표식으로 삽입할 고유 실행 ID.
+   *   p_fetch_rows       실행 범위를 제한할 최대 행 수(1~10000). 기본값: 100.
+   *   p_repeat_policy    'AUTO'(워밍 실행 2회) | 'ONCE' | 'REPEAT:<n>'(n=1~5).
+   *   p_run_advisor      DBMS_SQLTUNE 실행은 'Y', 생략은 'N'. 기본값: 'N'.
+   *   p_sqltune_time_sec DBMS_SQLTUNE 제한시간(초, 60~1800). 기본값: 1800.
    */
   FUNCTION run_evidence(
     p_sql              IN CLOB,
@@ -91,10 +91,10 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
   C_GUARD_POLICY   CONSTANT VARCHAR2(40) := 'SELECT_WITH_SINGLE_STATEMENT';
 
   -- =========================================================================
-  -- JSON helpers
+  -- JSON 처리 보조 함수
   -- =========================================================================
 
-  -- Return a JSON string literal ("...") or null for a VARCHAR2 value.
+  -- VARCHAR2 값을 JSON 문자열 리터럴("...") 또는 null로 반환한다.
   FUNCTION json_str(p_val IN VARCHAR2) RETURN VARCHAR2 IS
     l_v VARCHAR2(32767) := p_val;
   BEGIN
@@ -109,7 +109,7 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
     RETURN '"' || l_v || '"';
   END json_str;
 
-  -- Return a JSON number literal or null for a NUMBER value.
+  -- NUMBER 값을 JSON 숫자 리터럴 또는 null로 반환한다.
   FUNCTION json_num(p_val IN NUMBER) RETURN VARCHAR2 IS
     l_text VARCHAR2(100);
   BEGIN
@@ -125,7 +125,7 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
     RETURN l_text;
   END json_num;
 
-  -- Append a VARCHAR2 fragment to a CLOB (no-op for NULL/empty).
+  -- VARCHAR2 조각을 CLOB에 추가한다(NULL 또는 빈 값이면 아무 작업도 하지 않는다).
   PROCEDURE clob_app(p_out IN OUT NOCOPY CLOB, p_str IN VARCHAR2) IS
   BEGIN
     IF p_str IS NOT NULL AND LENGTH(p_str) > 0 THEN
@@ -133,8 +133,8 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
     END IF;
   END clob_app;
 
-  -- Append a CLOB value as a JSON string literal into p_out.
-  -- Handles NULL (writes JSON null), empty (writes ""), and arbitrary length.
+  -- CLOB 값을 JSON 문자열 리터럴로 p_out에 추가한다.
+  -- NULL은 JSON null, 빈 값은 ""로 기록하며 임의 길이의 값을 처리한다.
   PROCEDURE clob_app_json_str(p_out IN OUT NOCOPY CLOB, p_val IN CLOB) IS
     l_offset   PLS_INTEGER := 1;
     l_chunk_sz PLS_INTEGER := 2000;
@@ -154,7 +154,7 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
     clob_app(p_out, '"');
     WHILE l_offset <= l_len LOOP
       l_chunk   := DBMS_LOB.SUBSTR(p_val, l_chunk_sz, l_offset);
-      -- JSON escape within each chunk
+      -- 각 조각 내부의 JSON 특수문자를 이스케이프한다.
       l_escaped := REPLACE(l_chunk,   '\',  '\\');
       l_escaped := REPLACE(l_escaped, '"',  '\"');
       l_escaped := REPLACE(l_escaped, CHR(8),  '\b');
@@ -169,11 +169,11 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
   END clob_app_json_str;
 
   -- =========================================================================
-  -- SQL guard
+  -- SQL 안전성 검사
   -- =========================================================================
 
-  -- Strip leading whitespace, block comments (/* ... */), and line comments (-- ...).
-  -- Returns the remainder of the SQL starting at the first non-comment character.
+  -- 앞부분의 공백, 블록 주석(/* ... */), 행 주석(-- ...)을 제거한다.
+  -- 첫 번째 비주석 문자부터 시작하는 나머지 SQL을 반환한다.
   FUNCTION strip_leading_comments(p_sql IN VARCHAR2) RETURN VARCHAR2 IS
     l_pos PLS_INTEGER := 1;
     l_len PLS_INTEGER := NVL(LENGTH(p_sql), 0);
@@ -182,7 +182,7 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
     l_end PLS_INTEGER;
   BEGIN
     LOOP
-      -- Skip whitespace characters
+      -- 공백 문자를 건너뛴다.
       WHILE l_pos <= l_len
             AND SUBSTR(p_sql, l_pos, 1) IN (' ', CHR(9), CHR(10), CHR(13))
       LOOP
@@ -191,12 +191,12 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
       EXIT WHEN l_pos > l_len;
       l_c2 := SUBSTR(p_sql, l_pos, 2);
       IF l_c2 = '/*' THEN
-        -- Advance past block comment
+        -- 블록 주석 다음 위치로 이동한다.
         l_end := INSTR(p_sql, '*/', l_pos + 2);
         IF l_end = 0 THEN RETURN ''; END IF;  -- unterminated block comment
         l_pos := l_end + 2;
       ELSIF l_c2 = '--' THEN
-        -- Advance past line comment
+        -- 행 주석 다음 위치로 이동한다.
         l_nl := INSTR(p_sql, CHR(10), l_pos + 2);
         l_pos := CASE WHEN l_nl = 0 THEN l_len + 1 ELSE l_nl + 1 END;
       ELSE
@@ -206,9 +206,9 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
     RETURN SUBSTR(p_sql, l_pos);
   END strip_leading_comments;
 
-  -- Remove comments and string literals before forbidden keyword and
-  -- statement-terminator checks. This avoids rejecting harmless literals such
-  -- as SELECT 'drop' FROM dual while still checking executable SQL text.
+  -- 금지 키워드와 문장 종료자를 검사하기 전에 주석과 문자열 리터럴을 제거한다.
+  -- 실행 가능한 SQL 본문은 검사하면서도 SELECT 'drop' FROM dual 같은 무해한
+  -- 문자열 리터럴이 잘못 거부되는 것을 방지한다.
   FUNCTION scrub_guard_text(p_sql IN VARCHAR2) RETURN VARCHAR2 IS
     l_pos PLS_INTEGER := 1;
     l_len PLS_INTEGER := NVL(LENGTH(p_sql), 0);
@@ -257,8 +257,8 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
     RETURN l_out;
   END scrub_guard_text;
 
-  -- Raise ORA-20001 if p_sql is not a safe SELECT or WITH statement.
-  -- Rejects DML, DDL, CALL, BEGIN blocks, and other forbidden constructs.
+  -- p_sql이 안전한 SELECT 또는 WITH 문이 아니면 ORA-20001을 발생시킨다.
+  -- DML, DDL, CALL, BEGIN 블록 및 기타 금지 구문을 거부한다.
   PROCEDURE assert_safe_select(p_sql IN CLOB) IS
     l_head     VARCHAR2(32767);
     l_stripped VARCHAR2(32767);
@@ -279,11 +279,11 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
       RAISE_APPLICATION_ERROR(-20001,
         'ASTA_SQL_GUARD: SQL exceeds maximum length (' || C_MAX_SQL_CHARS || ' chars)');
     END IF;
-    -- Work with VARCHAR2 for comment stripping (length already guarded above)
+    -- 주석 제거를 위해 VARCHAR2로 처리한다(길이는 위에서 이미 검증했다).
     l_head     := DBMS_LOB.SUBSTR(p_sql, 32767, 1);
     l_stripped := strip_leading_comments(l_head);
     l_guard    := scrub_guard_text(l_head);
-    -- First real keyword must be SELECT or WITH
+    -- 첫 번째 실제 키워드는 SELECT 또는 WITH여야 한다.
     l_first    := UPPER(REGEXP_SUBSTR(l_stripped, '^\w+'));
     IF l_first NOT IN ('SELECT', 'WITH') THEN
       RAISE_APPLICATION_ERROR(-20001,
@@ -298,8 +298,8 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
       RAISE_APPLICATION_ERROR(-20001,
         'ASTA_SQL_GUARD: SQL*Plus slash terminator is not allowed');
     END IF;
-    -- Reject any forbidden keyword appearing as a standalone word
-    -- (^|\W) ... (\W|$) approximates \b in Oracle REGEXP
+    -- 독립된 단어로 나타나는 모든 금지 키워드를 거부한다.
+    -- Oracle REGEXP에서는 (^|\W) ... (\W|$)로 \b를 근사한다.
     FOR i IN 1..l_forbidden.COUNT LOOP
       IF REGEXP_LIKE(l_guard, '(^|\W)' || l_forbidden(i) || '(\W|$)', 'i') THEN
         RAISE_APPLICATION_ERROR(-20001,
@@ -309,10 +309,10 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
   END assert_safe_select;
 
   -- =========================================================================
-  -- Execution
+  -- 실행
   -- =========================================================================
 
-  -- Validate the run marker before embedding it into a SQL comment.
+  -- 실행 표식을 SQL 주석에 삽입하기 전에 검증한다.
   FUNCTION normalize_run_id(p_run_id IN VARCHAR2) RETURN VARCHAR2 IS
     l_run_id VARCHAR2(32767) := TRIM(p_run_id);
   BEGIN
@@ -326,11 +326,11 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
     RETURN l_run_id;
   END normalize_run_id;
 
-  -- Build the bounded execution wrapper that:
-  --   1. Injects /*+ gather_plan_statistics */ to enable LAST_* statistics.
-  --   2. Embeds a unique /* ASTA_RUN_ID=<id> */ marker searchable in V$SQL.SQL_TEXT.
-  --   3. Wraps the original SQL in COUNT(*) + ROWNUM <= n to bound row fetching
-  --      while still exercising the full query execution plan.
+  -- 다음 기능을 수행하는 제한 실행 래퍼를 생성한다.
+  --   1. LAST_* 통계를 활성화하기 위해 /*+ gather_plan_statistics */를 삽입한다.
+  --   2. V$SQL.SQL_TEXT에서 검색할 고유 /* ASTA_RUN_ID=<id> */ 표식을 삽입한다.
+  --   3. 전체 쿼리 실행계획은 수행하면서 조회 행 수를 제한하도록 원본 SQL을
+  --      COUNT(*) + ROWNUM <= n으로 감싼다.
   FUNCTION build_exec_sql(
     p_sql    IN CLOB,
     p_run_id IN VARCHAR2,
@@ -341,12 +341,12 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
       'COUNT(*) FROM (';
     l_footer VARCHAR2(60) := ') WHERE ROWNUM <= ' || TO_CHAR(p_rows);
   BEGIN
-    -- Result: SELECT /*+ gather_plan_statistics */ /* ASTA_RUN_ID=x */ COUNT(*) FROM (<sql>) WHERE ROWNUM <= n
+    -- 결과: SELECT /*+ gather_plan_statistics */ /* ASTA_RUN_ID=x */ COUNT(*) FROM (<sql>) WHERE ROWNUM <= n
     RETURN TO_CLOB(l_header) || p_sql || TO_CLOB(l_footer);
   END build_exec_sql;
 
-  -- Normalize repeat policy before any dynamic SQL is built. Invalid values
-  -- return a structured ASTA error through run_evidence's outer exception.
+  -- 동적 SQL을 만들기 전에 반복 정책을 정규화한다. 잘못된 값은
+  -- run_evidence의 바깥쪽 예외 처리를 통해 구조화된 ASTA 오류로 반환한다.
   FUNCTION normalize_repeat_policy(p_repeat_policy IN VARCHAR2) RETURN VARCHAR2 IS
     l_policy VARCHAR2(30) := UPPER(TRIM(NVL(p_repeat_policy, 'AUTO')));
     l_repeat PLS_INTEGER;
@@ -389,12 +389,12 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
   END normalize_sqltune_time_sec;
 
   -- =========================================================================
-  -- Cursor lookup
+  -- 커서 조회
   -- =========================================================================
 
-  -- Locate the executed cursor in V$SQL by the ASTA_RUN_ID marker.
-  -- The marker appears in the first ~100 characters of SQL_TEXT (VARCHAR2(1000)),
-  -- so INSTR on sql_text is sufficient without accessing sql_fulltext (CLOB).
+  -- ASTA_RUN_ID 표식을 이용해 V$SQL에서 실행된 커서를 찾는다.
+  -- 표식은 SQL_TEXT(VARCHAR2(1000))의 처음 약 100자 안에 있으므로,
+  -- sql_fulltext(CLOB)에 접근하지 않고 sql_text의 INSTR만으로 충분하다.
   PROCEDURE find_cursor(
     p_run_id          IN  VARCHAR2,
     p_sql_id          OUT VARCHAR2,
@@ -420,12 +420,12 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
   END find_cursor;
 
   -- =========================================================================
-  -- Metrics collection: V$SQL_PLAN_STATISTICS_ALL LAST_* values
+  -- 통계 수집: V$SQL_PLAN_STATISTICS_ALL의 LAST_* 값
   -- =========================================================================
 
-  -- Collect per-execution LAST_* metrics from V$SQL_PLAN_STATISTICS_ALL.
-  -- LAST_CR_BUFFER_GETS, LAST_DISK_READS, LAST_ELAPSED_TIME: from plan root row (id=0).
-  -- LAST_OUTPUT_ROWS: MAX across rows 0 and 1 to cover FILTER/scalar-subquery plans.
+  -- V$SQL_PLAN_STATISTICS_ALL에서 실행별 LAST_* 통계를 수집한다.
+  -- LAST_CR_BUFFER_GETS, LAST_DISK_READS, LAST_ELAPSED_TIME은 계획 루트 행(id=0)에서 가져온다.
+  -- FILTER/스칼라 서브쿼리 계획을 포함하도록 LAST_OUTPUT_ROWS는 0번과 1번 행의 최댓값을 사용한다.
   PROCEDURE collect_metrics(
     p_sql_id         IN  VARCHAR2,
     p_child_number   IN  NUMBER,
@@ -457,12 +457,12 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
   END collect_metrics;
 
   -- =========================================================================
-  -- Execution plan: DBMS_XPLAN.DISPLAY_CURSOR
+  -- 실행계획: DBMS_XPLAN.DISPLAY_CURSOR
   -- =========================================================================
 
-  -- Return the full DBMS_XPLAN.DISPLAY_CURSOR output as a single CLOB.
-  -- Format includes ALLSTATS LAST (requires gather_plan_statistics hint),
-  -- predicate information, peeked binds, outline, and note sections.
+  -- DBMS_XPLAN.DISPLAY_CURSOR 전체 출력을 하나의 CLOB으로 반환한다.
+  -- 형식에는 ALLSTATS LAST(gather_plan_statistics 힌트 필요), predicate 정보,
+  -- peeked bind, outline 및 note 섹션이 포함된다.
   FUNCTION collect_xplan(
     p_sql_id       IN VARCHAR2,
     p_child_number IN NUMBER
@@ -498,7 +498,7 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
   END collect_xplan;
 
   -- =========================================================================
-  -- Object metadata: table/column statistics and index definitions
+  -- 오브젝트 메타데이터: 테이블·컬럼 통계 및 인덱스 정의
   -- =========================================================================
 
   FUNCTION collect_object_info(
@@ -640,19 +640,19 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
   END collect_object_info;
 
   -- =========================================================================
-  -- SQL Tuning Advisor (optional)
+  -- SQL Tuning Advisor(선택 사항)
   -- =========================================================================
 
-  -- Run DBMS_SQLTUNE for the given sql_id (or sql_text if sql_id unavailable).
-  -- Always drops the tuning task on exit (success or error) to avoid leftovers.
+  -- 지정한 sql_id로 DBMS_SQLTUNE을 실행한다(sql_id가 없으면 sql_text 사용).
+  -- 잔여 작업이 남지 않도록 성공 또는 오류와 관계없이 종료 시 tuning task를 삭제한다.
   FUNCTION run_advisor_opt(
     p_sql_id   IN VARCHAR2,
     p_sql      IN CLOB,
     p_run_id   IN VARCHAR2,
     p_time_sec IN NUMBER
   ) RETURN CLOB IS
-    -- Task name: prefix + sanitized run_id to fit DBMS_SQLTUNE task-name rules.
-    -- Keep <= 30 chars for cross-version advisor compatibility.
+    -- 작업명은 DBMS_SQLTUNE 명명 규칙에 맞게 prefix와 정제된 run_id로 구성한다.
+    -- 버전 간 Advisor 호환성을 위해 30자 이하로 유지한다.
     l_task         VARCHAR2(30) :=
       'ASTA_' || SUBSTR(REGEXP_REPLACE(UPPER(p_run_id), '[^A-Z0-9_$#]', ''), 1, 25);
     l_created_task VARCHAR2(128);
@@ -684,7 +684,7 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
     RETURN l_report;
   EXCEPTION
     WHEN OTHERS THEN
-      -- Attempt cleanup; ignore errors from DROP
+      -- 정리를 시도하되 DROP 오류는 무시한다.
       BEGIN
         DBMS_SQLTUNE.DROP_TUNING_TASK(task_name => l_task);
       EXCEPTION WHEN OTHERS THEN NULL;
@@ -724,7 +724,7 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
   END run_advisor_job;
 
   -- =========================================================================
-  -- Public entry point
+  -- 공개 진입점
   -- =========================================================================
 
   FUNCTION run_evidence(
@@ -735,7 +735,7 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
     p_run_advisor      IN VARCHAR2 DEFAULT 'N',
     p_sqltune_time_sec IN NUMBER   DEFAULT 1800
   ) RETURN CLOB IS
-    -- Execution variables
+    -- 실행 변수
     l_exec_sql        CLOB;
     l_row_count       NUMBER;
     l_fetch_rows      PLS_INTEGER;
@@ -743,60 +743,60 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
     l_start           TIMESTAMP;
     l_end             TIMESTAMP;
     l_elapsed_ms      NUMBER;
-    -- Cursor identification
+    -- 커서 식별
     l_sql_id          VARCHAR2(13);
     l_child_number    NUMBER;
     l_plan_hash_value NUMBER;
-    -- Metrics (LAST_* from V$SQL_PLAN_STATISTICS_ALL)
+    -- 실행 통계(V$SQL_PLAN_STATISTICS_ALL의 LAST_* 값)
     l_output_rows     NUMBER;
     l_cr_buffer_gets  NUMBER;
     l_disk_reads      NUMBER;
     l_elapsed_us      NUMBER;
-    -- Plan text, object metadata, and advisor
+    -- 실행계획 원문, 오브젝트 메타데이터 및 Advisor
     l_plan_text       CLOB;
     l_object_info     CLOB;
     l_advisor_report  CLOB;
     l_advisor_status  VARCHAR2(30) := 'SKIPPED';
-    -- Output
+    -- 출력
     l_result          CLOB;
     l_run_id          VARCHAR2(64);
     l_repeat_policy   VARCHAR2(30);
     l_run_advisor     VARCHAR2(1);
     l_sqltune_time_sec PLS_INTEGER;
   BEGIN
-    -- 1. Validate: only SELECT / WITH allowed
+    -- 1. 검증: SELECT 또는 WITH만 허용한다.
     assert_safe_select(p_sql);
     l_run_id := normalize_run_id(p_run_id);
 
-    -- 2. Bound fetch rows to safe range
+    -- 2. 조회 행 수를 안전한 범위로 제한한다.
     l_fetch_rows := LEAST(GREATEST(NVL(p_fetch_rows, 100), 1), C_MAX_FETCH_ROWS);
 
-    -- 3. Determine repeat count for warm-cache execution
+    -- 3. 워밍 캐시 실행을 위한 반복 횟수를 결정한다.
     l_repeat_policy := normalize_repeat_policy(p_repeat_policy);
     l_repeats := normalize_repeat_count(l_repeat_policy);
     l_run_advisor := normalize_run_advisor(p_run_advisor);
     l_sqltune_time_sec := normalize_sqltune_time_sec(p_sqltune_time_sec);
 
-    -- 4. Build bounded execution SQL with gather_plan_statistics hint and run marker
+    -- 4. gather_plan_statistics 힌트와 실행 표식이 포함된 제한 실행 SQL을 생성한다.
     l_exec_sql := build_exec_sql(p_sql, l_run_id, l_fetch_rows);
 
-    -- 5. Execute (warm-cache repeat loop)
+    -- 5. 실행한다(워밍 캐시 반복 루프).
     l_start := SYSTIMESTAMP;
     FOR i IN 1..l_repeats LOOP
       EXECUTE IMMEDIATE l_exec_sql INTO l_row_count;
     END LOOP;
     l_end := SYSTIMESTAMP;
 
-    -- Wall-clock elapsed in milliseconds (last execution only if possible, else total)
+    -- 경과 시간을 밀리초 단위로 계산한다(가능하면 마지막 실행, 아니면 전체 시간).
     l_elapsed_ms :=   EXTRACT(DAY    FROM (l_end - l_start)) * 86400000
                     + EXTRACT(HOUR   FROM (l_end - l_start)) * 3600000
                     + EXTRACT(MINUTE FROM (l_end - l_start)) * 60000
                     + EXTRACT(SECOND FROM (l_end - l_start)) * 1000;
 
-    -- 6. Locate cursor in V$SQL by the ASTA_RUN_ID marker in sql_text
+    -- 6. sql_text의 ASTA_RUN_ID 표식으로 V$SQL에서 커서를 찾는다.
     find_cursor(l_run_id, l_sql_id, l_child_number, l_plan_hash_value);
 
-    -- 7. Collect V$SQL_PLAN_STATISTICS_ALL LAST_* per-execution metrics
+    -- 7. V$SQL_PLAN_STATISTICS_ALL에서 실행별 LAST_* 통계를 수집한다.
     IF l_sql_id IS NOT NULL THEN
       collect_metrics(
         l_sql_id, l_child_number,
@@ -804,7 +804,7 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
       );
     END IF;
 
-    -- 8. Collect execution plan and object metadata via DBMS_XPLAN/DATA DICTIONARY
+    -- 8. DBMS_XPLAN과 데이터 사전에서 실행계획 및 오브젝트 메타데이터를 수집한다.
     IF l_sql_id IS NOT NULL THEN
       l_plan_text := collect_xplan(l_sql_id, l_child_number);
       l_object_info := collect_object_info(l_sql_id, l_child_number);
@@ -817,7 +817,7 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
       l_object_info := TO_CLOB('{"status":"SKIPPED","source":"PLAN_OBJECTS","table_stats":[],"message":"Cursor not found; object metadata unavailable"}');
     END IF;
 
-    -- 9. Optional SQL Tuning Advisor
+    -- 9. 선택적으로 SQL Tuning Advisor를 실행한다.
     IF l_run_advisor = 'Y' THEN
       l_advisor_report := run_advisor_opt(l_sql_id, p_sql, l_run_id, l_sqltune_time_sec);
       l_advisor_status := CASE
@@ -826,10 +826,10 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
       END;
     END IF;
 
-    -- 10. Build JSON CLOB response
+    -- 10. JSON CLOB 응답을 생성한다.
     DBMS_LOB.CREATETEMPORARY(l_result, TRUE);
 
-    -- Scalar fields (all fit in a single VARCHAR2 fragment)
+    -- 스칼라 필드(모두 하나의 VARCHAR2 조각에 들어간다).
     clob_app(l_result,
       '{"status":"COMPLETED"'    ||
       ',"contract_version":"asta.v1"' ||
@@ -856,10 +856,10 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
       ',"last_elapsed_time_us":' || json_num(l_elapsed_us)          ||
       ',"plan_text":'
     );
-    -- plan_text as a JSON string (potentially large CLOB)
+    -- plan_text를 JSON 문자열로 추가한다(대용량 CLOB일 수 있다).
     clob_app_json_str(l_result, l_plan_text);
 
-    -- object_info as raw JSON: table stats, column stats, and index metadata for LLM evidence
+    -- object_info를 원시 JSON으로 추가한다: LLM 근거용 테이블·컬럼 통계와 인덱스 메타데이터.
     clob_app(l_result, ',"object_info":');
     IF l_object_info IS NULL OR NVL(DBMS_LOB.GETLENGTH(l_object_info), 0) = 0 THEN
       clob_app(l_result, 'null');
@@ -867,7 +867,7 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
       clob_app(l_result, l_object_info);
     END IF;
 
-    -- advisor sub-object
+    -- Advisor 하위 객체
     clob_app(l_result,
       ',"advisor":{"status":' || json_str(l_advisor_status) || ',"report":');
     clob_app_json_str(l_result, l_advisor_report);
@@ -878,7 +878,7 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
 
   EXCEPTION
     WHEN OTHERS THEN
-      -- Return structured error JSON so ADB bridge can report correctly
+      -- ADB Bridge가 정확히 보고할 수 있도록 구조화된 오류 JSON을 반환한다.
       RETURN TO_CLOB(
         '{"status":"FAILED"'       ||
         ',"contract_version":"asta.v1"' ||
@@ -943,11 +943,11 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
           l_source_logins := 'UNKNOWN';
         END;
         IF l_source_logins = 'RESTRICTED' THEN
-          -- Restricted login can terminate DBMS_SQLTUNE/Scheduler work invoked
-          -- through a DB Link and surface to ADB as ORA-03150. Do not attempt
-          -- any Source-direct or synchronous SQLTUNE fallback. Preserve the
-          -- already collected runtime evidence and return an explicit advisor
-          -- failure so the caller can continue from stage 1 with honest status.
+          -- 제한 로그인 상태에서는 DB Link를 통해 실행한 DBMS_SQLTUNE/Scheduler 작업이
+          -- 종료되고 ADB에 ORA-03150으로 나타날 수 있다. Source 직접접속 또는 동기
+          -- SQLTUNE fallback을 시도하지 않는다. 이미 수집한 런타임 근거를 보존하고
+          -- 명시적인 Advisor 실패를 반환하여 호출자가 정직한 상태로 1단계부터
+          -- 계속 처리할 수 있게 한다.
           l_advisor_status := 'FAILED';
           l_advisor_report := TO_CLOB(
             'SQLTUNE_ERROR: Source DB logins are RESTRICTED, so DBMS_SQLTUNE cannot be executed safely through the ADB DB Link path. '

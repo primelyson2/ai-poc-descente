@@ -8,6 +8,9 @@ CREATE OR REPLACE PACKAGE asta_vector_pkg AUTHID DEFINER AS
     p_top_k IN NUMBER DEFAULT 3
   ) RETURN CLOB;
 
+  -- Bounded user-facing preview; full SQL remains only in the case artifact.
+  FUNCTION sql_preview(p_sql IN CLOB) RETURN VARCHAR2;
+
   FUNCTION save_case(
     p_run_id          IN VARCHAR2,
     p_sql             IN CLOB,
@@ -21,6 +24,91 @@ END asta_vector_pkg;
 CREATE OR REPLACE PACKAGE BODY asta_vector_pkg AS
   C_SEARCH_STRATEGY CONSTANT VARCHAR2(40) := 'FINGERPRINT_FIRST_CHUNK_SCAN';
   C_CHUNK_CHARS     CONSTANT PLS_INTEGER := 4000;
+  C_SQL_PREVIEW_CHARS CONSTANT PLS_INTEGER := 500;
+  C_SQL_PREVIEW_LINES CONSTANT PLS_INTEGER := 10;
+
+  FUNCTION sql_preview(p_sql IN CLOB) RETURN VARCHAR2 IS
+    l_text    VARCHAR2(32767);
+    l_masked  VARCHAR2(32767) := '';
+    l_out     VARCHAR2(32767);
+    l_line    VARCHAR2(32767);
+    l_i       PLS_INTEGER := 1;
+    l_len     PLS_INTEGER;
+    l_q_open  VARCHAR2(1);
+    l_q_close VARCHAR2(1);
+    l_marker  CONSTANT VARCHAR2(30) := '... (이하 생략)';
+    l_candidate VARCHAR2(32767);
+    l_last_break PLS_INTEGER;
+    l_truncated BOOLEAN := FALSE;
+  BEGIN
+    IF p_sql IS NULL THEN RETURN NULL; END IF;
+    l_text := DBMS_LOB.SUBSTR(p_sql, 32767, 1);
+    l_len := LENGTH(l_text);
+    -- Lex before applying numeric masking: remove line/block comments and mask
+    -- ordinary and q-quoted literals ([], {}, (), <>, or same delimiter).
+    WHILE l_i <= l_len LOOP
+      IF SUBSTR(l_text, l_i, 2) = '--' THEN
+        WHILE l_i <= l_len AND SUBSTR(l_text, l_i, 1) NOT IN (CHR(10), CHR(13)) LOOP l_i := l_i + 1; END LOOP;
+      ELSIF SUBSTR(l_text, l_i, 2) = '/*' THEN
+        l_i := l_i + 2;
+        WHILE l_i <= l_len AND SUBSTR(l_text, l_i, 2) <> '*/' LOOP
+          IF SUBSTR(l_text, l_i, 1) IN (CHR(10), CHR(13)) THEN l_masked := l_masked || SUBSTR(l_text, l_i, 1); END IF;
+          l_i := l_i + 1;
+        END LOOP;
+        l_i := LEAST(l_i + 2, l_len + 1);
+      ELSIF LOWER(SUBSTR(l_text, l_i, 1)) = 'q' AND SUBSTR(l_text, l_i + 1, 1) = '''' AND l_i + 2 <= l_len THEN
+        l_q_open := SUBSTR(l_text, l_i + 2, 1);
+        l_q_close := CASE l_q_open WHEN '[' THEN ']' WHEN '{' THEN '}' WHEN '(' THEN ')' WHEN '<' THEN '>' ELSE l_q_open END;
+        l_masked := l_masked || '''?'''; -- q-quoted literal
+        l_i := l_i + 3;
+        WHILE l_i <= l_len AND NOT (SUBSTR(l_text, l_i, 1) = l_q_close AND SUBSTR(l_text, l_i + 1, 1) = '''') LOOP l_i := l_i + 1; END LOOP;
+        l_i := LEAST(l_i + 2, l_len + 1);
+      ELSIF SUBSTR(l_text, l_i, 1) = '''' THEN
+        l_masked := l_masked || '''?''';
+        l_i := l_i + 1;
+        WHILE l_i <= l_len LOOP
+          IF SUBSTR(l_text, l_i, 1) = '''' THEN
+            IF SUBSTR(l_text, l_i + 1, 1) = '''' THEN l_i := l_i + 2; ELSE l_i := l_i + 1; EXIT; END IF;
+          ELSE l_i := l_i + 1; END IF;
+        END LOOP;
+      ELSE
+        l_masked := l_masked || SUBSTR(l_text, l_i, 1);
+        l_i := l_i + 1;
+      END IF;
+    END LOOP;
+    l_masked := REGEXP_REPLACE(l_masked, '(^|[^[:alnum:]_$])([0-9]+([.][0-9]+)?)([^[:alnum:]_$]|$)', '\1?\4');
+    FOR i IN 1 .. C_SQL_PREVIEW_LINES + 1 LOOP
+      l_line := REGEXP_SUBSTR(l_masked, '[^' || CHR(10) || CHR(13) || ']+', 1, i);
+      EXIT WHEN l_line IS NULL;
+      IF i > C_SQL_PREVIEW_LINES THEN l_truncated := TRUE; EXIT; END IF;
+      l_candidate := CASE WHEN l_out IS NULL THEN l_line ELSE l_out || CHR(10) || l_line END;
+      IF LENGTH(l_candidate) > C_SQL_PREVIEW_CHARS THEN
+        l_truncated := TRUE;
+        -- Preserve prior complete lines. Only an oversized first line may be
+        -- shortened, and then only at whitespace or SQL punctuation.
+        IF l_out IS NULL THEN
+          l_line := SUBSTR(l_line, 1, C_SQL_PREVIEW_CHARS - LENGTH(l_marker) - 1);
+          l_last_break := LENGTH(l_line);
+          WHILE l_last_break > 0 AND NOT REGEXP_LIKE(SUBSTR(l_line, l_last_break, 1), '[[:space:],.;:()]') LOOP
+            l_last_break := l_last_break - 1;
+          END LOOP;
+          IF l_last_break > 0 THEN l_out := RTRIM(SUBSTR(l_line, 1, l_last_break)); END IF;
+        END IF;
+        EXIT;
+      END IF;
+      l_out := l_candidate;
+    END LOOP;
+    IF l_truncated THEN
+      WHILE l_out IS NOT NULL AND LENGTH(l_out) + 1 + LENGTH(l_marker) > C_SQL_PREVIEW_CHARS LOOP
+        l_out := REGEXP_REPLACE(l_out, CHR(10) || '[^' || CHR(10) || ']*$', '');
+      END LOOP;
+      RETURN CASE WHEN l_out IS NULL THEN l_marker ELSE l_out || CHR(10) || l_marker END;
+    END IF;
+    RETURN l_out;
+  EXCEPTION WHEN OTHERS THEN
+    -- A preview must fail closed: never return unmasked source SQL.
+    RETURN '[SQL preview redacted]';
+  END sql_preview;
 
   FUNCTION json_str(p_val IN VARCHAR2) RETURN VARCHAR2 IS
     l_v VARCHAR2(32767) := p_val;
@@ -37,6 +125,15 @@ CREATE OR REPLACE PACKAGE BODY asta_vector_pkg AS
     l_v := REPLACE(l_v, CHR(12), '\f');
     RETURN '"' || l_v || '"';
   END json_str;
+
+  FUNCTION json_vc(p_json IN CLOB, p_path IN VARCHAR2, p_default IN VARCHAR2 DEFAULT NULL) RETURN VARCHAR2 IS
+    l_val VARCHAR2(4000);
+  BEGIN
+    EXECUTE IMMEDIATE 'SELECT JSON_VALUE(:j, ''' || REPLACE(p_path, '''', '''''') ||
+      ''' RETURNING VARCHAR2(4000) NULL ON ERROR) FROM dual' INTO l_val USING p_json;
+    RETURN NVL(l_val, p_default);
+  EXCEPTION WHEN OTHERS THEN RETURN p_default;
+  END json_vc;
 
   FUNCTION object_exists(p_object_name IN VARCHAR2) RETURN BOOLEAN IS
     l_count NUMBER;
@@ -152,11 +249,19 @@ CREATE OR REPLACE PACKAGE BODY asta_vector_pkg AS
                JSON_ARRAYAGG(
                  JSON_OBJECT(
                    'case_id' VALUE case_id,
-                   'chunk_id' VALUE chunk_id,
-                   'chunk_type' VALUE chunk_type,
+                   'run_id' VALUE case_id,
+                   'verdict' VALUE verdict,
+                   'workload_type' VALUE workload_type,
+                   'primary_metric' VALUE primary_metric,
+                   'change_summary' VALUE CASE WHEN TRIM(change_summary) IN ('[]', 'null', '') THEN '-' ELSE NVL(change_summary, '-') END,
+                   'before_buffer_gets' VALUE before_buffer_gets,
+                   'after_buffer_gets' VALUE after_buffer_gets,
+                   'before_elapsed_time_us' VALUE before_elapsed_time_us,
+                   'after_elapsed_time_us' VALUE after_elapsed_time_us,
+                   'sql_preview' VALUE sql_preview,
+                   'report_ref' VALUE '/api/asta/runs/' || case_id || '/report',
                    'matched_fingerprint' VALUE matched_fingerprint,
-                   'source_fingerprint' VALUE sql_fingerprint,
-                   'chunk_text' VALUE DBMS_LOB.SUBSTR(chunk_text, 2000, 1)
+                   'source_fingerprint' VALUE sql_fingerprint
                    RETURNING CLOB
                  )
                  RETURNING CLOB
@@ -164,19 +269,30 @@ CREATE OR REPLACE PACKAGE BODY asta_vector_pkg AS
                TO_CLOB('[]')
              )
       FROM (
-        SELECT case_id, chunk_id, chunk_type, chunk_text, sql_fingerprint, matched_fingerprint
+        SELECT case_id, sql_fingerprint, matched_fingerprint, sql_preview,
+               workload_type, primary_metric, verdict, change_summary,
+               before_buffer_gets, after_buffer_gets,
+               before_elapsed_time_us, after_elapsed_time_us
         FROM (
           SELECT c.case_id,
-                 ch.chunk_id,
-                 ch.chunk_type,
-                 ch.chunk_text,
                  c.sql_fingerprint,
+                 asta_vector_pkg.sql_preview(c.source_sql) sql_preview,
+                 JSON_VALUE(c.metadata_json, '$.workload_type' RETURNING VARCHAR2(30) NULL ON ERROR) workload_type,
+                 JSON_VALUE(c.metadata_json, '$.primary_metric' RETURNING VARCHAR2(30) NULL ON ERROR) primary_metric,
+                 JSON_VALUE(c.metadata_json, '$.verdict' RETURNING VARCHAR2(30) NULL ON ERROR) verdict,
+                 JSON_VALUE(c.metadata_json, '$.change_summary' RETURNING VARCHAR2(1000) NULL ON ERROR) change_summary,
+                 JSON_VALUE(c.metadata_json, '$.before_buffer_gets' RETURNING NUMBER NULL ON ERROR) before_buffer_gets,
+                 JSON_VALUE(c.metadata_json, '$.after_buffer_gets' RETURNING NUMBER NULL ON ERROR) after_buffer_gets,
+                 JSON_VALUE(c.metadata_json, '$.before_elapsed_time_us' RETURNING NUMBER NULL ON ERROR) before_elapsed_time_us,
+                 JSON_VALUE(c.metadata_json, '$.after_elapsed_time_us' RETURNING NUMBER NULL ON ERROR) after_elapsed_time_us,
                  CASE WHEN c.sql_fingerprint = :query_fp_match THEN 'Y' ELSE 'N' END AS matched_fingerprint
-          FROM   asta_tuning_case_chunks ch
-                 JOIN asta_tuning_cases c ON c.case_id = ch.case_id
+          FROM   asta_tuning_cases c
+          -- Chunks remain searchable storage; UX result is deliberately one row per case.
+          -- Legacy relation: JOIN asta_tuning_cases c ON c.case_id = ch.case_id
+          WHERE  EXISTS (SELECT 1 FROM asta_tuning_case_chunks ch WHERE ch.case_id = c.case_id)
           ORDER  BY CASE WHEN c.sql_fingerprint = :query_fp_order THEN 0 ELSE 1 END,
                     c.created_at DESC,
-                    ch.chunk_id
+                    c.case_id
         )
         WHERE  ROWNUM <= :top_k
       )
@@ -251,7 +367,23 @@ CREATE OR REPLACE PACKAGE BODY asta_vector_pkg AS
 
     l_chunks_saved := l_chunks_saved + save_case_chunk(l_case_id, 'SOURCE_SQL', p_sql);
     l_chunks_saved := l_chunks_saved + save_case_chunk(l_case_id, 'TUNED_SQL', p_tuned_sql);
-    l_chunks_saved := l_chunks_saved + save_case_chunk(l_case_id, 'REPORT_MARKDOWN', p_report_markdown);
+    -- Existing metadata JSON is the schema: preserve verdicts including failures
+    -- and NO_REWRITE, while indexing semantically useful bounded chunks.
+    l_chunks_saved := l_chunks_saved + save_case_chunk(l_case_id, 'STRUCTURE',
+      TO_CLOB('rewrite_type=') || TO_CLOB(json_vc(p_metadata_json, '$.rewrite_type', '-')) || CHR(10) || p_tuned_sql);
+    l_chunks_saved := l_chunks_saved + save_case_chunk(l_case_id, 'VERDICT',
+      TO_CLOB('verdict=') || TO_CLOB(json_vc(p_metadata_json, '$.verdict', '-')) ||
+      TO_CLOB('; equivalence=') || TO_CLOB(json_vc(p_metadata_json, '$.equivalence_status', '-')) ||
+      TO_CLOB('; plans=') || TO_CLOB(json_vc(p_metadata_json, '$.before_plan_hash_value', '-')) ||
+      TO_CLOB(' -> ') || TO_CLOB(json_vc(p_metadata_json, '$.after_plan_hash_value', '-')) ||
+      TO_CLOB('; metrics=') || TO_CLOB(json_vc(p_metadata_json, '$.before_buffer_gets', '-')) ||
+      TO_CLOB(' -> ') || TO_CLOB(json_vc(p_metadata_json, '$.after_buffer_gets', '-')) ||
+      TO_CLOB('; elapsed=') || TO_CLOB(json_vc(p_metadata_json, '$.before_elapsed_time_us', '-')) ||
+      TO_CLOB(' -> ') || TO_CLOB(json_vc(p_metadata_json, '$.after_elapsed_time_us', '-')));
+    l_chunks_saved := l_chunks_saved + save_case_chunk(l_case_id, 'ADVISOR',
+      TO_CLOB(json_vc(p_metadata_json, '$.advisor_summary', NULL)));
+    l_chunks_saved := l_chunks_saved + save_case_chunk(l_case_id, 'FAILURE_REASON',
+      TO_CLOB(json_vc(p_metadata_json, '$.verdict_reason', NULL)));
 
     RETURN TO_CLOB(
       '{"status":"COMPLETED","code":"VECTOR_KB","operation":"SAVE_CASE","case_id":' ||

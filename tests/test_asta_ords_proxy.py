@@ -50,13 +50,11 @@ def _cfg(ords_base_url="https://example.com/ords/asta"):
 
 
 def _run_analyze_background(payload, database="devdoADB"):
-    """ASTA 내부 처리 보조 함수: run analyze background."""
+    """호환 호출 인자를 유지하되 ADB submit 응답을 동기적으로 받는다."""
     background = BackgroundTasks()
     initial = asyncio.run(asta_proxy.analyze(DummyRequest(payload), background, database=database))
-    for task in background.tasks:
-        asyncio.run(task.func(*task.args, **task.kwargs))
-    final = asyncio.run(asta_proxy.get_run_report(initial["run_id"], database=database))
-    return initial, final
+    assert background.tasks == []
+    return initial, initial
 
 
 
@@ -184,32 +182,24 @@ def test_sql_only_llm_prefers_payload_prompt(monkeypatch):
     assert "Oracle SQL 튜닝 요청 prompt" in result["report_markdown"]
 
 
-def test_analyze_returns_running_immediately_and_passes_proxy_run_id_to_ords(monkeypatch):
-    """ASTA 계약/회귀 조건을 검증한다: analyze returns running immediately and passes proxy run id to ords."""
+def test_analyze_submits_once_and_passes_proxy_run_id_to_ords(monkeypatch):
+    """FastAPI는 자체 worker 없이 ADB submit 응답을 즉시 전달한다."""
     deps.set_config(_cfg())
     captured = {}
-    background = BackgroundTasks()
 
     async def fake_post(url, payload, timeout):
-        """ASTA 처리 흐름에서 fake post 작업을 수행한다."""
         captured["url"] = url
         captured["payload"] = payload
-        return {"run_id": payload["run_id"], "status": "COMPLETED", "progress": [{"seq": 1, "code": "REQUEST_RECEIVED", "status": "DONE"}]}
+        return {"run_id": payload["run_id"], "status": "QUEUED", "execution_mode": "ADB_SCHEDULER"}
 
     monkeypatch.setattr(asta_proxy, "_post_json_to_ords", fake_post)
-    result = asyncio.run(asta_proxy.analyze(DummyRequest({"sql": "select 1 from dual"}), background, database="devdoADB"))
+    result = asyncio.run(asta_proxy.analyze(DummyRequest({"sql": "select 1 from dual"}), BackgroundTasks(), database="devdoADB"))
 
-    assert result["status"] == "RUNNING"
+    assert result["status"] == "QUEUED"
     assert result["run_id"].startswith("OADT2-ASTA-")
-    assert result["proxy"]["source"] == "FASTAPI_ASYNC_PROXY"
-    assert result["progress"][0]["code"] == "REQUEST_RECEIVED"
-    assert len(background.tasks) == 1
-    task = background.tasks[0]
-    asyncio.run(task.func(*task.args, **task.kwargs))
+    assert result["proxy"]["source"] == "ADB_ORDS"
+    assert result["execution_mode"] == "ADB_SCHEDULER"
     assert captured["payload"]["run_id"] == result["run_id"]
-    final = asyncio.run(asta_proxy.get_run_report(result["run_id"], database="devdoADB"))
-    assert final["status"] == "COMPLETED"
-
 
 
 def test_run_routes_proxy_to_ords_with_encoded_run_id(monkeypatch):
@@ -475,7 +465,7 @@ def test_analyze_writes_sanitized_request_audit_jsonl(monkeypatch, tmp_path):
     lines = (tmp_path / "asta_request_audit.jsonl").read_text(encoding="utf-8").splitlines()
     records = [json.loads(line) for line in lines]
     final = records[-1]
-    assert final["event"] == "analyze_background_complete"
+    assert final["event"] == "analyze_submitted"
     assert final["run_id"] == "OADT2-ASTA-AUDIT"
     assert final["request_id"]
     assert final["sql_sha256"]
@@ -523,5 +513,22 @@ def test_fallback_run_snapshot_roundtrip(monkeypatch, tmp_path):
     assert loaded is not None
     assert loaded["status"] == "COMPLETED"
     assert loaded["detailed_report_markdown"] == "# final report"
+
+
+def test_proxy_preserves_payload_contract_but_drops_deprecated_prompt_mode():
+    payload = asta_proxy._coerce_payload({
+        "sql": "select 1 from dual", "llm_profile": "ASTA_X", "use_llm": False,
+        "run_advisor": True, "vector_top_k": 7, "prompt_mode": "C",
+        "tuning_context": {"prompt_mode": "B", "user_notes": "keep"},
+    })
+    assert payload["sql"] == "select 1 from dual"
+    assert payload["llm_profile"] == "ASTA_X"
+    assert payload["use_llm"] is False
+    assert payload["run_advisor"] is True
+    assert payload["vector_top_k"] == 7
+    assert "prompt_mode" not in payload
+    assert "prompt_mode" not in payload["tuning_context"]
+    assert payload["tuning_context"]["user_notes"] == "keep"
+
 
 

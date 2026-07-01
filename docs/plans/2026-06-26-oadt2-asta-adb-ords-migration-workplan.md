@@ -1,5 +1,23 @@
 # OADT2 ASTA ADB/ORDS 전환 변경 작업서
 
+## 추가 변경: workload 유형별 튜닝
+
+- UI에 `OLTP — Buffer Reads 최소화`(기본값)와 `배치 — Elapsed Time 최소화` 선택을 추가했다.
+- FastAPI thin proxy가 `OLTP|BATCH`만 허용하고 optimization goal을 서버에서 canonical 값으로 결정한다.
+- SQL-only LLM prompt, ADB orchestration, deterministic comparison, 보고서 및 Vector metadata에 workload/primary metric을 전달한다.
+- 판정은 동등성/실패를 우선하며 OLTP는 buffer reads 5% 이상 감소를, BATCH는 elapsed time의 엄격한 감소를 요구한다.
+- RED: `tests/test_asta_workload_type.py` 최초 실행에서 6 failed를 확인했다.
+- GREEN: `uv run --with pytest pytest -q` → `133 passed in 0.73s`; `node --check static/js/extensions/tuning_assistant.js` 및 `python3 -m py_compile app/routers/asta_proxy.py tests/test_asta_workload_type.py` → 성공.
+
+### 2026-06-30 독립 리뷰 Important 4건 TDD 보완
+
+- RED: 신규 `tests/test_independent_review_important.py` 실행에서 `4 failed`를 확인했다.
+- BATCH 비교는 결과 동등성과 elapsed before/after만 필수로 하고, OLTP에만 gets+elapsed 필수 계약을 유지했다. Python reference truth table로 경계값과 실측 OLTP 사례를 고정했다.
+- Vector save에는 canonical `/api/asta/runs/{run_id}/report` 참조만 저장하여 report/save 순환 의존성을 제거했다. Stage 11 terminal artifact 생성 후 최종 report를 만들므로 저장 실패도 결과서에 표시된다.
+- SQL preview를 작은 lexer로 전환해 일반/q-quote literal과 line/block comment를 마스킹하며 예외 시 fail-closed redaction한다.
+- SQL-only profile fallback의 각 호출을 내부 exception block으로 격리하고, 다음 profile로 계속하며 비민감 profile별 오류 요약을 artifact에 남긴다.
+- GREEN: `uv run --with pytest pytest -q` → `140 passed in 0.71s`; `python3 -m compileall -q app tools tests` 및 `node --check static/js/extensions/tuning_assistant.js` → 성공.
+
 > **For Hermes:** Use subagent-driven-development skill to implement this plan task-by-task.
 
 **Goal:** OADT2 AI SQL Tuning Assistant를 Python-local 실행 구조에서 ADB PL/SQL package + ORDS 호출 구조로 전환한다.

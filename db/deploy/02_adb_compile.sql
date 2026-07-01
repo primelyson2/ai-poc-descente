@@ -81,6 +81,7 @@ END;
 /
 
 @db/asta/003_asta_runs_source_db_id.sql
+@db/asta/005_asta_async_run_columns.sql
 
 PROMPT Creating vector KB tables if absent...
 DECLARE

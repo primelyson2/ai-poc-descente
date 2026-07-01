@@ -17,6 +17,12 @@ wallets/
 # 내부 보안 문서 (공개 금지)
 SECURITY_INFO.md
 
+# Local runtime and agent artifacts
+.hermes/
+.pytest_cache/
+logs/
+reports/
+
 # OS
 .DS_Store
 

@@ -1,0 +1,73 @@
+"""Regression contracts for the 2026-06-30 independent Claude review."""
+from pathlib import Path
+import importlib.util
+import re
+
+ROOT = Path(__file__).resolve().parents[1]
+REPORT = (ROOT / "db/adb/asta_report_pkg.sql").read_text()
+LLM = (ROOT / "db/adb/asta_llm_pkg.sql").read_text()
+PKG = (ROOT / "db/adb/asta_pkg.sql").read_text()
+
+
+def body(source: str, start: str, end: str) -> str:
+    return source[source.index(start):source.index(end, source.index(start))]
+
+
+def test_c1_report_stage_table_matches_canonical_order():
+    section = body(REPORT, "PROCEDURE append_stage_check(", "END append_stage_check;")
+    rows = re.findall(r"append_stage_row\(p_out,\s*(\d+),\s*'([^']+)'", section)
+    assert rows == [
+        ("1", "요청 접수"), ("2", "ORDS 호출"), ("3", "SQL Guard"),
+        ("4", "원본 SQL/XPLAN/metrics"), ("5", "SQL Tuning Advisor"),
+        ("6", "LLM SQL-only 구조 재작성"), ("7", "후보 SQL evidence"),
+        ("8", "Before/After deterministic 비교"), ("9", "Vector KB 조회"),
+        ("10", "Final report"), ("11", "Vector KB 저장"),
+    ]
+    assert "p_comparison_json" in section
+
+
+def test_c2_sql_only_arrays_are_preserved_and_vector_metadata_is_searchable():
+    section = body(LLM, "FUNCTION generate_sql_only_tuning(\n", "END generate_sql_only_tuning;")
+    assert "JSON_QUERY(l_response, '$.change_summary'" in section
+    assert "JSON_QUERY(l_response, '$.semantic_risks'" in section
+    assert '\\"change_summary\\":[]' not in section
+    metadata = body(PKG, "FUNCTION build_vector_metadata(", "END build_vector_metadata;")
+    assert "JSON_QUERY(p_llm_json, '$.change_summary'" in metadata
+    assert "FORMAT JSON" in metadata
+    assert "JSON_VALUE(p_llm_json, '$.change_summary'" not in metadata
+
+
+def test_c3_candidate_failure_verdict_survives_original_fallback():
+    orchestration = body(PKG, "FUNCTION analyze_sql(", "END analyze_sql;")
+    marker = "-- Preserve the failed candidate verdict"
+    failure = orchestration[orchestration.index(marker):orchestration.index("END IF;", orchestration.index(marker)) + 7]
+    assert "CANDIDATE_FAILED" in failure
+    assert '\"equivalence_status\":\"UNKNOWN\"' in failure
+    assert '\"retain_original_sql\":true' in failure
+    compare_assignment = "l_comparison_json := build_comparison_json(l_source_json, l_after_json, l_workload_type);"
+    assert "IF l_candidate_failed <> 'Y' THEN\n        " + compare_assignment in orchestration
+
+
+def test_c4_smoke_accepts_sql_only_code_mode_or_prompt_mode():
+    spec = importlib.util.spec_from_file_location("smoke", ROOT / "tools/asta_smoke_adb.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    base = {"progress": [{"code": c, "status": "SKIPPED" if c in {"AFTER_EVIDENCE", "BEFORE_AFTER_COMPARE"} else "DONE"} for c in module.WORKFLOW],
+            "comparison": {"verdict": "NO_REWRITE"}, "final_review": {"status": "SKIPPED", "reason": "DETERMINISTIC_COMPARISON"},
+            "detailed_report_markdown": "개선 SQL 없음"}
+    for llm in ({"code": "SQL_ONLY_REWRITE"}, {"mode": "SQL_ONLY_STRUCTURAL_REWRITE"}, {"prompt_mode": "SQL_ONLY_STRUCTURAL_REWRITE"}):
+        module.validate_workflow_contract({**base, "llm_artifact": llm}, {})
+
+
+def test_c5_public_candidate_requires_improved_comparison():
+    section = body(REPORT, "FUNCTION build_response_json(\n", "END build_response_json;")
+    assert "$.verdict" in section
+    assert "= 'IMPROVED'" in section
+
+
+def test_i1_i2_and_message_contracts():
+    orchestration = body(PKG, "FUNCTION analyze_sql(", "END analyze_sql;")
+    assert "record_progress(l_run_id, 11, 'FINAL_REPORT'" not in orchestration
+    assert orchestration.count("asta_llm_pkg.generate_sql_only_tuning(") == 1
+    sql_only = body(LLM, "FUNCTION generate_sql_only_tuning(\n", "END generate_sql_only_tuning;")
+    assert '"message":"LLM disabled"' in sql_only

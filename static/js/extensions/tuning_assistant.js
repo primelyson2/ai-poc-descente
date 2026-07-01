@@ -85,7 +85,7 @@ order by amt desc`,
        sum(s3.amount_sold) amt3,
        sum(s4.amount_sold) amt4
 from DEVDO.SALES s1
-join DEVDO.SALES s2 on s2.prod_id=s1.prod_id and s2.channel_id=s1.channel_id
+join DEVDO.SALES s2 on s2.prod_id=s1.prod_id and s2.channel_id=s1.channel_id and s2.time_id=s1.time_id
 join DEVDO.SALES s3 on s3.cust_id=s1.cust_id and s3.time_id=s1.time_id
 join DEVDO.SALES s4 on s4.prod_id=s1.prod_id and s4.time_id=s1.time_id
 join DEVDO.TIMES t on t.time_id=s1.time_id
@@ -253,6 +253,93 @@ group by co.country_region, co.country_name, p.prod_category, p.prod_subcategory
 having sum(s.amount_sold) > 100
 order by amount_sum desc`,
     },
+    {
+      id: "asta-batch-01",
+      label: "배치 01. 연도별 SALES 반복 스캔 / UNION ALL",
+      workload: "BATCH",
+      sql: `select /* ASTA_BATCH_01_REPEATED_YEAR_UNION_SCANS */ period_name, sale_count, sale_amount
+from (
+  select '1998' period_name, count(*) sale_count, sum(s.amount_sold) sale_amount
+  from DEVDO.SALES s join DEVDO.TIMES t on t.time_id = s.time_id where t.calendar_year = 1998
+  union all
+  select '1999' period_name, count(*) sale_count, sum(s.amount_sold) sale_amount
+  from DEVDO.SALES s join DEVDO.TIMES t on t.time_id = s.time_id where t.calendar_year = 1999
+  union all
+  select '2000' period_name, count(*) sale_count, sum(s.amount_sold) sale_amount
+  from DEVDO.SALES s join DEVDO.TIMES t on t.time_id = s.time_id where t.calendar_year = 2000
+  union all
+  select '2001' period_name, count(*) sale_count, sum(s.amount_sold) sale_amount
+  from DEVDO.SALES s join DEVDO.TIMES t on t.time_id = s.time_id where t.calendar_year = 2001
+)
+order by period_name`,
+    },
+    {
+      id: "asta-batch-02",
+      label: "배치 02. 상품별 상관 집계 서브쿼리 반복",
+      workload: "BATCH",
+      sql: `select /* ASTA_BATCH_02_CORRELATED_AGGREGATES */
+       p.prod_id, p.prod_name,
+       (select sum(s.amount_sold) from DEVDO.SALES s where s.prod_id = p.prod_id) total_amount,
+       (select sum(s.quantity_sold) from DEVDO.SALES s where s.prod_id = p.prod_id) total_quantity,
+       (select count(distinct s.cust_id) from DEVDO.SALES s where s.prod_id = p.prod_id) buyer_count,
+       (select avg(s.amount_sold) from DEVDO.SALES s where s.prod_id = p.prod_id) average_sale
+from DEVDO.PRODUCTS p
+where p.prod_status is not null
+order by total_amount desc nulls last`,
+    },
+    {
+      id: "asta-batch-03",
+      label: "배치 03. 동일 fact 중복 CTE 집계",
+      workload: "BATCH",
+      sql: `with amount_by_product as (
+  select /* ASTA_BATCH_03_DUPLICATE_CTE_SCANS */ s.prod_id, sum(s.amount_sold) amount_sold
+  from DEVDO.SALES s group by s.prod_id
+), quantity_by_product as (
+  select s.prod_id, sum(s.quantity_sold) quantity_sold from DEVDO.SALES s group by s.prod_id
+), buyers_by_product as (
+  select s.prod_id, count(distinct s.cust_id) buyer_count from DEVDO.SALES s group by s.prod_id
+)
+select p.prod_id, p.prod_name, a.amount_sold, q.quantity_sold, b.buyer_count
+from DEVDO.PRODUCTS p
+join amount_by_product a on a.prod_id = p.prod_id
+join quantity_by_product q on q.prod_id = p.prod_id
+join buyers_by_product b on b.prod_id = p.prod_id
+order by a.amount_sold desc`,
+    },
+    {
+      id: "asta-batch-04",
+      label: "배치 04. 함수 기반 조인/필터와 대규모 window sort",
+      workload: "BATCH",
+      sql: `with ranked_sales as (
+  select /* ASTA_BATCH_04_FUNCTION_JOIN_WINDOW_SORT */
+         s.prod_id, s.cust_id, t.calendar_year, s.amount_sold,
+         row_number() over (partition by t.calendar_year, s.prod_id order by nvl(s.amount_sold, 0) desc, s.cust_id) sale_rank,
+         sum(s.amount_sold) over (partition by t.calendar_year, s.prod_id) product_year_amount
+  from DEVDO.SALES s
+  join DEVDO.TIMES t on to_char(t.time_id, 'YYYYMMDD') = to_char(s.time_id, 'YYYYMMDD')
+  where to_char(t.calendar_year) between '1998' and '2001'
+)
+select calendar_year, prod_id, count(*) top_sale_count,
+       sum(amount_sold) top_sale_amount, max(product_year_amount) product_year_amount
+from ranked_sales
+where sale_rank <= 25
+group by calendar_year, prod_id
+order by product_year_amount desc`,
+    },
+    {
+      id: "asta-batch-05",
+      label: "배치 05. 여러 fact 집계 결과 재조인",
+      workload: "BATCH",
+      sql: `select /* ASTA_BATCH_05_FACT_AGGREGATE_REJOINS */
+       p.prod_id, p.prod_name, a.sale_amount, q.sale_quantity, b.buyer_count, d.active_days
+from DEVDO.PRODUCTS p
+join (select s.prod_id, sum(s.amount_sold) sale_amount from DEVDO.SALES s group by s.prod_id) a on a.prod_id = p.prod_id
+join (select s.prod_id, sum(s.quantity_sold) sale_quantity from DEVDO.SALES s group by s.prod_id) q on q.prod_id = p.prod_id
+join (select s.prod_id, count(distinct s.cust_id) buyer_count from DEVDO.SALES s group by s.prod_id) b on b.prod_id = p.prod_id
+join (select s.prod_id, count(distinct s.time_id) active_days from DEVDO.SALES s group by s.prod_id) d on d.prod_id = p.prod_id
+where a.sale_amount > 0
+order by a.sale_amount desc`,
+    },
   ];
   const DEFAULT_STEPS = [
     { seq: 1, code: "REQUEST_RECEIVED", label: "요청 수신", status: "PENDING" },
@@ -260,10 +347,10 @@ order by amount_sum desc`,
     { seq: 3, code: "SQL_GUARD", label: "SQL 안전성 검사", status: "PENDING" },
     { seq: 4, code: "BEFORE_EVIDENCE", label: "원본 SQL Evidence 수집", status: "PENDING" },
     { seq: 5, code: "SQL_TUNING_ADVISOR", label: "Tuning Advisor 수행", status: "PENDING" },
-    { seq: 6, code: "VECTOR_KB", label: "ADB Vector KB 유사 결과서 조회", status: "PENDING" },
-    { seq: 7, code: "LLM_REWRITE", label: "AI 1차 튜닝: 분석결과 + Vector 사례 참조", status: "PENDING" },
-    { seq: 8, code: "AFTER_EVIDENCE", label: "튜닝 SQL 분석: 튜닝 SQL 재수행/비교", status: "PENDING" },
-    { seq: 9, code: "LLM_FINAL_REVIEW", label: "AI Before/After 정리", status: "PENDING" },
+    { seq: 6, code: "LLM_REWRITE", label: "SQL-only 구조 재작성", status: "PENDING" },
+    { seq: 7, code: "AFTER_EVIDENCE", label: "후보 SQL Evidence 수집", status: "PENDING" },
+    { seq: 8, code: "BEFORE_AFTER_COMPARE", label: "결정론적 Before/After 비교", status: "PENDING" },
+    { seq: 9, code: "VECTOR_KB", label: "검증 후 유사 결과서 조회", status: "PENDING" },
     { seq: 10, code: "FINAL_REPORT", label: "최종 보고서 생성", status: "PENDING" },
     { seq: 11, code: "VECTOR_SAVE", label: "ADB Vector KB 결과서 저장", status: "PENDING" },
   ];
@@ -388,9 +475,10 @@ order by amount_sum desc`,
             <button class="tuning-secondary" id="asta-report-bottom" type="button">맨 아래</button>
           </div>
         </div>
-        <pre id="asta-report-scroll" class="code-block tuning-report-scroll" tabindex="0">${escapeHtml(window.__astaLastReport.report)}</pre>
+        <div id="asta-report-scroll" class="code-block tuning-report-scroll" tabindex="0"></div>
       </div>`;
     const reportScroller = document.getElementById("asta-report-scroll");
+    renderTrustedVectorBlocks(reportScroller, window.__astaLastReport.report);
     document.getElementById("asta-report-top")?.addEventListener("click", () => reportScroller?.scrollTo({ top: 0, behavior: "smooth" }));
     document.getElementById("asta-report-bottom")?.addEventListener("click", () => reportScroller?.scrollTo({ top: reportScroller.scrollHeight, behavior: "smooth" }));
     requestAnimationFrame(() => {
@@ -401,6 +489,50 @@ order by amount_sum desc`,
     if (downloadButton) downloadButton.hidden = false;
     const resetButton = document.getElementById("asta-reset");
     if (resetButton) resetButton.hidden = false;
+  }
+
+  // Decode character references from backend-safe code only. The result is
+  // assigned through textContent, so decoded angle brackets cannot execute.
+  function decodeVectorEntities(value) {
+    const decoder = document.createElement("textarea");
+    decoder.innerHTML = value;
+    return decoder.value;
+  }
+
+  function renderTrustedVectorBlocks(container, report) {
+    const detailPattern = /<details><summary>축약 SQL 보기<\/summary>\s*<pre><code>([\s\S]*?)<\/code><\/pre>\s*<\/details>\s*(?:\[전체 결과서 보기\]\(([^)]+)\))?/g;
+    const safeReportPath = /^\/api\/asta\/runs\/[A-Za-z0-9][A-Za-z0-9_.:-]*\/report(?:\/view)?$/;
+    let cursor = 0;
+    let match;
+    const appendText = (plainText) => {
+      if (!plainText) return;
+      const text = document.createElement("pre");
+      text.className = "tuning-report-text";
+      text.textContent = plainText;
+      container.appendChild(text);
+    };
+    while ((match = detailPattern.exec(report)) !== null) {
+      appendText(report.slice(cursor, match.index));
+      const details = document.createElement("details");
+      const summary = document.createElement("summary");
+      summary.textContent = "축약 SQL 보기";
+      const pre = document.createElement("pre");
+      const code = document.createElement("code");
+      code.textContent = decodeVectorEntities(match[1]);
+      pre.appendChild(code);
+      details.append(summary, pre);
+      container.appendChild(details);
+      if (match[2] && safeReportPath.test(match[2])) {
+        const link = document.createElement("a");
+        link.href = match[2].endsWith("/view") ? match[2] : `${match[2]}/view`;
+        link.target = "_blank";
+        link.rel = "noopener";
+        link.textContent = "전체 결과서 보기";
+        container.appendChild(link);
+      }
+      cursor = detailPattern.lastIndex;
+    }
+    appendText(report.slice(cursor));
   }
 
   /**
@@ -468,10 +600,11 @@ order by amount_sum desc`,
       SQL_GUARD: 2,
       BEFORE_EVIDENCE: 3,
       SQL_TUNING_ADVISOR: 4,
-      VECTOR_KB: 5,
-      LLM_REWRITE: 6,
-      AFTER_EVIDENCE: 7,
-      LLM_FINAL_REVIEW: 8,
+      LLM_REWRITE: 5,
+      AFTER_EVIDENCE: 6,
+      BEFORE_AFTER_COMPARE: 7,
+      LLM_FINAL_REVIEW: 7,
+      VECTOR_KB: 8,
       FINAL_REPORT: 9,
       VECTOR_SAVE: 10,
     };
@@ -563,14 +696,35 @@ order by amount_sum desc`,
     const current = isOverallComplete ? null : (running || failed || completedSteps[completedSteps.length - 1] || steps[0]);
     const currentStatus = isOverallComplete ? "COMPLETED" : String(current?.status || overall || "PENDING").toUpperCase();
     const isRunning = currentStatus === "RUNNING";
-    const isFailed = !isOverallComplete && (["FAILED", "ERROR"].includes(currentStatus) || isOverallFailed);
+    const isFailed = !isOverallComplete && (["FAILED", "ERROR"].includes(currentStatus) || isOverallFailed || progress?.stale_warning || progress?.observation_level === "STALE_OR_FAILED");
     const isComplete = isOverallComplete;
     const ready = ["READY", "IDLE", "PENDING"].includes(overall) && !running && !failed && completedSteps.length === 0;
     const elapsed = !isOverallComplete && current?.elapsed_ms != null ? ` · ${formatDuration(current.elapsed_ms)}` : "";
+    const stageElapsedMs = Number(progress?.stage_elapsed_ms ?? current?.elapsed_ms);
+    const heartbeatAgeMs = Number(progress?.heartbeat_age_ms);
+    const beforeEvidenceRunning = String(current?.code || "").toUpperCase() === "BEFORE_EVIDENCE" && isRunning;
+    const sourceObservation = progress?.source_observation || {};
+    const sourceStatus = String(sourceObservation.status || "").toUpperCase();
+    let observationDetail = "";
+    if (beforeEvidenceRunning) {
+      if (["ACTIVE", "WAITING"].includes(sourceStatus)) {
+        const safeParts = [`Source SQL ${sourceStatus}`];
+        if (sourceObservation.sql_id) safeParts.push(`SQL_ID ${String(sourceObservation.sql_id).slice(0, 32)}`);
+        if (sourceObservation.wait_event) safeParts.push(String(sourceObservation.wait_event).slice(0, 120));
+        observationDetail = safeParts.join(" · ");
+      } else if (progress?.stale_warning || progress?.observation_level === "STALE_OR_FAILED") {
+        observationDetail = "Worker heartbeat stale 또는 실행 실패 · Source DB 세션 관측 불가";
+      } else if (progress?.worker_alive === true) {
+        observationDetail = `ORDS 요청 처리 중 · Worker heartbeat ${Number.isFinite(heartbeatAgeMs) ? Math.floor(heartbeatAgeMs / 1000) : "?"}초 전 · Source SQL 진척은 직접 확인되지 않음 · Source DB 세션 관측 불가`;
+      } else {
+        observationDetail = "Source DB 세션 관측 불가 · Worker 상태 알 수 없음";
+      }
+      if (Number.isFinite(stageElapsedMs) && stageElapsedMs >= 240000) observationDetail += " · 장시간 실행 중";
+    }
     const totalElapsed = totalElapsedMs(progress, steps, isComplete);
     const totalElapsedText = !ready && totalElapsed != null ? `전체 ${formatDuration(totalElapsed)}` : "";
     const label = ready ? "대기 중" : isComplete ? "완료" : current?.label || statusText;
-    const detail = isComplete ? "AI 분석이 종료되었습니다" : ready ? "SQL 입력 후 AI 분석 실행을 누르세요" : current?.detail || statusText;
+    const detail = isComplete ? "AI 분석이 종료되었습니다" : ready ? "SQL 입력 후 AI 분석 실행을 누르세요" : observationDetail || current?.detail || statusText;
     const dotClass = isFailed ? "failed" : isComplete ? "done" : isRunning ? "running" : "pending";
     target.innerHTML = `
       <div class="tuning-current-progress tuning-current-${escapeHtml(dotClass)}" title="현재 진행 단계와 전체 수행 시간을 표시합니다">
@@ -719,6 +873,8 @@ order by amount_sum desc`,
         }
         .tuning-dot { width:8px; height:8px; border-radius:999px; background:var(--tuning-accent); box-shadow:0 0 24px var(--tuning-accent); }
         .tuning-title { margin:0; font-size:clamp(30px, 4vw, 48px); line-height:1; letter-spacing:-1.05px; font-weight:590; }
+        .tuning-secret-trigger { appearance:none; border:0; padding:0; margin:0; color:inherit; background:transparent; font:inherit; letter-spacing:inherit; line-height:inherit; cursor:default; }
+        .tuning-secret-trigger:focus-visible { outline:2px solid #2563eb; outline-offset:3px; border-radius:3px; }
         .tuning-subtitle { margin:12px 0 0; color:var(--tuning-muted); max-width:780px; line-height:1.6; }
         .tuning-grid { display:block; }
         .tuning-card {
@@ -980,7 +1136,7 @@ order by amount_sum desc`,
         <div class="tuning-hero">
           <div>
             <div class="tuning-kicker"><span class="tuning-dot"></span> ASTA Workspace</div>
-            <h1 class="tuning-title">AI SQL Tuning Assistant</h1>
+            <h1 class="tuning-title">AI SQL Tuning Assistan<button id="asta-secret-trigger" class="tuning-secret-trigger" type="button" aria-label="Assistant 마지막 t">t</button></h1>
           </div>
           <div class="tuning-hero-actions">
             <div class="tuning-top-actions" aria-label="ASTA 빠른 작업">
@@ -1007,6 +1163,14 @@ order by amount_sum desc`,
               </select>
             </label>
             <label class="tuning-field">
+              <span>Workload 유형</span>
+              <select class="tuning-input" id="asta-workload-type">
+                <option value="OLTP" selected>OLTP — Buffer Reads 최소화</option>
+                <option value="BATCH">배치 — Elapsed Time 최소화</option>
+              </select>
+              <small id="asta-workload-description" class="muted">OLTP: 반복 실행의 논리 Buffer Reads 최소화를 우선합니다.</small>
+            </label>
+            <label class="tuning-field">
               <span>샘플 튜닝대상 SQL</span>
               <select class="tuning-input" id="asta-sample-sql">
                 <option value="">직접 입력</option>
@@ -1028,6 +1192,7 @@ order by amount_sum desc`,
       </section>`;
 
     const profileInput = document.getElementById("asta-ai-profile");
+    const workloadSelect = document.getElementById("asta-workload-type");
     const sampleInput = document.getElementById("asta-sample-sql");
     const notesInput = document.getElementById("asta-tuning-notes");
     const sqlInput = document.getElementById("asta-sql");
@@ -1046,6 +1211,8 @@ order by amount_sum desc`,
       window.__astaLastReport = null;
       window.__astaLastError = null;
       window.__astaRunStartedAt = null;
+      workloadSelect.value = "OLTP";
+      updateWorkloadDescription("OLTP");
       result.innerHTML = "";
       renderProgressStack(progressTarget, { status: "READY", progress: DEFAULT_STEPS });
       if (runButton) {
@@ -1054,6 +1221,18 @@ order by amount_sum desc`,
       }
       if (resetButton) resetButton.hidden = true;
       if (downloadButton) downloadButton.hidden = true;
+    }
+
+    function optimizationGoalForWorkload(workloadType) {
+      return workloadType === "BATCH" ? "MINIMIZE_ELAPSED_TIME" : "MINIMIZE_BUFFER_READS";
+    }
+
+    function updateWorkloadDescription(workloadType) {
+      const description = document.getElementById("asta-workload-description");
+      if (!description) return;
+      description.textContent = workloadType === "BATCH"
+        ? "BATCH: 대량 처리의 전체 Elapsed Time 최소화를 우선합니다."
+        : "OLTP: 반복 실행의 논리 Buffer Reads 최소화를 우선합니다.";
     }
 
     /**
@@ -1100,6 +1279,9 @@ order by amount_sum desc`,
     function applySampleSql(sampleId) {
       const sample = ASTA_SAMPLE_SQLS.find((item) => item.id === sampleId);
       if (!sample) return;
+      const workloadType = sample.workload || "OLTP";
+      workloadSelect.value = workloadType;
+      updateWorkloadDescription(workloadType);
       sqlInput.value = sample.sql;
       updateLineNumbers();
       window.Toast?.show?.("샘플 SQL을 입력창에 반영했습니다.", "success");
@@ -1122,6 +1304,7 @@ order by amount_sum desc`,
       });
     }
     sqlInput.addEventListener("input", refreshSqlEditorPaint);
+    workloadSelect.addEventListener("change", () => updateWorkloadDescription(workloadSelect.value));
     sampleInput.addEventListener("change", () => applySampleSql(sampleInput.value));
 
     document.getElementById("asta-download-report").addEventListener("click", () => {
@@ -1131,13 +1314,11 @@ order by amount_sum desc`,
     });
     document.getElementById("asta-reset").addEventListener("click", resetWorkspace);
 
-    document.addEventListener("keydown", (event) => {
-      if (event.ctrlKey && event.altKey && String(event.key || "").toLowerCase() === "l") {
-        const secretButton = document.getElementById("asta-sql-only-llm");
-        if (secretButton) {
-          secretButton.hidden = !secretButton.hidden;
-          window.Toast?.show?.(secretButton.hidden ? "숨김 LLM 기능을 닫았습니다." : "숨김 기능: SQL만 LLM 버튼을 열었습니다.", "success");
-        }
+    document.getElementById("asta-secret-trigger").addEventListener("click", () => {
+      const secretButton = document.getElementById("asta-sql-only-llm");
+      if (secretButton) {
+        secretButton.hidden = !secretButton.hidden;
+        window.Toast?.show?.(secretButton.hidden ? "숨김 LLM 기능을 닫았습니다." : "숨김 기능: SQL만 LLM 버튼을 열었습니다.", "success");
       }
     });
 
@@ -1171,6 +1352,8 @@ order by amount_sum desc`,
             user_prompt: oracleSqlOnlyPrompt,
             tuning_context: {
               mode: "SQL_ONLY_LLM",
+              workload_type: workloadSelect.value,
+              optimization_goal: optimizationGoalForWorkload(workloadSelect.value),
               database: "Oracle Database",
               instruction: "Oracle 기준 SQL 튜닝 요청. SELECT/WITH 단일문 개선 SQL과 병목/변경 이유/주의사항을 한국어로 반환.",
             },
@@ -1249,10 +1432,14 @@ order by amount_sum desc`,
             ai_profile: profileInput.value || DEFAULT_AI_PROFILE,
             llm_profile: profileInput.value || DEFAULT_AI_PROFILE,
             use_llm: true,
-            run_advisor: true,
-            use_sqltune: true,
+            // 현재 데모 Source PDB는 restricted 상태이므로 Advisor는 기본 생략한다.
+            // 고객 DB에서는 권한/라이선스/스케줄러 확인 후 true로 활성화한다.
+            run_advisor: false,
+            use_sqltune: false,
             sqltune_time_limit: 1800,
             tuning_context: {
+              workload_type: workloadSelect.value,
+              optimization_goal: optimizationGoalForWorkload(workloadSelect.value),
               user_notes: userNotes,
               source: "UI_OPTIONAL_TEXT",
               instruction: userNotes ? "사용자 참고사항을 SQL 튜닝 후보 생성과 최종 결과서 판단에 우선 참고하되, 실제 실행 evidence와 충돌하면 evidence를 우선한다." : "",
@@ -1261,8 +1448,8 @@ order by amount_sum desc`,
               fetch_rows: 100,
               timeout_seconds: 900,
               sqltune_time_limit: 1800,
-              run_advisor: true,
-              use_sqltune: true,
+              run_advisor: false,
+              use_sqltune: false,
               run_mode: "ASYNC",
               use_llm: true,
               llm_profile: profileInput.value || DEFAULT_AI_PROFILE,

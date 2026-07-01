@@ -11,6 +11,7 @@ import subprocess
 import time
 import urllib.request
 import urllib.error
+from collections import Counter
 from datetime import datetime, timezone
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -90,10 +91,12 @@ def summarize(data):
     md = data.get("detailed_report_markdown") or data.get("report_markdown") or ""
     prog = data.get("progress") if isinstance(data.get("progress"), list) else []
     advisor = ((data.get("runtime_evidence") or {}).get("advisor") or {}).get("status")
+    comparison = data.get("comparison") or (data.get("artifacts") or {}).get("comparison") or {}
     return {
         "run_id": data.get("run_id"),
         "status": data.get("status"),
         "advisor_status": advisor,
+        "verdict": comparison.get("verdict") or "UNKNOWN",
         "progress": {str(s.get("code")): s.get("status") for s in prog if isinstance(s, dict)},
         "proxy": data.get("proxy"),
         "visible_has_tuning_result": "## 튜닝 결과" in md,
@@ -101,6 +104,11 @@ def summarize(data):
         "visible_has_source_direct": bool(re.search(r"SOURCE_DIRECT|SOURCE DIRECT", md, re.I)),
         "raw_has_source_direct": bool(re.search(r"SOURCE_DIRECT|SOURCE DIRECT|BASEDB_SOURCE_DIRECT", json.dumps(data, ensure_ascii=False), re.I)),
     }
+
+
+def aggregate_verdicts(summaries):
+    """실행 요약을 deterministic comparison verdict별로 집계한다."""
+    return Counter(item.get("verdict") or "UNKNOWN" for item in summaries)
 
 
 def main():
@@ -133,15 +141,16 @@ def main():
                 (OUTDIR / f"{i:02d}_{sid}.md").write_text(md, encoding="utf-8")
         (OUTDIR / "progress.json").write_text(json.dumps({"started_at": started, "results": all_results}, ensure_ascii=False, indent=2), encoding="utf-8")
         print(json.dumps(result, ensure_ascii=False), flush=True)
-    final = {"started_at": started, "completed_at": datetime.now(timezone.utc).isoformat(), "results": all_results}
+    verdict_counts = aggregate_verdicts(r["summary"] for r in all_results)
+    final = {"started_at": started, "completed_at": datetime.now(timezone.utc).isoformat(), "verdict_counts": dict(verdict_counts), "results": all_results}
     (OUTDIR / "summary.json").write_text(json.dumps(final, ensure_ascii=False, indent=2), encoding="utf-8")
-    lines=["# ASTA 10 SQL Background Test", "", f"- started: `{started}`", f"- completed: `{final['completed_at']}`", "", "| # | id | HTTP | status | advisor | run_id | flags |", "|---:|---|---:|---|---|---|---|"]
+    lines=["# ASTA 10 SQL Background Test", "", f"- started: `{started}`", f"- completed: `{final['completed_at']}`", f"- verdicts: `{dict(verdict_counts)}`", "", "| # | id | HTTP | status | verdict | advisor | run_id | flags |", "|---:|---|---:|---|---|---|---|---|"]
     for r in all_results:
         s=r["summary"]
         flags=[]
         for k in ["visible_has_ora03150","visible_has_source_direct","raw_has_source_direct"]:
             if s.get(k): flags.append(k)
-        lines.append(f"| {r['seq']} | {r['id']} | {r['http_status']} | {s.get('status')} | {s.get('advisor_status')} | {s.get('run_id')} | {', '.join(flags) or '-'} |")
+        lines.append(f"| {r['seq']} | {r['id']} | {r['http_status']} | {s.get('status')} | {s.get('verdict')} | {s.get('advisor_status')} | {s.get('run_id')} | {', '.join(flags) or '-'} |")
     (OUTDIR / "summary.md").write_text("\n".join(lines)+"\n", encoding="utf-8")
 
 if __name__ == "__main__":

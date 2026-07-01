@@ -91,12 +91,14 @@ def test_tuning_assistant_calls_astA_api_with_detailed_report_fallbacks():
 
 
 
-def test_tuning_assistant_has_hidden_sql_only_llm_mode():
+def test_tuning_assistant_reveals_hidden_sql_only_mode_from_last_assistant_t():
     view = (ROOT / "static/js/extensions/tuning_assistant.js").read_text(encoding="utf-8")
 
     assert "asta-sql-only-llm" in view
-    assert "Ctrl" not in view  # hidden feature is keyboard-only, not visible copy
-    assert "ctrlKey && event.altKey" in view
+    assert 'id="asta-secret-trigger"' in view
+    assert 'aria-label="Assistant 마지막 t"' in view
+    assert 'getElementById("asta-secret-trigger").addEventListener("click"' in view
+    assert "ctrlKey && event.altKey" not in view
     assert "llm-sql-only" in view
     assert "SQL 텍스트만 LLM으로 전송 중" in view
     assert "Oracle Database 기준으로 SQL 튜닝을 요청합니다." in view
@@ -180,6 +182,30 @@ def test_tuning_assistant_sample_sqls_are_intentionally_inefficient():
     view = (ROOT / "static/js/extensions/tuning_assistant.js").read_text(encoding="utf-8")
 
     assert view.count("id: \"asta-ui-") == 10
+
+
+def test_vector_case_markup_is_interactive_without_trusting_report_html():
+    view = (ROOT / "static/js/extensions/tuning_assistant.js").read_text(encoding="utf-8")
+
+    assert "function renderTrustedVectorBlocks" in view
+    assert 'document.createElement("details")' in view
+    assert 'document.createElement("summary")' in view
+    assert "code.textContent = decodeVectorEntities" in view
+    assert "text.textContent = plainText" in view
+    assert 'link.target = "_blank"' in view
+    assert 'link.rel = "noopener"' in view
+    assert "^\\/api\\/asta\\/runs\\/[A-Za-z0-9][A-Za-z0-9_.:-]*\\/report(?:\\/view)?$" in view
+    assert "safeReportPath.test(match[2])" in view
+    assert '`${match[2]}/view`' in view
+    assert "javascript:" not in view[view.index("function renderTrustedVectorBlocks"):view.index("API 오류 객체")]
+    assert '<pre id="asta-report-scroll"' not in view
+    assert "${escapeHtml(window.__astaLastReport.report)}" not in view
+
+
+def test_tuning_assistant_sample_sql_details_are_preserved():
+    view = (ROOT / "static/js/extensions/tuning_assistant.js").read_text(encoding="utf-8")
+
+    assert view.count("id: \"asta-ui-") == 10
     assert "ASTA_UI_MALICIOUS_01_repeat_sales_8_scans" in view
     assert "ASTA_UI_MALICIOUS_03_bad_index_hint_function_predicate" in view
     assert "ASTA_UI_MALICIOUS_10_forced_nested_loops_bad_index" in view
@@ -209,8 +235,8 @@ def test_tuning_assistant_keeps_async_runs_running_until_poll_completion():
     premature_progress_pos = view.index("finalProgress = await fetchJson")
     assert async_pos < poll_pos < premature_progress_pos
     assert "sqltune_time_limit" in view
-    assert "run_advisor: true" in view
-    assert "use_sqltune: true" in view
+    assert "run_advisor: false" in view
+    assert "use_sqltune: false" in view
     assert "hasAuthoritativeInlineProgress" in view
     assert "SOURCE_DIRECT_FALLBACK" in view
     assert "CONTROLLED_FALLBACK" in view
@@ -253,3 +279,15 @@ def test_tuning_assistant_logs_when_final_ords_progress_would_override_inline_fa
     assert "hasAuthoritativeInlineProgress" in view
     assert "console.warn" in view
     assert "asta-progress-stale-ords-suppressed" in view
+
+
+def test_tuning_assistant_maps_new_11_stage_order_and_legacy_final_review():
+    view = (ROOT / "static/js/extensions/tuning_assistant.js").read_text(encoding="utf-8")
+    expected = ["REQUEST_RECEIVED", "ORDS_DISPATCH", "SQL_GUARD", "BEFORE_EVIDENCE",
+                "SQL_TUNING_ADVISOR", "LLM_REWRITE", "AFTER_EVIDENCE",
+                "BEFORE_AFTER_COMPARE", "VECTOR_KB", "FINAL_REPORT", "VECTOR_SAVE"]
+    positions = [view.index(f'code: "{code}"') for code in expected]
+    assert positions == sorted(positions)
+    assert 'LLM_FINAL_REVIEW: 7' in view
+    assert 'BEFORE_AFTER_COMPARE: 7' in view
+    assert 'code: "LLM_FINAL_REVIEW"' not in view

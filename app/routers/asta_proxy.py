@@ -10,7 +10,9 @@ evidence, Vector, LLM, SQLTUNE, or report generation.
 from __future__ import annotations
 
 import asyncio
+import html
 import json
+import re
 from datetime import datetime, timezone
 from time import perf_counter
 from typing import Any
@@ -20,15 +22,104 @@ from urllib.parse import quote, urljoin
 import uuid
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from fastapi.responses import HTMLResponse, Response
 
 from app import asta_audit, db
 from app.deps import current_db, get_config
 
 router = APIRouter(prefix="/asta", tags=["asta"])
 
+REPORT_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; base-uri 'none'; frame-ancestors 'none'"
+_REPORT_PATH = re.compile(r"^/api/asta/runs/[A-Za-z0-9][A-Za-z0-9_.:-]*/report(?:/view)?$")
+_DETAILS = re.compile(r"^<details><summary>축약 SQL 보기</summary>\s*<pre><code>([\s\S]*?)</code></pre>\s*</details>$")
+
+
+def _report_markdown(payload: Any) -> str:
+    if isinstance(payload, str):
+        return payload
+    if not isinstance(payload, dict):
+        return ""
+    for key in ("detailed_report_markdown", "report_markdown", "report"):
+        if isinstance(payload.get(key), str):
+            return payload[key]
+    return _report_markdown(payload.get("llm_final_report"))
+
+
+def _inline_markdown(text: str) -> str:
+    out, cursor = [], 0
+    for match in re.finditer(r"\[([^]\n]+)\]\(([^)\s]+)\)", text):
+        out.append(html.escape(text[cursor:match.start()]))
+        label, target = match.groups()
+        if _REPORT_PATH.fullmatch(target):
+            viewer = target if target.endswith("/view") else target + "/view"
+            out.append(f'<a href="{html.escape(viewer, quote=True)}">{html.escape(label)}</a>')
+        else:
+            out.append(html.escape(label))
+        cursor = match.end()
+    out.append(html.escape(text[cursor:]))
+    return "".join(out)
+
+
+def _markdown_to_safe_html(markdown: str) -> str:
+    """Render the report subset without ever enabling arbitrary raw HTML."""
+    lines = markdown.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    result, i = [], 0
+    while i < len(lines):
+        line = lines[i]
+        if line.strip().startswith("<details><summary>축약 SQL 보기</summary><pre><code>"):
+            block = [line.strip()]
+            while i + 1 < len(lines) and "</code></pre></details>" not in block[-1]:
+                i += 1; block.append(lines[i])
+            details = _DETAILS.fullmatch("\n".join(block))
+            if details:
+                result.append(f"<details><summary>축약 SQL 보기</summary><pre><code>{html.escape(html.unescape(details.group(1)))}</code></pre></details>")
+            else:
+                result.append(f"<p>{html.escape(chr(10).join(block))}</p>")
+        elif line.startswith("```"):
+            language = re.sub(r"[^A-Za-z0-9_-]", "", line[3:].strip())
+            code = []
+            i += 1
+            while i < len(lines) and not lines[i].startswith("```"):
+                code.append(lines[i]); i += 1
+            cls = f' class="language-{language}"' if language else ""
+            result.append(f"<pre><code{cls}>{html.escape(chr(10).join(code))}</code></pre>")
+        elif (heading := re.match(r"^(#{1,4})\s+(.+)$", line)):
+            level = len(heading.group(1)); result.append(f"<h{level}>{_inline_markdown(heading.group(2))}</h{level}>")
+        elif line.startswith("|") and i + 1 < len(lines) and re.match(r"^\s*\|?\s*:?-{3,}", lines[i + 1]):
+            rows = [[c.strip() for c in line.strip().strip("|").split("|")]]; i += 2
+            while i < len(lines) and lines[i].lstrip().startswith("|"):
+                rows.append([c.strip() for c in lines[i].strip().strip("|").split("|")]); i += 1
+            head = "".join(f"<th>{_inline_markdown(c)}</th>" for c in rows[0])
+            body = "".join("<tr>" + "".join(f"<td>{_inline_markdown(c)}</td>" for c in row) + "</tr>" for row in rows[1:])
+            result.append(f"<table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"); continue
+        elif (details := _DETAILS.fullmatch(line.strip())):
+            result.append(f"<details><summary>축약 SQL 보기</summary><pre><code>{html.escape(html.unescape(details.group(1)))}</code></pre></details>")
+        elif line.startswith("> "):
+            result.append(f"<blockquote>{_inline_markdown(line[2:])}</blockquote>")
+        elif re.match(r"^\s*[-*+]\s+", line):
+            items = []
+            while i < len(lines) and (item := re.match(r"^\s*[-*+]\s+(.+)$", lines[i])):
+                items.append(f"<li>{_inline_markdown(item.group(1))}</li>"); i += 1
+            result.append("<ul>" + "".join(items) + "</ul>"); continue
+        elif line.strip():
+            result.append(f"<p>{_inline_markdown(line)}</p>")
+        i += 1
+    return "\n".join(result)
+
+
+def _report_document(run_id: str, markdown: str) -> str:
+    safe_id = html.escape(run_id)
+    base = f"/api/asta/runs/{quote(run_id, safe='')}/report"
+    content = _markdown_to_safe_html(markdown)
+    return f'''<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ASTA 결과서 · {safe_id}</title><style>
+body{{margin:0;background:#f4f7fb;color:#172033;font:16px/1.65 system-ui,sans-serif}}main{{max-width:1080px;margin:auto;padding:32px}}article{{background:white;border:1px solid #dfe5ef;border-radius:16px;padding:clamp(20px,4vw,48px);box-shadow:0 12px 40px #0f172a14}}nav{{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:20px}}nav a{{padding:9px 13px;border-radius:9px;background:#2563eb;color:white;text-decoration:none}}nav a+a{{background:#475569}}h1,h2,h3,h4{{line-height:1.25;margin-top:1.5em}}pre{{overflow:auto;background:#0f172a;color:#e2e8f0;padding:16px;border-radius:10px}}table{{border-collapse:collapse;width:100%;display:block;overflow:auto}}th,td{{border:1px solid #cbd5e1;padding:8px 12px;text-align:left}}th{{background:#eef2ff}}blockquote{{border-left:4px solid #93c5fd;margin-left:0;padding-left:16px;color:#475569}}.run{{color:#64748b}}
+</style></head><body><main><nav><a href="{base}/download">원본 Markdown 다운로드</a><a href="{base}">JSON API 보기</a></nav><article><div class="run">Run ID: {safe_id}</div>{content}</article></main></body></html>'''
+
 DEFAULT_LLM_PROFILE = "ASTA_GPT5_PROFILE"
 DEFAULT_SOURCE_DB_ID = "DB0903_TESTDB"
 DEFAULT_TIMEOUT_SECONDS = 2100
+HEARTBEAT_INTERVAL_SECONDS = 5.0
+HEARTBEAT_STALE_SECONDS = 20.0
 ASYNC_RUNS: dict[str, dict[str, Any]] = {}
 ASYNC_LOCK = asyncio.Lock()
 
@@ -36,6 +127,45 @@ ASYNC_LOCK = asyncio.Lock()
 def _utc_now() -> str:
     """ASTA 내부 처리 보조 함수: utc now."""
     return datetime.now(timezone.utc).isoformat()
+
+
+def _parse_timestamp(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
+def _runtime_fields(record: dict[str, Any] | None, now: datetime | None = None) -> dict[str, Any]:
+    """Report proxy liveness without claiming it is Source SQL activity."""
+    now = now or datetime.now(timezone.utc)
+    unavailable = {"status": "UNAVAILABLE", "reason": "Source DB session observation is not configured"}
+    if not record:
+        return {"heartbeat_at": None, "heartbeat_age_ms": None, "worker_alive": None, "observation_level": "SOURCE_OBSERVATION_UNAVAILABLE", "stage_started_at": None, "stage_elapsed_ms": None, "stale_warning": False, "upstream_request_active": None, "source_observation": unavailable}
+    heartbeat = _parse_timestamp(record.get("heartbeat_at"))
+    age = max(0, round((now - heartbeat).total_seconds() * 1000)) if heartbeat else None
+    terminal = str(record.get("status") or "").upper() in {"FAILED", "ERROR", "COMPLETED", "DONE"}
+    active = bool(record.get("upstream_request_active")) and not terminal
+    stale = active and (age is None or age > HEARTBEAT_STALE_SECONDS * 1000)
+    alive = active and not stale
+    level = "STALE_OR_FAILED" if terminal or stale else ("PROXY_WORKER_ALIVE" if alive else "SOURCE_OBSERVATION_UNAVAILABLE")
+    running = next((s for s in record.get("progress", []) if isinstance(s, dict) and str(s.get("status")).upper() == "RUNNING"), None)
+    stage_start = _parse_timestamp((running or {}).get("started_at"))
+    elapsed = max(0, round((now - stage_start).total_seconds() * 1000)) if stage_start else None
+    return {"heartbeat_at": record.get("heartbeat_at"), "heartbeat_age_ms": age, "worker_alive": alive, "observation_level": level, "stage_started_at": (running or {}).get("started_at"), "stage_elapsed_ms": elapsed, "stale_warning": bool(stale), "upstream_request_active": active, "source_observation": unavailable}
+
+
+async def _heartbeat_loop(run_id: str) -> None:
+    while True:
+        async with ASYNC_LOCK:
+            rec = ASYNC_RUNS.get(run_id)
+            if not rec or not rec.get("upstream_request_active"):
+                return
+            rec["heartbeat_at"] = _utc_now()
+        await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
 
 
 def _new_proxy_run_id() -> str:
@@ -52,10 +182,10 @@ def _initial_progress(run_id: str) -> list[dict[str, Any]]:
         {"seq": 3, "code": "SQL_GUARD", "label": "ADB SQL guard", "status": "PENDING", "detail": "ADB progress 준비 중"},
         {"seq": 4, "code": "BEFORE_EVIDENCE", "label": "Source evidence via DB Link", "status": "PENDING"},
         {"seq": 5, "code": "SQL_TUNING_ADVISOR", "label": "SQL Tuning Advisor", "status": "PENDING"},
-        {"seq": 6, "code": "VECTOR_KB", "label": "ADB Vector KB search", "status": "PENDING"},
-        {"seq": 7, "code": "LLM_REWRITE", "label": "ADB AI tuning", "status": "PENDING"},
-        {"seq": 8, "code": "AFTER_EVIDENCE", "label": "Tuned SQL evidence", "status": "PENDING"},
-        {"seq": 9, "code": "LLM_FINAL_REVIEW", "label": "Before/After comparison", "status": "PENDING"},
+        {"seq": 6, "code": "LLM_REWRITE", "label": "SQL-only structural rewrite", "status": "PENDING"},
+        {"seq": 7, "code": "AFTER_EVIDENCE", "label": "Candidate SQL evidence", "status": "PENDING"},
+        {"seq": 8, "code": "BEFORE_AFTER_COMPARE", "label": "Deterministic comparison", "status": "PENDING"},
+        {"seq": 9, "code": "VECTOR_KB", "label": "Verified Vector KB search", "status": "PENDING"},
         {"seq": 10, "code": "FINAL_REPORT", "label": "Final report synthesis", "status": "PENDING"},
         {"seq": 11, "code": "VECTOR_SAVE", "label": "ADB Vector KB save", "status": "PENDING"},
     ]
@@ -78,6 +208,8 @@ async def _complete_async_run(run_id: str, result: dict[str, Any] | None = None,
     """ASTA 내부 처리 보조 함수: complete async run."""
     async with ASYNC_LOCK:
         rec = ASYNC_RUNS.get(run_id) or {"run_id": run_id, "progress": _initial_progress(run_id), "created_at": _utc_now()}
+        rec["upstream_request_active"] = False
+        rec["worker_alive"] = False
         if result is not None:
             rec["status"] = result.get("status") or "COMPLETED"
             rec["result"] = result
@@ -101,6 +233,10 @@ async def _complete_async_run(run_id: str, result: dict[str, Any] | None = None,
 async def _run_ords_analyze_background(run_id: str, ords_url: str, ords_payload: dict[str, Any], timeout: int, audit_context: dict[str, Any], database: str) -> None:
     """ASTA 내부 처리 보조 함수: run ords analyze background."""
     started = perf_counter()
+    async with ASYNC_LOCK:
+        if run_id in ASYNC_RUNS:
+            ASYNC_RUNS[run_id].update({"heartbeat_at": _utc_now(), "upstream_request_active": True, "worker_alive": True})
+    heartbeat_task = asyncio.create_task(_heartbeat_loop(run_id))
     try:
         result = await _post_json_to_ords(ords_url, ords_payload, timeout)
         annotated = _annotate_proxy(result)
@@ -109,16 +245,25 @@ async def _run_ords_analyze_background(run_id: str, ords_url: str, ords_payload:
         asta_audit.write_run_index(audit_context["request_id"], annotated, database=database, fallback_attempted=False)
         asta_audit.write_event("analyze_background_complete", {**audit_context, **asta_audit.result_fields(annotated, prefix="final"), "ords_status": annotated.get("status"), "fallback_attempted": False, "latency_ms": round((perf_counter() - started) * 1000)})
     except Exception as exc:
-        error = {"error": "ASTA ORDS background error", "message": str(exc)}
+        detail = exc.detail if isinstance(exc, HTTPException) else None
+        error = detail if isinstance(detail, dict) else {"error": "ASTA ORDS background error", "message": str(exc)}
         await _complete_async_run(run_id, error=error)
         asta_audit.write_event("analyze_background_error", {**audit_context, "latency_ms": round((perf_counter() - started) * 1000), "message": str(exc)[:1000]})
+    finally:
+        heartbeat_task.cancel()
+        try:
+            await heartbeat_task
+        except asyncio.CancelledError:
+            pass
 
 
 def _async_progress_response(record: dict[str, Any]) -> dict[str, Any]:
     """ASTA 내부 처리 보조 함수: async progress response."""
     result = record.get("result") if isinstance(record.get("result"), dict) else None
     if result is not None:
-        return _annotate_proxy(dict(result))
+        out = _annotate_proxy(dict(result))
+        out.update(_runtime_fields(record))
+        return out
     out = {
         "run_id": record.get("run_id"),
         "status": record.get("status") or "RUNNING",
@@ -129,6 +274,7 @@ def _async_progress_response(record: dict[str, Any]) -> dict[str, Any]:
     }
     if record.get("error"):
         out["error"] = record.get("error")
+    out.update(_runtime_fields(record))
     return out
 
 
@@ -178,8 +324,22 @@ def _coerce_payload(payload: dict[str, Any]) -> dict[str, Any]:
     clean_options = dict(options)
     clean_options.pop("source_schema", None)
     clean_options.pop("source_db_link", None)
+    clean_options.pop("prompt_mode", None)
     out.pop("source_schema", None)
     out.pop("source_db_link", None)
+    # Deprecated experiment knob: accepted for backward compatibility but has
+    # no production meaning in the canonical SQL-only rewrite workflow.
+    out.pop("prompt_mode", None)
+    tuning_context = dict(tuning_context)
+    tuning_context.pop("prompt_mode", None)
+    workload_type = str(tuning_context.get("workload_type") or "OLTP").strip().upper()
+    if workload_type not in {"OLTP", "BATCH"}:
+        workload_type = "OLTP"
+    tuning_context["workload_type"] = workload_type
+    # Canonical server-owned goal; ignore arbitrary client strings.
+    tuning_context["optimization_goal"] = (
+        "MINIMIZE_ELAPSED_TIME" if workload_type == "BATCH" else "MINIMIZE_BUFFER_READS"
+    )
     if "options" in out:
         out["options"] = clean_options
     out.update(
@@ -392,6 +552,10 @@ async def _audited_run_lookup(run_id: str, database: str, endpoint_kind: str, su
         )
         raise
     annotated = _annotate_proxy(data)
+    telemetry_record = dict(async_record) if async_record else None
+    if telemetry_record is not None and isinstance(annotated.get("progress"), list):
+        telemetry_record["progress"] = annotated["progress"]
+    annotated.update(_runtime_fields(telemetry_record))
     if str(annotated.get("status") or "").upper() == "NOT_FOUND" or _response_error_code(annotated) in {"RUN_NOT_FOUND", "REPORT_NOT_FOUND"}:
         async_record = await _get_async_run(run_id)
         if async_record is not None:
@@ -536,7 +700,7 @@ async def llm_sql_only(request: Request, database: str = Depends(current_db)) ->
 
 @router.post("/analyze")
 async def analyze(request: Request, background_tasks: BackgroundTasks, database: str = Depends(current_db)) -> dict[str, Any]:
-    """ASTA 처리 흐름에서 analyze 작업을 수행한다."""
+    """ADB에 run을 한 번 제출하고 즉시 QUEUED/RUNNING 응답을 전달한다."""
     request_id = asta_audit.new_request_id()
     payload = await request.json()
     if not isinstance(payload, dict):
@@ -558,46 +722,22 @@ async def analyze(request: Request, background_tasks: BackgroundTasks, database:
         },
     )
     ords_url = _resolve_ords_url(database, "analyze_path", "/analyze")
-    if background_tasks is None:
-        result = await _post_json_to_ords(ords_url, ords_payload, _ords_timeout(database))
-        annotated = _annotate_proxy(result)
-        asta_audit.write_run_index(request_id, annotated, database=database, fallback_attempted=False)
-        asta_audit.write_event(
-            "analyze_complete",
-            {
-                **audit_context,
-                **asta_audit.result_fields(annotated, prefix="final"),
-                "ords_status": result.get("status"),
-                "fallback_attempted": False,
-                "async_proxy": False,
-            },
-        )
-        return annotated
-
-    await _store_async_run(
-        run_id,
+    result = await _post_json_to_ords(ords_url, ords_payload, _ords_timeout(database))
+    annotated = _annotate_proxy(result)
+    annotated.setdefault("run_id", run_id)
+    asta_audit.write_run_index(request_id, annotated, database=database, fallback_attempted=False)
+    asta_audit.write_event(
+        "analyze_submitted",
         {
-            "run_id": run_id,
-            "status": "RUNNING",
-            "created_at": _utc_now(),
-            "progress": _initial_progress(run_id),
+            **audit_context,
+            **asta_audit.result_fields(annotated, prefix="final"),
+            "ords_status": result.get("status"),
+            "fallback_attempted": False,
+            "async_proxy": False,
+            "execution_mode": result.get("execution_mode"),
         },
     )
-    background_tasks.add_task(
-        _run_ords_analyze_background,
-        run_id,
-        ords_url,
-        ords_payload,
-        _ords_timeout(database),
-        audit_context,
-        database,
-    )
-    return {
-        "run_id": run_id,
-        "status": "RUNNING",
-        "progress": _initial_progress(run_id),
-        "proxy": {"source": "FASTAPI_ASYNC_PROXY", "external_call": False},
-    }
+    return annotated
 
 
 @router.get("/runs/{run_id}")
@@ -616,3 +756,18 @@ async def get_run_progress(run_id: str, database: str = Depends(current_db)) -> 
 async def get_run_report(run_id: str, database: str = Depends(current_db)) -> dict[str, Any]:
     """ASTA 처리 흐름에서 get run report 작업을 수행한다."""
     return await _audited_run_lookup(run_id, database, "report", "report")
+
+
+@router.get("/runs/{run_id}/report/view", response_class=HTMLResponse)
+async def get_run_report_view(run_id: str, database: str = Depends(current_db)) -> HTMLResponse:
+    payload = await _audited_run_lookup(run_id, database, "report_view", "report")
+    return HTMLResponse(_report_document(run_id, _report_markdown(payload)), headers={"Content-Security-Policy": REPORT_CSP})
+
+
+@router.get("/runs/{run_id}/report/download")
+async def download_run_report(run_id: str, database: str = Depends(current_db)) -> Response:
+    payload = await _audited_run_lookup(run_id, database, "report_download", "report")
+    filename_id = re.sub(r"[^A-Za-z0-9_.-]", "_", run_id)[:120] or "report"
+    return Response(_report_markdown(payload), media_type="text/markdown", headers={
+        "Content-Disposition": f'attachment; filename="asta-report-{filename_id}.md"'
+    })
