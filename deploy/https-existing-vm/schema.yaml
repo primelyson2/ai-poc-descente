@@ -1,0 +1,153 @@
+title: "Oracle AI Database Test Tool (HTTPS — 기존 VM 재사용)"
+description: "이미 앱이 도는 기존 컴퓨트 인스턴스 앞에 공용 Load Balancer(443 TLS 종단)만 생성합니다. 컴퓨트/앱은 만들지 않으며, 기존 인스턴스(:app_port)를 백엔드로 연결합니다."
+schemaVersion: 1.1.0
+locale: "en"
+
+variableGroups:
+  - title: "자동 주입 (숨김)"
+    visible: false
+    variables:
+      - tenancy_ocid
+      - region
+
+  - title: "일반"
+    variables:
+      - compartment_ocid
+
+  - title: "대상 인스턴스 (기존 VM)"
+    variables:
+      - instance_ocid
+
+  - title: "네트워크 접근"
+    variables:
+      - vcn_id
+      - subnet_id
+
+  - title: "HTTPS (Load Balancer)"
+    variables:
+      - certificate_ocid
+      - https_port
+      - lb_display_name
+      - enable_http_redirect
+      - lb_is_private
+      - lb_min_bandwidth_mbps
+      - lb_max_bandwidth_mbps
+
+  - title: "애플리케이션"
+    variables:
+      - app_port
+
+variables:
+  compartment_ocid:
+    type: oci:identity:compartment:id
+    title: "구획 (Compartment)"
+    description: "리소스(Load Balancer)를 생성할 구획"
+    required: true
+
+  # ───── 대상 인스턴스 ─────
+  instance_ocid:
+    type: oci:core:instance:id
+    title: "기존 컴퓨트 인스턴스"
+    description: "HTTPS LB 백엔드로 연결할 기존 인스턴스. 이 인스턴스에 앱이 app_port 에서 이미 실행 중이어야 합니다"
+    required: true
+    dependsOn:
+      compartmentId: ${compartment_ocid}
+
+  # ───── 네트워크 접근 (기존 VCN/서브넷 선택) ─────
+  vcn_id:
+    type: oci:core:vcn:id
+    title: "Virtual cloud network (VCN)"
+    description: "LB 서브넷이 속한 기존 VCN 선택"
+    required: true
+    dependsOn:
+      compartmentId: ${compartment_ocid}
+
+  subnet_id:
+    type: oci:core:subnet:id
+    title: "LB 서브넷"
+    description: "Load Balancer 를 배치할 기존 서브넷 (클라이언트→LB 443/80, LB→인스턴스 app_port 인바운드 허용 필요)"
+    required: true
+    dependsOn:
+      compartmentId: ${compartment_ocid}
+      vcnId: ${vcn_id}
+
+  # ───── HTTPS (Load Balancer) ─────
+  certificate_ocid:
+    type: string
+    title: "Certificate OCID"
+    description: "OCI Certificates 서비스 인증서 OCID 를 붙여넣으세요 (LB 443 리스너가 참조). 배포 리전과 동일해야 함"
+    required: true
+
+  https_port:
+    type: number
+    title: "HTTPS 포트"
+    default: 443
+    minimum: 1
+    maximum: 65535
+    required: true
+
+  lb_display_name:
+    type: string
+    title: "Load Balancer 표시 이름"
+    default: "select-ai-test-lb"
+    required: true
+
+  enable_http_redirect:
+    type: boolean
+    title: "80 → 443 리다이렉트"
+    description: "HTTP(80) 요청을 HTTPS 로 301 리다이렉트"
+    default: true
+    required: true
+
+  lb_is_private:
+    type: boolean
+    title: "Private LB"
+    description: "체크 시 사설 LB (공인 IP 미할당). 기본은 공용"
+    default: false
+    required: true
+
+  lb_min_bandwidth_mbps:
+    type: number
+    title: "LB 최소 대역폭 (Mbps)"
+    default: 10
+    minimum: 10
+    required: true
+
+  lb_max_bandwidth_mbps:
+    type: number
+    title: "LB 최대 대역폭 (Mbps)"
+    default: 10
+    minimum: 10
+    required: true
+
+  # ───── 애플리케이션 ─────
+  app_port:
+    type: number
+    title: "앱 포트 (기존 VM)"
+    description: "기존 인스턴스에서 앱이 수신 중인 포트. LB 백엔드/헬스체크 대상"
+    default: 8000
+    minimum: 1
+    maximum: 65535
+    required: true
+
+outputGroups:
+  - title: "애플리케이션"
+    outputs:
+      - https_url
+      - load_balancer_ip
+      - backend_ip
+
+outputs:
+  https_url:
+    type: link
+    title: "HTTPS URL (Load Balancer)"
+
+  load_balancer_ip:
+    type: string
+    title: "Load Balancer IP"
+
+  backend_ip:
+    type: string
+    title: "백엔드(기존 인스턴스) 사설 IP"
+
+primaryOutputButton: https_url

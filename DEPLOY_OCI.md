@@ -2,11 +2,12 @@
 
 GitHub 리포(`select-ai-test`)를 소스로 삼아 **OCI Resource Manager** 로 Oracle Linux 인스턴스에 본 도구(Oracle AI Database Test Tool)를 원클릭 배포하기 위한 작업 내용과 절차를 정리한 문서입니다.
 
-> 요약: README 상단의 **Deploy to Oracle Cloud** 버튼 → RM 이 GitHub 아카이브 zip 을 스택으로 로드 → **Working directory 에서 `deploy/http`(인증서 불필요) 또는 `deploy/https`(LB+인증서) 선택** → 변수 입력 후 Apply → 인스턴스 부팅 시 `git clone → uv sync → systemd 기동` 자동 수행 → `app_url`(HTTP) / `https_url`(HTTPS) 접속 → **[Database 관리]** 화면에서 ADB 등록.
+> 요약: README 상단의 **Deploy to Oracle Cloud** 버튼 → RM 이 GitHub 아카이브 zip 을 스택으로 로드 → **Working directory 에서 `deploy/http`(인증서 불필요) · `deploy/https`(새 VM+LB+인증서) · `deploy/https-existing-vm`(기존 VM 앞에 LB 만) 중 선택** → 변수 입력 후 Apply → (http/https 는 인스턴스 부팅 시 `git clone → uv sync → systemd 기동` 자동 수행) → `app_url`(HTTP) / `https_url`(HTTPS) 접속 → **[Database 관리]** 화면에서 ADB 등록.
 
-> **두 가지 배포 변형** (스택 폴더로 분리, 각 폴더가 독립 스택):
+> **세 가지 배포 변형** (스택 폴더로 분리, 각 폴더가 독립 스택):
 > - **`deploy/http/`** — Load Balancer·인증서 **없이** 인스턴스 공인 IP 의 앱 포트로 직접(HTTP) 접속. 사전 준비가 가장 적어 빠른 데모/내부 PoC 에 적합.
-> - **`deploy/https/`** — 공용 Load Balancer 가 TLS 종단(443) → 인스턴스 :8000 으로 전달. **인증서 OCID + IAM 정책 + 443/80 인바운드** 필요.
+> - **`deploy/https/`** — 새 VM 생성 + 공용 Load Balancer 가 TLS 종단(443) → 인스턴스 :8000 으로 전달. **인증서 OCID + IAM 정책 + 443/80 인바운드** 필요.
+> - **`deploy/https-existing-vm/`** — **컴퓨트를 만들지 않고** 이미 앱이 도는 **기존 인스턴스(OCID 지정)** 앞에 공용 Load Balancer 만 생성. https 와 동일한 사전 준비 + **LB→기존 VM 의 app_port 인바운드**, 그리고 **앱이 기존 VM 에 이미 설치**돼 있어야 함. `cloud-init.tftpl` 없음.
 
 ---
 
@@ -47,15 +48,15 @@ https://cloud.oracle.com/resourcemanager/stacks/create?zipUrl=
 
 ## 2. 추가/변경된 파일
 
-스택 구성 파일은 방식별로 **`deploy/http/`, `deploy/https/`** 폴더에 들어 있습니다 (각 폴더가 독립 스택, 동일 파일명):
+스택 구성 파일은 방식별로 **`deploy/http/`, `deploy/https/`, `deploy/https-existing-vm/`** 폴더에 들어 있습니다 (각 폴더가 독립 스택, 동일 파일명 — 단 `https-existing-vm` 은 `cloud-init.tftpl` 없이 4개 파일):
 
-| 파일 | `deploy/http/` (HTTP) | `deploy/https/` (HTTPS) |
-|---|---|---|
-| `main.tf` | provider + 컴퓨트 인스턴스(**기존 VCN/서브넷 선택**) + 최신 OL 이미지 조회. **LB 없음** | 좌측 + **HTTPS Load Balancer**(443 리스너=OCI 인증서 OCID, 백엔드 :8000, 헬스체크, 80→443 리다이렉트) |
-| `variables.tf` | 인스턴스 이름/shape/OCPU·메모리/OS/SSH 키/VCN·서브넷/공인 IP/포트/리포 | 좌측 + **certificate_ocid / https_port / lb_*** |
-| `outputs.tf` | `app_url` / `public_ip` / `private_ip` / `ssh_command` | 좌측 + `https_url` / `load_balancer_ip` |
-| `cloud-init.tftpl` | 부팅 부트스트랩 — `git clone → uv sync → systemd 등록·기동 → 방화벽 개방` | **동일** (두 폴더 같은 내용) |
-| `schema.yaml` | 변수 입력 UI (HTTPS 그룹 **없음**, primaryOutput=`app_url`) | 변수 입력 UI (HTTPS 그룹 포함, primaryOutput=`https_url`) |
+| 파일 | `deploy/http/` (HTTP) | `deploy/https/` (HTTPS) | `deploy/https-existing-vm/` (HTTPS+기존VM) |
+|---|---|---|---|
+| `main.tf` | provider + 컴퓨트 인스턴스(**기존 VCN/서브넷 선택**) + 최신 OL 이미지 조회. **LB 없음** | 좌측 + **HTTPS Load Balancer**(443 리스너=OCI 인증서 OCID, 백엔드 :8000, 헬스체크, 80→443 리다이렉트) | **컴퓨트/이미지 없음.** `data.oci_core_instance` 로 기존 인스턴스 조회 → LB 백엔드 연결 + 위 HTTPS LB 리소스 |
+| `variables.tf` | 인스턴스 이름/shape/OCPU·메모리/OS/SSH 키/VCN·서브넷/공인 IP/포트/리포 | 좌측 + **certificate_ocid / https_port / lb_*** | **컴퓨트/리포 변수 없음.** `instance_ocid` + VCN/subnet + app_port + certificate_ocid / https_port / lb_* |
+| `outputs.tf` | `app_url` / `public_ip` / `private_ip` / `ssh_command` | 좌측 + `https_url` / `load_balancer_ip` | `https_url` / `load_balancer_ip` / `backend_ip` |
+| `cloud-init.tftpl` | 부팅 부트스트랩 — `git clone → uv sync → systemd 등록·기동 → 방화벽 개방` | **동일** (http 와 같은 내용) | **없음** (앱은 기존 VM 에 이미 설치돼 있어야 함) |
+| `schema.yaml` | 변수 입력 UI (HTTPS 그룹 **없음**, primaryOutput=`app_url`) | 변수 입력 UI (HTTPS 그룹 포함, primaryOutput=`https_url`) | 변수 입력 UI (대상 인스턴스+HTTPS 그룹, 컴퓨트/소스 그룹 없음, primaryOutput=`https_url`) |
 
 함께 변경한 파일:
 
@@ -84,7 +85,7 @@ https://cloud.oracle.com/resourcemanager/stacks/create?zipUrl=https://github.com
 ```
 
 - `zipUrl` 은 GitHub 의 **브랜치 아카이브 zip** 주소입니다. RM 이 이 zip 을 받아 Terraform 구성으로 인식합니다.
-- **HTTP/HTTPS 버튼의 zipUrl 은 동일**합니다. Terraform 구성이 루트가 아닌 `deploy/http`·`deploy/https` 두 폴더에 있으므로, RM 의 **Working directory** 드롭다운에서 폴더를 골라 방식을 결정합니다. (Deploy 버튼 URL 은 working directory 를 미리 지정하는 파라미터를 지원하지 않습니다 — `zipUrl` 만 가능.)
+- **세 방식의 zipUrl 은 동일**합니다. Terraform 구성이 루트가 아닌 `deploy/http`·`deploy/https`·`deploy/https-existing-vm` 세 폴더에 있으므로, RM 의 **Working directory** 드롭다운에서 폴더를 골라 방식을 결정합니다. (Deploy 버튼 URL 은 working directory 를 미리 지정하는 파라미터를 지원하지 않습니다 — `zipUrl` 만 가능.)
 - 다른 리포/브랜치로 바꾸려면 경로와 `…/refs/heads/<branch>.zip` 을 수정하세요.
 - **공개(public) 리포** 기준입니다. private 리포는 RM 이 zip 을 받지 못하고 인스턴스의 `git clone` 도 실패합니다(별도 토큰/PAR 방식 필요).
 
@@ -100,6 +101,7 @@ https://cloud.oracle.com/resourcemanager/stacks/create?zipUrl=https://github.com
   cat ~/.ssh/id_rsa.pub
   ```
 - 소스를 올릴 **공개 GitHub 리포** (`select-ai-test`)
+- **(`deploy/https-existing-vm` 전용)** 앱이 `app_port`(기본 8000)에서 **이미 기동 중인 기존 인스턴스**(그 **OCID**) — 예: 먼저 `deploy/http` 로 띄운 인스턴스, 또는 수동 설치한 VM. 이 방식은 컴퓨트를 만들지 않으므로 SSH 키·리포·이미지 준비가 필요 없습니다.
 
 ---
 
@@ -119,7 +121,7 @@ git push -u origin main
 
 ### 단계 1. Deploy 버튼 클릭 → Stack information
 - GitHub 리포 README 의 **Deploy to Oracle Cloud** 버튼 클릭 → OCI 로그인 → **Create stack** 진입(구성 자동 로드)
-- **Working directory** 드롭다운에서 **`deploy/http`**(인증서 불필요·간편) 또는 **`deploy/https`**(LB+인증서) 선택 → 선택한 폴더의 `schema.yaml` 로 변수 폼이 구성됨
+- **Working directory** 드롭다운에서 **`deploy/http`**(인증서 불필요·간편) · **`deploy/https`**(새 VM+LB+인증서) · **`deploy/https-existing-vm`**(기존 VM 앞에 LB 만) 선택 → 선택한 폴더의 `schema.yaml` 로 변수 폼이 구성됨
 - "I have reviewed and accept the Oracle Terms of Use" 체크 → **Next**
 
 ### 단계 2. Configure variables
@@ -145,6 +147,20 @@ git push -u origin main
 > **`deploy/http` 를 골랐다면 위 HTTPS 행은 폼에 나타나지 않습니다.** (인증서·LB 불필요)
 > **네트워크는 생성하지 않고 기존 VCN/서브넷을 선택**합니다. 선택한 서브넷의 보안 목록에서 인바운드를 미리 허용하세요 — HTTP: **8000·SSH(22)**, HTTPS: 추가로 **443(및 80)** + [§8 보안 메모](#8-보안-메모) 의 IAM 정책.
 > **Always Free** 로 쓰려면 Shape 를 `VM.Standard.A1.Flex`(ARM, 권장) 또는 `VM.Standard.E2.1.Micro` 로 변경. oracledb 는 Thin 모드라 ARM 에서도 동작합니다.
+
+#### `deploy/https-existing-vm` 을 골랐을 때의 변수
+컴퓨트·애플리케이션 소스 그룹이 **없고**, 대신 대상 인스턴스를 지정합니다.
+
+| 그룹 | 변수 | 설명 | 기본값 |
+|---|---|---|---|
+| 일반 | **구획 (Compartment)** | LB 를 만들 구획 | — (선택) |
+| 대상 인스턴스 | **기존 컴퓨트 인스턴스** *(필수)* | LB 백엔드로 연결할 기존 인스턴스 (`data.oci_core_instance` 로 사설 IP 자동 조회) | — |
+| 네트워크 | **VCN / LB 서브넷** *(필수)* | LB 를 배치할 기존 VCN·서브넷 | — |
+| HTTPS | **Certificate OCID** *(필수)* / **HTTPS 포트** / **LB 표시 이름** / **80→443 리다이렉트** / **Private LB / 대역폭** | https 와 동일 | — / `443` / `select-ai-test-lb` / 켬 / 공용·10·10 |
+| 애플리케이션 | **앱 포트** | 기존 VM 에서 앱이 수신 중인 포트 (LB 백엔드·헬스체크) | `8000` |
+
+> 출력: `https_url` / `load_balancer_ip` / `backend_ip`(연결된 기존 인스턴스 사설 IP).
+> 사전 준비: https 와 동일(443/80 인바운드 + IAM 정책) + **LB→기존 VM 의 app_port(8000) 인바운드**, 그리고 **앱이 기존 VM 에 이미 설치·기동**돼 있어야 함.
 
 ### 단계 3. Review → Create → Apply
 - **Create** 시 "Run apply" 를 켜두거나, 스택 생성 후 **Apply** 버튼 클릭
@@ -204,7 +220,7 @@ sudo systemctl restart select-ai-test
 ## 8. 보안 메모
 
 ### HTTPS 사전 준비 (필수 — Terraform 밖)
-LB/리스너/백엔드는 Terraform 이 만들지만, 다음 2가지는 **반드시 별도로** 준비해야 합니다.
+`deploy/https` **및 `deploy/https-existing-vm`** 공통. LB/리스너/백엔드는 Terraform 이 만들지만, 다음 2가지는 **반드시 별도로** 준비해야 합니다.
 
 1. **보안 목록 인바운드** — 선택한 서브넷의 Security List/NSG 에 추가:
    - `443/TCP`(80→443 리다이렉트 쓰면 `80/TCP` 도) ← 클라이언트 → LB
@@ -215,6 +231,8 @@ LB/리스너/백엔드는 Terraform 이 만들지만, 다음 2가지는 **반드
    Allow any-user to read leaf-certificate-bundles in compartment <구획> where all { request.principal.type = 'loadbalancer' }
    ```
    (정확한 표현은 OCI 문서 "Load Balancer + Certificates Service" 로 확인. 정책 누락 시 LB 가 인증서를 못 읽어 리스너가 동작하지 않음)
+
+> **`deploy/https-existing-vm` 추가 주의:** 앱을 설치하지 않으므로 **기존 VM 에 앱이 `app_port`(8000)에서 이미 기동** 중이어야 하고, **LB→기존 VM 의 8000 인바운드**가 열려 있어야 백엔드 health 가 OK 가 됩니다. 도메인 없이 Private CA 로 인증서를 발급하는 절차는 [`PRIVATE_CA_HTTPS.md`](PRIVATE_CA_HTTPS.md) 참고.
 
 ### 일반
 - 인바운드 허용은 **선택한 기존 서브넷의 보안 목록(Security List/NSG)** 에서 관리합니다. 운영/외부 노출 시 인바운드를 사내 IP 대역으로 좁히세요.
@@ -227,8 +245,9 @@ LB/리스너/백엔드는 Terraform 이 만들지만, 다음 2가지는 **반드
 
 ## 9. 검증 상태
 
-- `terraform init -backend=false` + `terraform validate` → **Success** (`deploy/http`, `deploy/https` 각각, oracle/oci provider 기준)
-- `terraform fmt -check` → 두 폴더 모두 포맷 정상
-- `cloud-init.tftpl` 템플릿 치환 변수 → `repo_url` / `repo_branch` / `app_port` 3개만(나머지 bash `$VAR` 는 보존). 두 폴더 파일 내용 동일(`diff` 확인).
-- `schema.yaml` → YAML 파싱 정상 — `deploy/https` 변수 21·그룹 6, `deploy/http` 변수 14·그룹 5(HTTPS 그룹 제거)
-- HTTPS Load Balancer(443 리스너=OCI 인증서 OCID) — `deploy/https` 에만 존재, `terraform validate` 로 `certificate_ids`/`ssl_configuration` 필드 검증됨. `deploy/http` 에는 LB/인증서 리소스·변수 없음(validate 통과).
+- `terraform init -backend=false` + `terraform validate` → **Success** (`deploy/http`, `deploy/https`, `deploy/https-existing-vm` 각각, oracle/oci provider 기준)
+- `terraform fmt -check` → 세 폴더 모두 포맷 정상
+- `cloud-init.tftpl` 템플릿 치환 변수 → `repo_url` / `repo_branch` / `app_port` 3개만(나머지 bash `$VAR` 는 보존). http·https 두 폴더 파일 내용 동일(`diff` 확인). `deploy/https-existing-vm` 은 이 파일 없음.
+- `schema.yaml` → YAML 파싱 정상 — `deploy/https` 변수 21·그룹 6, `deploy/http` 변수 14·그룹 5(HTTPS 그룹 제거), `deploy/https-existing-vm` 변수 14·그룹 6(컴퓨트/소스 그룹 제거, 대상 인스턴스 그룹 추가)
+- HTTPS Load Balancer(443 리스너=OCI 인증서 OCID) — `deploy/https`·`deploy/https-existing-vm` 에 존재, `terraform validate` 로 `certificate_ids`/`ssl_configuration` 필드 검증됨. `deploy/http` 에는 LB/인증서 리소스·변수 없음(validate 통과).
+- `deploy/https-existing-vm` — 컴퓨트/이미지/cloud-init 리소스 없음, `data.oci_core_instance` 로 기존 인스턴스 조회 후 LB 백엔드(`ip_address = data.oci_core_instance.existing.private_ip`) 연결. `terraform validate` 통과.

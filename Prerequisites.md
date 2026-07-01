@@ -1,5 +1,68 @@
 # 사전 준비사항 (Prerequisites)
 
+이 문서는 두 종류의 사전 준비를 다룹니다.
+
+1. **[프로젝트 배포(설치) 사전 준비 — HTTP / HTTPS](#프로젝트-배포설치-사전-준비--http--https)** — OCI Resource Manager 로 앱을 인스턴스에 올리기 전에 갖춰야 할 것들.
+2. **DB 사전 준비** — 앱이 접속할 DB 사용자에게 부여할 권한·프로시저·함수(그 아래 모든 절).
+
+---
+
+## 프로젝트 배포(설치) 사전 준비 — HTTP / HTTPS
+
+OCI Resource Manager 원클릭 스택으로 앱을 배포하기 전에 준비할 항목입니다. **HTTP**(`deploy/http/` — Load Balancer·인증서 없이 인스턴스 공인 IP 의 앱 포트로 직접 접속)와 **HTTPS**(`deploy/https/` — 공용 Load Balancer 가 TLS 종단) 두 변형이 있으며, 각각 필요한 준비물이 다릅니다.
+
+> 배포 아키텍처·절차·트러블슈팅 전체는 [`DEPLOY_OCI.md`](DEPLOY_OCI.md) 와 [`README.md`](README.md) §4 를 1차 출처로 보세요. 여기서는 **배포 전에 미리 손봐야 하는 것**만 정리합니다.
+
+### 공통 사전 준비 (HTTP · HTTPS 모두)
+
+- **OCI 테넌시 + 구획(Compartment)** 과 인스턴스/네트워크 리소스를 만들 **IAM 권한**.
+- 배포 리전의 **컴퓨트 서비스 한도** — 선택한 shape(기본 `VM.Standard.E5.Flex`, Always Free 는 `VM.Standard.A1.Flex`) 기준 여유. oracledb 는 Thin 모드라 ARM(A1)에서도 동작합니다.
+- **기존 VCN + 서브넷** — 스택은 네트워크를 **생성하지 않고 선택**합니다. 미리 준비된 VCN/서브넷이 있어야 합니다.
+- **소스가 올라간 공개(public) GitHub 리포** — RM 이 zip 아카이브를 받고 인스턴스가 `git clone` 합니다. private 리포는 실패합니다(별도 토큰/PAR 필요). 기본값: `https://github.com/primelyson2/select-ai-test.git` (브랜치 `main`).
+- **SSH 공개키** *(선택)* — 인스턴스에 SSH 접속하려면 준비. 없으면 생성:
+  ```bash
+  ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa
+  cat ~/.ssh/id_rsa.pub
+  ```
+
+### HTTP 배포 (`deploy/http/`) — 추가 준비
+
+가장 준비가 적은 경로입니다. 위 공통 준비에 더해:
+
+- **선택한 서브넷의 보안 목록(Security List/NSG) 인바운드 개방**:
+  - `8000/TCP` (앱 포트) ← 클라이언트 → 인스턴스
+  - `22/TCP` (SSH, 선택)
+- **공인 IP** 로 접속하려면 서브넷이 public 이고 **공인 IP 할당** 옵션을 켜야 합니다(기본 켬). private 서브넷이면 해제.
+
+> 접속 URL: `app_url = http://<공인IP>:8000`
+
+### HTTPS 배포 (`deploy/https/`) — 추가 준비 (Terraform 밖에서 필수)
+
+Load Balancer·리스너·백엔드는 Terraform 이 만들지만, 다음은 **반드시 별도로 미리** 준비해야 합니다(누락 시 LB 가 인증서를 못 읽어 리스너가 동작하지 않음).
+
+1. **OCI Certificates 서비스 인증서** — 배포와 **동일 리전**에 발급된 인증서의 **OCID**. 스택 변수 `certificate_ocid` 에 입력합니다(LB 443 리스너가 참조).
+2. **IAM 정책** — LB 가 Certificates 서비스 인증서를 읽도록 관리자가 1회 생성:
+   ```
+   Allow any-user to read leaf-certificate-bundles in compartment <구획> where all { request.principal.type = 'loadbalancer' }
+   ```
+   (정확한 표현은 OCI 문서 "Load Balancer + Certificates Service" 로 확인)
+3. **선택한 서브넷의 보안 목록(Security List/NSG) 인바운드 개방**:
+   - `443/TCP` ← 클라이언트 → LB (80→443 리다이렉트를 켜면 `80/TCP` 도)
+   - `8000/TCP` ← LB → 인스턴스
+   - `22/TCP` ← SSH (선택)
+4. *(선택)* **LB 전용 서브넷** — 비우면 인스턴스 서브넷을 재사용. Private LB 로 쓰려면 별도 옵션.
+
+> 접속 URL: `https_url = https://<LB IP>` (TLS 종단 = LB, LB→인스턴스 구간은 평문 HTTP:8000).
+> **Private CA 발급 인증서**는 브라우저가 기본 신뢰하지 않아 경고가 뜹니다 — 클라이언트가 해당 Private CA 루트를 신뢰 저장소에 추가해야 경고 없이 접속됩니다(내부망용 정상).
+
+### 배포 후
+
+두 변형 모두 앱은 `config.yaml` 없이도 기동됩니다. 접속 URL 로 들어가 좌측 **[Database 관리]** 화면에서 Wallet zip 업로드로 첫 ADB 를 등록합니다(접속정보·Wallet 은 리포/Terraform 에 넣지 않음). 등록한 DB 사용자에는 아래 **DB 사전 준비** 권한이 부여되어 있어야 합니다.
+
+---
+
+## DB 사전 준비
+
 SELECT AI / AI Agent Team 기능을 사용하려면 애플리케이션이 접속할 **DB 사용자**에게 아래 권한을 미리 부여해야 합니다. ADMIN(또는 DBA 권한 보유자)으로 접속해 1회 실행합니다.
 
 > 아래 예시의 사용자명 `askoracle` 은 실제 접속 DB 사용자명으로 바꿔서 실행하세요.
@@ -572,34 +635,3 @@ EXCEPTION
 END;
 /
 ```
-
-### 3) 검증용 샘플 데이터 (자기완결형 — DUAL 사용, 특정 테이블 불필요)
-
-```sql
-INSERT INTO T_PREDEFINED_QUERY (DESCRIPTION, NL_QUESTION, SQL_TEXT, ENTITY_PROMPT, FEW_SHOT) VALUES (
-    '기간/상품코드 에코 (검증용)',
-    '전일자 상품 P001 조회',
-    'SELECT :상품코드 AS "상품코드", :시작일 AS "시작일", :종료일 AS "종료일" FROM DUAL',
-    '기준일은 오늘이다. 아래 질문에서 조회 기간과 상품코드를 추출하라.' || CHR(10) ||
-    '반드시 아래 JSON 형식으로만 응답하라(설명 없이 JSON만):' || CHR(10) ||
-    '{"시작일":"YYYYMMDD","종료일":"YYYYMMDD","상품코드":"상품코드값"}' || CHR(10) ||
-    '- 전일자: 시작일=기준일-1일, 종료일=기준일',
-    '예) 질문: "전일자 상품 P002 조회" → 답변: "상품 P002, 조회기간 …~… 기준입니다."'
-);
-COMMIT;
-```
-
-### 4) 동작 검증
-
-```sql
-SET SERVEROUTPUT ON
--- 등록된 ID 확인
-SELECT ID, DESCRIPTION FROM T_PREDEFINED_QUERY ORDER BY ID;
-
--- 함수 호출 (p_id, p_question, p_profile_name). 프로파일명은 실제 ENABLED 프로파일로.
-SELECT f_predefined_query(1, '전일자 상품 P001 조회', 'AIF_NL2SQL') AS result FROM DUAL;
-```
-
-- 정상: 조회결과를 근거로 한 **자연어 답변(CLOB)** 반환
-- 엔티티 미추출: `{"status":"entity_missing","result":{"missing_entities":"…"}}`
-- 함수/테이블 미존재·권한 오류 등: `{"status":"error","result":{"error":"ORA-…"}}`
