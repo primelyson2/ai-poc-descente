@@ -18,6 +18,13 @@ variableGroups:
     variables:
       - instance_ocid
 
+  - title: "애플리케이션 설치 (기존 VM 에 SSH 설치)"
+    variables:
+      - ssh_private_key
+      - ssh_user
+      - repo_url
+      - repo_branch
+
   - title: "네트워크 접근"
     variables:
       - vcn_id
@@ -48,10 +55,37 @@ variables:
   instance_ocid:
     type: oci:core:instance:id
     title: "기존 컴퓨트 인스턴스"
-    description: "HTTPS LB 백엔드로 연결할 기존 인스턴스. 이 인스턴스에 앱이 app_port 에서 이미 실행 중이어야 합니다"
+    description: "소스를 설치하고 HTTPS LB 백엔드로 연결할 기존 인스턴스. 공인 IP + SSH(22) 접근이 가능해야 합니다"
     required: true
     dependsOn:
       compartmentId: ${compartment_ocid}
+
+  # ───── 애플리케이션 설치 ─────
+  ssh_private_key:
+    type: text
+    title: "SSH 개인키 (PEM)"
+    description: "기존 인스턴스에 접속할 개인키 전체 내용(-----BEGIN ... END----- 포함). 소스 설치에 사용되며 스택 변수로 안전 저장됩니다"
+    required: true
+
+  ssh_user:
+    type: string
+    title: "SSH 사용자"
+    description: "Oracle Linux 기본값 opc"
+    default: "opc"
+    required: true
+
+  repo_url:
+    type: string
+    title: "Git 리포지토리 URL"
+    description: "기존 VM 에 설치할 애플리케이션 소스"
+    default: "https://github.com/primelyson2/select-ai-test.git"
+    required: true
+
+  repo_branch:
+    type: string
+    title: "브랜치"
+    default: "main"
+    required: true
 
   # ───── 네트워크 접근 (기존 VCN/서브넷 선택) ─────
   vcn_id:

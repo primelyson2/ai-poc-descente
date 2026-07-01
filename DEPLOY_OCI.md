@@ -7,7 +7,7 @@ GitHub 리포(`select-ai-test`)를 소스로 삼아 **OCI Resource Manager** 로
 > **세 가지 배포 변형** (스택 폴더로 분리, 각 폴더가 독립 스택):
 > - **`deploy/http/`** — Load Balancer·인증서 **없이** 인스턴스 공인 IP 의 앱 포트로 직접(HTTP) 접속. 사전 준비가 가장 적어 빠른 데모/내부 PoC 에 적합.
 > - **`deploy/https/`** — 새 VM 생성 + 공용 Load Balancer 가 TLS 종단(443) → 인스턴스 :8000 으로 전달. **인증서 OCID + IAM 정책 + 443/80 인바운드** 필요.
-> - **`deploy/https-existing-vm/`** — **컴퓨트를 만들지 않고** 이미 앱이 도는 **기존 인스턴스(OCID 지정)** 앞에 공용 Load Balancer 만 생성. https 와 동일한 사전 준비 + **LB→기존 VM 의 app_port 인바운드**, 그리고 **앱이 기존 VM 에 이미 설치**돼 있어야 함. `cloud-init.tftpl` 없음.
+> - **`deploy/https-existing-vm/`** — **컴퓨트를 만들지 않고** 지정한 **기존 인스턴스(OCID)** 에 **SSH 로 소스를 설치**한 뒤 그 앞에 공용 Load Balancer 를 생성. https 와 동일한 사전 준비 + **LB→기존 VM 의 app_port 인바운드**, 그리고 대상 VM 의 **공인 IP·SSH(22)·SSH 개인키**(설치용). `cloud-init.tftpl` 대신 `install.sh.tftpl`(SSH remote-exec).
 
 ---
 
@@ -52,11 +52,11 @@ https://cloud.oracle.com/resourcemanager/stacks/create?zipUrl=
 
 | 파일 | `deploy/http/` (HTTP) | `deploy/https/` (HTTPS) | `deploy/https-existing-vm/` (HTTPS+기존VM) |
 |---|---|---|---|
-| `main.tf` | provider + 컴퓨트 인스턴스(**기존 VCN/서브넷 선택**) + 최신 OL 이미지 조회. **LB 없음** | 좌측 + **HTTPS Load Balancer**(443 리스너=OCI 인증서 OCID, 백엔드 :8000, 헬스체크, 80→443 리다이렉트) | **컴퓨트/이미지 없음.** `data.oci_core_instance` 로 기존 인스턴스 조회 → LB 백엔드 연결 + 위 HTTPS LB 리소스 |
-| `variables.tf` | 인스턴스 이름/shape/OCPU·메모리/OS/SSH 키/VCN·서브넷/공인 IP/포트/리포 | 좌측 + **certificate_ocid / https_port / lb_*** | **컴퓨트/리포 변수 없음.** `instance_ocid` + VCN/subnet + app_port + certificate_ocid / https_port / lb_* |
+| `main.tf` | provider + 컴퓨트 인스턴스(**기존 VCN/서브넷 선택**) + 최신 OL 이미지 조회. **LB 없음** | 좌측 + **HTTPS Load Balancer**(443 리스너=OCI 인증서 OCID, 백엔드 :8000, 헬스체크, 80→443 리다이렉트) | **컴퓨트/이미지 없음.** `data.oci_core_instance` 조회 + **`null_resource`(SSH remote-exec) 로 소스 설치** + HTTPS LB 리소스 |
+| `variables.tf` | 인스턴스 이름/shape/OCPU·메모리/OS/SSH 키/VCN·서브넷/공인 IP/포트/리포 | 좌측 + **certificate_ocid / https_port / lb_*** | **컴퓨트 shape 계열 없음.** `instance_ocid` + **ssh_private_key/ssh_user/repo_url/repo_branch** + VCN/subnet + app_port + certificate_ocid / https_port / lb_* |
 | `outputs.tf` | `app_url` / `public_ip` / `private_ip` / `ssh_command` | 좌측 + `https_url` / `load_balancer_ip` | `https_url` / `load_balancer_ip` / `backend_ip` |
-| `cloud-init.tftpl` | 부팅 부트스트랩 — `git clone → uv sync → systemd 등록·기동 → 방화벽 개방` | **동일** (http 와 같은 내용) | **없음** (앱은 기존 VM 에 이미 설치돼 있어야 함) |
-| `schema.yaml` | 변수 입력 UI (HTTPS 그룹 **없음**, primaryOutput=`app_url`) | 변수 입력 UI (HTTPS 그룹 포함, primaryOutput=`https_url`) | 변수 입력 UI (대상 인스턴스+HTTPS 그룹, 컴퓨트/소스 그룹 없음, primaryOutput=`https_url`) |
+| `cloud-init.tftpl` | 부팅 부트스트랩 — `git clone → uv sync → systemd 등록·기동 → 방화벽 개방` | **동일** (http 와 같은 내용) | **없음 — 대신 `install.sh.tftpl`** (같은 로직을 부팅이 아니라 SSH remote-exec 로 기존 VM 에서 실행) |
+| `schema.yaml` | 변수 입력 UI (HTTPS 그룹 **없음**, primaryOutput=`app_url`) | 변수 입력 UI (HTTPS 그룹 포함, primaryOutput=`https_url`) | 변수 입력 UI (대상 인스턴스+**애플리케이션 설치(SSH)**+HTTPS 그룹, 컴퓨트 shape 그룹 없음, primaryOutput=`https_url`) |
 
 함께 변경한 파일:
 
@@ -101,7 +101,7 @@ https://cloud.oracle.com/resourcemanager/stacks/create?zipUrl=https://github.com
   cat ~/.ssh/id_rsa.pub
   ```
 - 소스를 올릴 **공개 GitHub 리포** (`select-ai-test`)
-- **(`deploy/https-existing-vm` 전용)** 앱이 `app_port`(기본 8000)에서 **이미 기동 중인 기존 인스턴스**(그 **OCID**) — 예: 먼저 `deploy/http` 로 띄운 인스턴스, 또는 수동 설치한 VM. 이 방식은 컴퓨트를 만들지 않으므로 SSH 키·리포·이미지 준비가 필요 없습니다.
+- **(`deploy/https-existing-vm` 전용)** 소스를 설치할 **기존 인스턴스(그 OCID)** — 이 방식은 컴퓨트를 만들지 않고 그 VM 에 **SSH 로 소스를 설치**합니다. 따라서 대상 VM 이 **공인 IP + SSH(22) 인바운드**를 갖고, 접속용 **SSH 개인키(PEM)** 를 준비해야 합니다(앱이 이미 설치돼 있어도 리포/브랜치 기준으로 재설치).
 
 ---
 
@@ -149,18 +149,20 @@ git push -u origin main
 > **Always Free** 로 쓰려면 Shape 를 `VM.Standard.A1.Flex`(ARM, 권장) 또는 `VM.Standard.E2.1.Micro` 로 변경. oracledb 는 Thin 모드라 ARM 에서도 동작합니다.
 
 #### `deploy/https-existing-vm` 을 골랐을 때의 변수
-컴퓨트·애플리케이션 소스 그룹이 **없고**, 대신 대상 인스턴스를 지정합니다.
+컴퓨트 shape 계열 그룹이 **없고**, 대신 대상 인스턴스 + SSH 설치 정보를 지정합니다.
 
 | 그룹 | 변수 | 설명 | 기본값 |
 |---|---|---|---|
 | 일반 | **구획 (Compartment)** | LB 를 만들 구획 | — (선택) |
-| 대상 인스턴스 | **기존 컴퓨트 인스턴스** *(필수)* | LB 백엔드로 연결할 기존 인스턴스 (`data.oci_core_instance` 로 사설 IP 자동 조회) | — |
+| 대상 인스턴스 | **기존 컴퓨트 인스턴스** *(필수)* | 소스 설치 + LB 백엔드로 연결할 기존 인스턴스 (`data.oci_core_instance` 로 공인/사설 IP 자동 조회) | — |
+| 애플리케이션 설치 | **SSH 개인키(PEM)** *(필수)* / **SSH 사용자** / **Git URL** / **브랜치** | 기존 VM 에 SSH 접속해 `git clone → uv sync → systemd 기동` | — / `opc` / 위 리포 / `main` |
 | 네트워크 | **VCN / LB 서브넷** *(필수)* | LB 를 배치할 기존 VCN·서브넷 | — |
 | HTTPS | **Certificate OCID** *(필수)* / **HTTPS 포트** / **LB 표시 이름** / **80→443 리다이렉트** / **Private LB / 대역폭** | https 와 동일 | — / `443` / `select-ai-test-lb` / 켬 / 공용·10·10 |
-| 애플리케이션 | **앱 포트** | 기존 VM 에서 앱이 수신 중인 포트 (LB 백엔드·헬스체크) | `8000` |
+| 애플리케이션 | **앱 포트** | 설치한 앱이 수신할 포트 (LB 백엔드·헬스체크) | `8000` |
 
 > 출력: `https_url` / `load_balancer_ip` / `backend_ip`(연결된 기존 인스턴스 사설 IP).
-> 사전 준비: https 와 동일(443/80 인바운드 + IAM 정책) + **LB→기존 VM 의 app_port(8000) 인바운드**, 그리고 **앱이 기존 VM 에 이미 설치·기동**돼 있어야 함.
+> 설치는 SSH `remote-exec` 로 `install.sh.tftpl`(cloud-init 과 동일 로직)을 실행하며, `instance_ocid`/리포/브랜치/`app_port` 변경 시 Apply 때 **재설치**됩니다(멱등). **SSH 개인키는 스택 민감 변수**로 저장됩니다.
+> 사전 준비: https 와 동일(443/80 인바운드 + IAM 정책) + **LB→기존 VM 의 app_port(8000) 인바운드** + 대상 VM 의 **공인 IP·SSH(22) 인바운드**(설치 접속용).
 
 ### 단계 3. Review → Create → Apply
 - **Create** 시 "Run apply" 를 켜두거나, 스택 생성 후 **Apply** 버튼 클릭
@@ -232,7 +234,7 @@ sudo systemctl restart select-ai-test
    ```
    (정확한 표현은 OCI 문서 "Load Balancer + Certificates Service" 로 확인. 정책 누락 시 LB 가 인증서를 못 읽어 리스너가 동작하지 않음)
 
-> **`deploy/https-existing-vm` 추가 주의:** 앱을 설치하지 않으므로 **기존 VM 에 앱이 `app_port`(8000)에서 이미 기동** 중이어야 하고, **LB→기존 VM 의 8000 인바운드**가 열려 있어야 백엔드 health 가 OK 가 됩니다. 도메인 없이 Private CA 로 인증서를 발급하는 절차는 [`PRIVATE_CA_HTTPS.md`](PRIVATE_CA_HTTPS.md) 참고.
+> **`deploy/https-existing-vm` 추가 주의:** **기존 VM 에 SSH(22)로 소스를 설치**하므로 대상 VM 의 **공인 IP·SSH(22) 인바운드 + SSH 개인키**가 필요합니다. 설치 후 **LB→기존 VM 의 8000 인바운드**가 열려 있어야 백엔드 health 가 OK 가 됩니다. 도메인 없이 Private CA 로 인증서를 발급하는 절차는 [`PRIVATE_CA_HTTPS.md`](PRIVATE_CA_HTTPS.md) 참고.
 
 ### 일반
 - 인바운드 허용은 **선택한 기존 서브넷의 보안 목록(Security List/NSG)** 에서 관리합니다. 운영/외부 노출 시 인바운드를 사내 IP 대역으로 좁히세요.
@@ -247,7 +249,7 @@ sudo systemctl restart select-ai-test
 
 - `terraform init -backend=false` + `terraform validate` → **Success** (`deploy/http`, `deploy/https`, `deploy/https-existing-vm` 각각, oracle/oci provider 기준)
 - `terraform fmt -check` → 세 폴더 모두 포맷 정상
-- `cloud-init.tftpl` 템플릿 치환 변수 → `repo_url` / `repo_branch` / `app_port` 3개만(나머지 bash `$VAR` 는 보존). http·https 두 폴더 파일 내용 동일(`diff` 확인). `deploy/https-existing-vm` 은 이 파일 없음.
-- `schema.yaml` → YAML 파싱 정상 — `deploy/https` 변수 21·그룹 6, `deploy/http` 변수 14·그룹 5(HTTPS 그룹 제거), `deploy/https-existing-vm` 변수 14·그룹 6(컴퓨트/소스 그룹 제거, 대상 인스턴스 그룹 추가)
+- `cloud-init.tftpl` 템플릿 치환 변수 → `repo_url` / `repo_branch` / `app_port` 3개만(나머지 bash `$VAR` 는 보존). http·https 두 폴더 파일 내용 동일(`diff` 확인). `deploy/https-existing-vm` 은 이 파일 대신 **`install.sh.tftpl`**(같은 치환 변수, SSH remote-exec 로 실행).
+- `schema.yaml` → YAML 파싱 정상 — `deploy/https` 변수 21·그룹 6, `deploy/http` 변수 14·그룹 5(HTTPS 그룹 제거), `deploy/https-existing-vm` 변수 16·그룹 7(컴퓨트 shape 그룹 제거, 대상 인스턴스+애플리케이션 설치 그룹 추가)
 - HTTPS Load Balancer(443 리스너=OCI 인증서 OCID) — `deploy/https`·`deploy/https-existing-vm` 에 존재, `terraform validate` 로 `certificate_ids`/`ssl_configuration` 필드 검증됨. `deploy/http` 에는 LB/인증서 리소스·변수 없음(validate 통과).
-- `deploy/https-existing-vm` — 컴퓨트/이미지/cloud-init 리소스 없음, `data.oci_core_instance` 로 기존 인스턴스 조회 후 LB 백엔드(`ip_address = data.oci_core_instance.existing.private_ip`) 연결. `terraform validate` 통과.
+- `deploy/https-existing-vm` — 컴퓨트/이미지 리소스 없음. `data.oci_core_instance` 조회 + **`null_resource`(hashicorp/null) SSH remote-exec 로 소스 설치**(`file`+`remote-exec` provisioner) + LB 백엔드(`ip_address = data.oci_core_instance.existing.private_ip`, `depends_on = null_resource.install`) 연결. `terraform init`(oci+null)·`validate` 통과.

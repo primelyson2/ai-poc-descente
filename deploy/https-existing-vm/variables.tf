@@ -24,7 +24,32 @@ variable "region" {
 # ───── 대상 인스턴스 (기존 VM) ─────
 variable "instance_ocid" {
   type        = string
-  description = "HTTPS LB 백엔드로 쓸 기존 컴퓨트 인스턴스 OCID (앱이 app_port 에서 이미 실행 중이어야 함)"
+  description = "소스를 설치하고 HTTPS LB 백엔드로 연결할 기존 컴퓨트 인스턴스 OCID"
+}
+
+# ───── 애플리케이션 설치 (기존 VM 에 SSH remote-exec) ─────
+variable "ssh_private_key" {
+  type        = string
+  description = "기존 인스턴스에 SSH 접속할 개인키(PEM 전체 내용). 소스 설치용 — 공인 IP + 22 인바운드 필요"
+  sensitive   = true
+}
+
+variable "ssh_user" {
+  type        = string
+  description = "SSH 접속 사용자 (Oracle Linux 기본 opc)"
+  default     = "opc"
+}
+
+variable "repo_url" {
+  type        = string
+  description = "기존 VM 에 설치할 애플리케이션 Git 리포지토리 URL"
+  default     = "https://github.com/primelyson2/select-ai-test.git"
+}
+
+variable "repo_branch" {
+  type        = string
+  description = "체크아웃할 브랜치"
+  default     = "main"
 }
 
 # ───── Network (기존 VCN/서브넷 선택) ─────

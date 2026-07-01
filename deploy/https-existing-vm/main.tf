@@ -5,6 +5,9 @@ terraform {
       source  = "oracle/oci"
       version = ">= 5.0.0"
     }
+    null = {
+      source = "hashicorp/null"
+    }
   }
 }
 
@@ -23,6 +26,45 @@ data "oci_core_instance" "existing" {
 locals {
   lb_subnet  = var.subnet_id
   backend_ip = data.oci_core_instance.existing.private_ip
+}
+
+# ───── 기존 VM 에 소스 설치 (SSH remote-exec) ─────
+# 부팅이 끝난 기존 인스턴스에는 cloud-init 을 못 쓰므로, SSH 로 접속해
+# 설치 스크립트(install.sh.tftpl = cloud-init 과 동일 로직)를 실행한다.
+# 재실행 트리거: instance/repo/branch/app_port 가 바뀌면 다시 설치한다.
+resource "null_resource" "install" {
+  triggers = {
+    instance    = var.instance_ocid
+    repo_url    = var.repo_url
+    repo_branch = var.repo_branch
+    app_port    = var.app_port
+  }
+
+  connection {
+    type        = "ssh"
+    host        = data.oci_core_instance.existing.public_ip
+    user        = var.ssh_user
+    private_key = var.ssh_private_key
+    timeout     = "5m"
+  }
+
+  # 설치 스크립트 업로드 (opc 홈의 /tmp)
+  provisioner "file" {
+    content = templatefile("${path.module}/install.sh.tftpl", {
+      repo_url    = var.repo_url
+      repo_branch = var.repo_branch
+      app_port    = var.app_port
+    })
+    destination = "/tmp/select-ai-install.sh"
+  }
+
+  # root 권한(sudo)으로 실행 → 패키지 설치/systemd 등록
+  provisioner "remote-exec" {
+    inline = [
+      "chmod +x /tmp/select-ai-install.sh",
+      "sudo bash /tmp/select-ai-install.sh",
+    ]
+  }
 }
 
 # ───── HTTPS Load Balancer (TLS 종단 → 기존 인스턴스 :app_port) ─────
@@ -55,6 +97,7 @@ resource "oci_load_balancer_backend" "be" {
   backendset_name  = oci_load_balancer_backend_set.bes.name
   ip_address       = local.backend_ip # 기존 인스턴스의 사설 IP
   port             = var.app_port
+  depends_on       = [null_resource.install] # 앱 설치 후 백엔드 연결
 }
 
 # HTTPS 리스너 — OCI Certificates 서비스 인증서를 OCID 로 참조 (TLS 종단)
