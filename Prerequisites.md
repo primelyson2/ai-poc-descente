@@ -11,7 +11,7 @@
 
 OCI Resource Manager 원클릭 스택으로 앱을 배포하기 전에 준비할 항목입니다. **HTTP**(`deploy/http/` — Load Balancer·인증서 없이 인스턴스 공인 IP 의 앱 포트로 직접 접속)와 **HTTPS**(`deploy/https/` — 공용 Load Balancer 가 TLS 종단) 두 변형이 있으며, 각각 필요한 준비물이 다릅니다.
 
-> 배포 아키텍처·절차·트러블슈팅 전체는 [`DEPLOY_OCI.md`](DEPLOY_OCI.md) 와 [`README.md`](README.md) §4 를 1차 출처로 보세요. 여기서는 **배포 전에 미리 손봐야 하는 것**만 정리합니다.
+> 배포 아키텍처·절차·트러블슈팅 전체는 [`Guide_Deploy_OCI.md`](Guide_Deploy_OCI.md) 와 [`README.md`](README.md) §4 를 1차 출처로 보세요. 여기서는 **배포 전에 미리 손봐야 하는 것**만 정리합니다.
 
 ### 공통 사전 준비 (HTTP · HTTPS 모두)
 
@@ -633,4 +633,41 @@ EXCEPTION
         RETURN v_result;
 END;
 /
+```
+
+## Select AI Test - Table list 의 AI분석 용 테이블
+
+메뉴 **Select AI Test - Table list** 의 결과표 하단 **[AI분석]** 버튼이 사용합니다. 조회 결과(직전 생성 SQL 로
+재조회한 최대 100행)를 **페르소나(분석 관점 템플릿)** 의 프롬프트와 함께 `DBMS_CLOUD_AI.GENERATE(action=>'chat')`
+로 보내 자연어 분석 결과를 반환합니다. 페르소나는 아래 `T_ANALYSIS_PERSONA` 에 저장하고, 화면의 AI분석 팝업
+→ [관리] 에서 추가/수정/삭제합니다(`/api/personas` CRUD, `/api/nl2sql/analyze` 분석).
+
+- **접속 사용자 스키마에 생성**합니다(앱은 스키마 접두사 없이 조회 — 객체는 접속 사용자가 소유해야 함).
+- **선행 권한**: [DB 패키지 실행 권한 부여](#db-패키지-실행-권한-부여)의 `DBMS_CLOUD_AI` EXECUTE 권한과,
+  분석 시 넘기는 **AI Profile 이 생성·ENABLED** 되어 있어야 합니다.
+- 테이블이 없어도 화면은 뜹니다(GET 은 빈 목록으로 graceful). 다만 페르소나 추가/분석 시 오류가 노출됩니다.
+
+```sql
+-- 이미 존재하면 ORA-00955 — 무시 가능
+CREATE TABLE T_ANALYSIS_PERSONA (
+    ID            NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY, -- 자동 증가 PK
+    PERSONA_NAME  VARCHAR2(200)  NOT NULL,   -- 페르소나 이름(드롭다운 표시)
+    DESCRIPTION   VARCHAR2(4000),            -- 용도 설명(선택)
+    PROMPT_TMPL   CLOB           NOT NULL,   -- 분석 프롬프트/출력형식 템플릿("결과샘플" 초기값)
+    INS_DTM       TIMESTAMP DEFAULT SYSTIMESTAMP, -- 입력 일시
+    MOD_DTM       TIMESTAMP DEFAULT SYSTIMESTAMP, -- 수정 일시
+    CONSTRAINT UQ_ANALYSIS_PERSONA_NAME UNIQUE (PERSONA_NAME)
+);
+
+-- 시드 예시(선택)
+INSERT INTO T_ANALYSIS_PERSONA (PERSONA_NAME, DESCRIPTION, PROMPT_TMPL) VALUES
+('마케팅 분석가', '매출 데이터에서 마케팅 인사이트 도출',
+ '아래 매출 데이터를 마케팅 관점에서 분석하라.'||CHR(10)||
+ '- 핵심 인사이트 3가지를 우선순위로 제시'||CHR(10)||
+ '- 브랜드/채널/연령별 특징을 표로 요약'||CHR(10)||
+ '- 실행 가능한 제안 2가지'||CHR(10)||'모든 답변은 한국어.');
+INSERT INTO T_ANALYSIS_PERSONA (PERSONA_NAME, DESCRIPTION, PROMPT_TMPL) VALUES
+('경영진 요약', '경영진 보고용 3줄 요약',
+ '아래 데이터를 경영진 보고용으로 3줄 이내로 요약하라. 숫자 근거를 포함하고 한국어로 답하라.');
+COMMIT;
 ```

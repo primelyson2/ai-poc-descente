@@ -234,7 +234,7 @@ sudo systemctl restart select-ai-test
    ```
    (정확한 표현은 OCI 문서 "Load Balancer + Certificates Service" 로 확인. 정책 누락 시 LB 가 인증서를 못 읽어 리스너가 동작하지 않음)
 
-> **`deploy/https-existing-vm` 추가 주의:** **기존 VM 에 SSH(22)로 소스를 설치**하므로 대상 VM 의 **공인 IP·SSH(22) 인바운드 + SSH 개인키**가 필요합니다. 설치 후 **LB→기존 VM 의 8000 인바운드**가 열려 있어야 백엔드 health 가 OK 가 됩니다. 도메인 없이 Private CA 로 인증서를 발급하는 절차는 [`PRIVATE_CA_HTTPS.md`](PRIVATE_CA_HTTPS.md) 참고.
+> **`deploy/https-existing-vm` 추가 주의:** **기존 VM 에 SSH(22)로 소스를 설치**하므로 대상 VM 의 **공인 IP·SSH(22) 인바운드 + SSH 개인키**가 필요합니다. 설치 후 **LB→기존 VM 의 8000 인바운드**가 열려 있어야 백엔드 health 가 OK 가 됩니다. 도메인 없이 Private CA 로 인증서를 발급하는 절차는 [`Guide_Private_CA_HTTPS.md`](Guide_Private_CA_HTTPS.md) 참고.
 
 ### 일반
 - 인바운드 허용은 **선택한 기존 서브넷의 보안 목록(Security List/NSG)** 에서 관리합니다. 운영/외부 노출 시 인바운드를 사내 IP 대역으로 좁히세요.

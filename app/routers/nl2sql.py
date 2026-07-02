@@ -115,6 +115,98 @@ async def nl2sql_run(payload: dict, database: str = Depends(current_db)) -> dict
             "gen_ms": gen_ms, "exec_ms": exec_ms, "total_ms": gen_ms + exec_ms}
 
 
+# AI분석 — 조회 데이터를 프롬프트에 직렬화할 때의 문자수 상한(초과분은 행 단위로 절단).
+ANALYZE_DATA_CHAR_LIMIT = 12000
+
+
+def _serialize_rows(columns: list[str], rows: list[list]) -> tuple[str, int]:
+    """(직렬화 텍스트, 포함 행수). 컬럼 헤더 + '|' 구분 행. 상한 초과 시 뒤 행을 버린다."""
+    header = "컬럼: " + ", ".join(columns)
+    lines = [header]
+    used = len(header)
+    included = 0
+    for r in rows:
+        line = " | ".join("" if v is None else str(v) for v in r)
+        if used + len(line) + 1 > ANALYZE_DATA_CHAR_LIMIT:
+            break
+        lines.append(line)
+        used += len(line) + 1
+        included += 1
+    return "\n".join(lines), included
+
+
+@router.post("/analyze")
+async def nl2sql_analyze(payload: dict, database: str = Depends(current_db)) -> dict:
+    """직전 생성 SQL 로 최대 ROW_LIMIT 행을 조회해, 편집된 페르소나 프롬프트와 함께
+    DBMS_CLOUD_AI.GENERATE(action=>'chat') 로 자연어 분석 결과를 생성한다.
+    클라이언트가 보낸 SQL 이므로 read-only 가드를 동일하게 재적용한다."""
+    profile_name = (payload.get("profile_name") or "").strip()
+    prompt = payload.get("prompt") or ""
+    sql = _clean_sql(payload.get("sql") or "")
+
+    if not profile_name:
+        raise HTTPException(status_code=400, detail={"error": "profile_name required"})
+    if not prompt.strip():
+        raise HTTPException(status_code=400, detail={"error": "분석 프롬프트가 비어 있습니다"})
+    if not sql:
+        raise HTTPException(status_code=400, detail={"error": "분석할 SQL 이 없습니다 — 먼저 질문을 실행하세요"})
+    if not _is_read_only(sql):
+        raise HTTPException(status_code=400, detail={"error": "조회(SELECT/WITH) 문장만 분석할 수 있습니다"})
+
+    def result(*, analysis=None, prompt_out=None, columns=None, row_count=0, truncated=False,
+               error=None, stage=None, gen_ms=None, exec_ms=None) -> dict:
+        has_ms = gen_ms is not None or exec_ms is not None
+        return {"analysis": analysis, "prompt": prompt_out, "columns": columns or [],
+                "row_count": row_count, "truncated": truncated, "error": error, "stage": stage,
+                "gen_ms": gen_ms, "exec_ms": exec_ms,
+                "total_ms": ((gen_ms or 0) + (exec_ms or 0)) if has_ms else None}
+
+    # 1) 데이터 조회 — 최대 ROW_LIMIT 행. (실행 시간 측정)
+    t0 = time.perf_counter()
+    try:
+        pool = db.get_pool(database)
+        async with pool.acquire() as conn:
+            with conn.cursor() as cur:
+                await cur.execute(sql)
+                columns = [d[0].lower() for d in (cur.description or [])]
+                fetched = await cur.fetchmany(ROW_LIMIT)
+        rows = [[_normalize_cell(v) for v in r] for r in fetched]
+    except Exception as exc:
+        exec_ms = int((time.perf_counter() - t0) * 1000)
+        msg = first_line(exc)
+        logger.warning("nl2sql analyze exec failed: db=%s: %s", database, msg)
+        return result(error=msg, stage="execute", exec_ms=exec_ms)
+    exec_ms = int((time.perf_counter() - t0) * 1000)
+
+    if not rows:
+        return result(error="분석할 데이터가 없습니다 (조회 결과 0행)", stage="empty",
+                      columns=columns, exec_ms=exec_ms)
+
+    # 2) 분석 프롬프트 조립 — 편집된 프롬프트 + 직렬화된 데이터.
+    data_text, included = _serialize_rows(columns, rows)
+    final_prompt = (
+        prompt.strip()
+        + f"\n\n[분석 대상 데이터] (조회 {len(rows)}행 중 {included}행)\n"
+        + data_text
+    )
+
+    # 3) GENERATE(chat) 로 자연어 분석. (생성 시간 측정)
+    t1 = time.perf_counter()
+    try:
+        row = await db.fetch_one(database, _GENERATE_SQL, p=final_prompt, pn=profile_name, a="chat")
+    except Exception as exc:
+        gen_ms = int((time.perf_counter() - t1) * 1000)
+        msg = first_line(exc)
+        logger.warning("nl2sql analyze GENERATE failed: db=%s profile=%s: %s", database, profile_name, msg)
+        return result(error=msg, stage="generate", columns=columns, row_count=len(rows), exec_ms=exec_ms, gen_ms=gen_ms)
+    gen_ms = int((time.perf_counter() - t1) * 1000)
+
+    analysis = ((row or {}).get("r") or "").strip()
+    return result(analysis=analysis, prompt_out=final_prompt, columns=columns,
+                  row_count=len(rows), truncated=len(rows) == ROW_LIMIT,
+                  exec_ms=exec_ms, gen_ms=gen_ms)
+
+
 @router.post("/export")
 async def nl2sql_export(payload: dict, database: str = Depends(current_db)) -> dict:
     """이미 생성된 SQL 을 다시 실행해 전체 row 를 반환한다(CSV 다운로드용 — ROW_LIMIT 미적용).

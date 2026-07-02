@@ -147,9 +147,12 @@
       </div>
       <label style="font-weight:600;">답변</label>
       <div id="nl-sql-area"></div>
-      <div class="row" id="nl-download-bar" style="display:none; justify-content:space-between;">
+      <div class="row" id="nl-download-bar" style="display:none; justify-content:space-between; align-items:center;">
         <span id="nl-timing" class="muted" style="font-size:var(--fs-sm);"></span>
-        <a id="nl-download" role="button" tabindex="0" style="color:#0066cc; text-decoration:underline; cursor:pointer;">Download</a>
+        <div class="row" style="gap:var(--space-3); align-items:center;">
+          <button class="btn btn-ai-test" id="nl-analyze" type="button" style="display:none;">AI분석</button>
+          <a id="nl-download" role="button" tabindex="0" style="color:#0066cc; text-decoration:underline; cursor:pointer; display:none;">Download</a>
+        </div>
       </div>
       <div id="nl-result"><div class="empty-state muted">Chat설정을 선택하고 질문을 입력한 뒤 Data요청을 누르세요.</div></div>
     `;
@@ -204,18 +207,25 @@
     const downloadBar = panel.querySelector("#nl-download-bar");
     const timingEl = panel.querySelector("#nl-timing");
     const downloadLink = panel.querySelector("#nl-download");
+    const analyzeBtn = panel.querySelector("#nl-analyze");
     panel.querySelector("#nl-run").addEventListener("click", async () => {
       const res = await runQuery(configSel, qInput, colInput, sortInput, sqlArea, resultArea);
       lastResult = res;
-      // 실행 시간표 + Download (요청이 완료된 경우에만 표시)
+      // 실행 시간표 + AI분석 + Download (조회 결과가 있을 때만 표시)
       if (res && res.total_ms != null) {
         timingEl.textContent = fmtTiming(res);
         const hasRows = (res.rows || []).length > 0;
+        analyzeBtn.style.display = hasRows ? "" : "none";
         downloadLink.style.display = hasRows ? "" : "none";
         downloadBar.style.display = "flex";
       } else {
         downloadBar.style.display = "none";
       }
+    });
+
+    // AI분석 — 직전 생성 SQL 로 최대 100행을 조회해 페르소나 프롬프트와 함께 LLM 분석.
+    analyzeBtn.addEventListener("click", () => {
+      openAnalyzeModal(lastResult);
     });
 
     // Download — 표시용 100행이 아니라 SQL 을 다시 실행해 전체 row 를 CSV 로 받는다.
@@ -458,6 +468,341 @@
     });
 
     setTimeout(() => nameEl.focus(), 50);
+  }
+
+  // ────────────────────────────────────────────────────────────────
+  // AI분석 — 직전 생성 SQL 로 최대 100행을 조회해 페르소나 프롬프트와 함께
+  //   DBMS_CLOUD_AI.GENERATE(action=>'chat') 로 자연어 분석 결과를 만든다.
+  //   · 페르소나: 서버 T_ANALYSIS_PERSONA (/api/personas CRUD).
+  //   · 분석 실행: POST /api/nl2sql/analyze.
+  // ────────────────────────────────────────────────────────────────
+  const MOCK_PROFILES = ["AIF_NL2SQL_PROFILE", "OCI_GENERATE_PROFILE"];
+
+  // 페르소나 목록 조회 — 서버 T_ANALYSIS_PERSONA (/api/personas). 실패 시 빈 배열.
+  async function fetchPersonas() {
+    try {
+      const list = await window.API.get("/api/personas");
+      return Array.isArray(list) ? list : [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  // AI Profile 드롭다운 — 있으면 실제 /api/profiles(ENABLED), 실패/없으면 목업.
+  async function fillProfileSelect(sel) {
+    sel.innerHTML = `<option value="">불러오는 중…</option>`;
+    let names = [];
+    try {
+      const profiles = await window.API.get("/api/profiles");
+      names = (profiles || []).filter((p) => p.status === "ENABLED").map((p) => p.profile_name);
+    } catch (e) {}
+    if (!names.length) names = MOCK_PROFILES.slice();
+    sel.innerHTML = "";
+    names.forEach((nm) => {
+      const o = document.createElement("option");
+      o.value = nm;
+      o.textContent = nm;
+      sel.appendChild(o);
+    });
+    sel.value = names[0] || "";
+  }
+
+  function fillPersonaSelect(sel, list, selectId) {
+    sel.innerHTML = "";
+    if (!list.length) {
+      sel.innerHTML = `<option value="">(등록된 페르소나 없음)</option>`;
+      return;
+    }
+    list.forEach((p) => {
+      const o = document.createElement("option");
+      o.value = String(p.id);
+      o.textContent = p.persona_name;
+      sel.appendChild(o);
+    });
+    sel.value = selectId != null && list.some((p) => String(p.id) === String(selectId))
+      ? String(selectId) : String(list[0].id);
+  }
+
+  // 분석 결과 렌더 — 분석 텍스트 + 복사 + 타이밍 + 접이식(사용한 프롬프트).
+  function renderAnalysisResult(host, res, usedPrompt) {
+    const analysis = (res && res.analysis) || "";
+    host.innerHTML = "";
+    const box = document.createElement("div");
+    box.className = "panel";
+    box.innerHTML = `<div class="panel-header"><h2>분석 결과</h2>
+        <button class="btn btn-mini" id="an-copy" type="button">복사</button></div>`;
+    const body = document.createElement("div");
+    body.className = "panel-body";
+
+    if (res && res.truncated) {
+      const note = document.createElement("div");
+      note.className = "muted";
+      note.style.fontSize = "var(--fs-sm)";
+      note.style.marginBottom = "var(--space-2)";
+      note.textContent = "※ 최대 100행 기준으로 분석했습니다.";
+      body.appendChild(note);
+    }
+
+    const pre = document.createElement("pre");
+    pre.style.whiteSpace = "pre-wrap";
+    pre.style.margin = "0";
+    pre.textContent = analysis || "(빈 응답)";
+    body.appendChild(pre);
+
+    if (res && res.total_ms != null) {
+      const ms = (v) => (v == null ? "-" : Number(v).toLocaleString() + " ms");
+      const t = document.createElement("div");
+      t.className = "muted";
+      t.style.fontSize = "var(--fs-sm)";
+      t.style.marginTop = "var(--space-2)";
+      t.textContent = `총시간 ${ms(res.total_ms)} (데이터조회 ${ms(res.exec_ms)}, 분석생성 ${ms(res.gen_ms)})`;
+      body.appendChild(t);
+    }
+
+    // 접이식: 사용한 프롬프트(서버가 조립한 최종 프롬프트 우선)
+    const shownPrompt = (res && res.prompt) || usedPrompt || "";
+    if (shownPrompt) {
+      const det = document.createElement("details");
+      det.style.marginTop = "var(--space-3)";
+      const sum = document.createElement("summary");
+      sum.className = "muted";
+      sum.style.cursor = "pointer";
+      sum.style.fontSize = "var(--fs-sm)";
+      sum.textContent = "사용한 프롬프트";
+      const ppre = document.createElement("pre");
+      ppre.style.whiteSpace = "pre-wrap";
+      ppre.textContent = shownPrompt;
+      det.appendChild(sum);
+      det.appendChild(ppre);
+      body.appendChild(det);
+    }
+
+    box.appendChild(body);
+    host.appendChild(box);
+    box.querySelector("#an-copy").addEventListener("click", () => {
+      navigator.clipboard.writeText(analysis).then(
+        () => window.Toast.show("분석 결과 복사됨", "success"),
+        () => window.Toast.show("복사 실패", "error")
+      );
+    });
+  }
+
+  // 공통 모달 셸 생성 (backdrop + Escape/✕ 닫기). 반환: {backdrop, close}
+  function makeModal(innerHtml) {
+    const backdrop = document.createElement("div");
+    backdrop.className = "modal-backdrop";
+    backdrop.innerHTML = innerHtml;
+    const close = () => { backdrop.remove(); document.removeEventListener("keydown", onKey); };
+    const onKey = (e) => { if (e.key === "Escape") close(); };
+    document.addEventListener("keydown", onKey);
+    document.body.appendChild(backdrop);
+    return { backdrop, close };
+  }
+
+  // AI분석 팝업
+  function openAnalyzeModal(lastResult) {
+    const hasReal = lastResult && Array.isArray(lastResult.columns) && lastResult.columns.length &&
+      Array.isArray(lastResult.rows) && lastResult.rows.length && lastResult.sql;
+    if (!hasReal) {
+      window.Toast.show("먼저 질문을 실행해 데이터를 조회하세요", "error");
+      return;
+    }
+    const sql = lastResult.sql;
+    const rowCount = lastResult.rows.length;
+
+    const { backdrop, close } = makeModal(`
+      <div class="modal" style="width:760px; max-width:94vw;">
+        <div class="modal-header">
+          <h2>AI 분석</h2>
+          <button class="btn btn-ghost" id="an-close" type="button">✕</button>
+        </div>
+        <div class="modal-body stack">
+          <div class="row" style="gap:var(--space-4);">
+            <div class="stack-sm" style="flex:1;">
+              <label>AI Profile</label>
+              <select id="an-profile"></select>
+            </div>
+            <div class="stack-sm" style="flex:1;">
+              <label>페르소나</label>
+              <div class="row" style="gap:var(--space-2);">
+                <select id="an-persona" style="flex:1;"></select>
+                <button class="btn" id="an-persona-manage" type="button">관리</button>
+              </div>
+            </div>
+          </div>
+          <div class="stack-sm">
+            <label>결과샘플 (분석 프롬프트 · 수정가능)</label>
+            <textarea id="an-prompt" rows="8" style="font-family:var(--font-mono); font-size:var(--fs-sm);"></textarea>
+            <span class="muted" style="font-size:var(--fs-sm);">※ [분석 시작] 시 직전 생성 SQL 로 최대 100행(현재 ${rowCount}행)을 조회해 위 프롬프트와 함께 분석합니다.</span>
+          </div>
+          <div id="an-result"><div class="empty-state muted">Profile·페르소나를 고르고 [분석 시작]을 누르세요.</div></div>
+        </div>
+        <div class="modal-footer row end" style="gap:var(--space-2);">
+          <button class="btn" id="an-cancel" type="button">닫기</button>
+          <button class="btn btn-primary" id="an-run" type="button">분석 시작</button>
+        </div>
+      </div>
+    `);
+
+    const profileSel = backdrop.querySelector("#an-profile");
+    const personaSel = backdrop.querySelector("#an-persona");
+    const promptEl = backdrop.querySelector("#an-prompt");
+    const resultEl = backdrop.querySelector("#an-result");
+
+    fillProfileSelect(profileSel);
+
+    let personas = [];
+    const applyPersona = () => {
+      const p = personas.find((x) => String(x.id) === personaSel.value);
+      promptEl.value = p ? p.prompt_tmpl : "";
+    };
+    const reloadPersonas = async (selectId) => {
+      personas = await fetchPersonas();
+      fillPersonaSelect(personaSel, personas, selectId);
+      applyPersona();
+    };
+    reloadPersonas();
+    personaSel.addEventListener("change", applyPersona);
+
+    backdrop.querySelector("#an-persona-manage").addEventListener("click", () => {
+      openPersonaManageModal(() => reloadPersonas(personaSel.value));
+    });
+
+    backdrop.querySelector("#an-close").addEventListener("click", close);
+    backdrop.querySelector("#an-cancel").addEventListener("click", close);
+
+    backdrop.querySelector("#an-run").addEventListener("click", async () => {
+      const profile = profileSel.value;
+      if (!profile) { window.Toast.show("AI Profile 을 선택하세요", "error"); return; }
+      if (!promptEl.value.trim()) { window.Toast.show("분석 프롬프트가 비어 있습니다", "error"); return; }
+      const runBtn = backdrop.querySelector("#an-run");
+      runBtn.disabled = true;
+      resultEl.innerHTML = `<div class="empty-state muted"><span class="spinner"></span> 분석 중…</div>`;
+      let res;
+      try {
+        res = await window.API.post("/api/nl2sql/analyze", {
+          sql, profile_name: profile, prompt: promptEl.value,
+        });
+      } catch (err) {
+        resultEl.innerHTML = "";
+        resultEl.appendChild(errBox(errMsg(err, "분석 실패")));
+        return;
+      } finally {
+        runBtn.disabled = false;
+      }
+      if (res.error) {
+        resultEl.innerHTML = "";
+        resultEl.appendChild(errBox(res.error));
+        return;
+      }
+      renderAnalysisResult(resultEl, res, promptEl.value);
+    });
+
+    setTimeout(() => profileSel.focus(), 50);
+  }
+
+  // 페르소나 관리 모달 (서버 T_ANALYSIS_PERSONA CRUD)
+  function openPersonaManageModal(onSaved) {
+    const { backdrop, close } = makeModal(`
+      <div class="modal" style="width:860px; max-width:96vw;">
+        <div class="modal-header">
+          <h2>페르소나 관리</h2>
+          <button class="btn btn-ghost" id="pm-close" type="button">✕</button>
+        </div>
+        <div class="modal-body row" style="gap:var(--space-4); align-items:stretch;">
+          <div class="stack" style="flex:1; min-width:260px;">
+            <div id="pm-list"></div>
+            <button class="btn" id="pm-new" type="button">+ 새 페르소나</button>
+          </div>
+          <div class="stack" style="flex:1.3;">
+            <div class="stack-sm"><label>이름</label><input type="text" id="pm-name" /></div>
+            <div class="stack-sm"><label>설명</label><input type="text" id="pm-desc" /></div>
+            <div class="stack-sm"><label>분석 프롬프트 템플릿</label>
+              <textarea id="pm-tmpl" rows="10" style="font-family:var(--font-mono); font-size:var(--fs-sm);"></textarea></div>
+          </div>
+        </div>
+        <div class="modal-footer row" style="justify-content:space-between; gap:var(--space-2);">
+          <button class="btn btn-ghost" id="pm-delete" type="button">삭제</button>
+          <div class="row" style="gap:var(--space-2);">
+            <button class="btn" id="pm-close2" type="button">닫기</button>
+            <button class="btn btn-primary" id="pm-save" type="button">저장</button>
+          </div>
+        </div>
+      </div>
+    `);
+
+    const listEl = backdrop.querySelector("#pm-list");
+    const nameEl = backdrop.querySelector("#pm-name");
+    const descEl = backdrop.querySelector("#pm-desc");
+    const tmplEl = backdrop.querySelector("#pm-tmpl");
+    let list = [];
+    let editingId = null;
+
+    const fillForm = (p) => {
+      editingId = p ? p.id : null;
+      nameEl.value = p ? p.persona_name : "";
+      descEl.value = p ? p.description || "" : "";
+      tmplEl.value = p ? p.prompt_tmpl : "";
+    };
+    const renderList = () => {
+      const cols = [
+        { key: "persona_name", label: "이름" },
+        { key: "description", label: "설명" },
+      ];
+      const table = window.SimpleTable.create(cols, list, {
+        onRowClick: (row) => { fillForm(row); renderList(); },
+        rowClassName: (row) => (row.id === editingId ? "selected" : ""),
+        emptyText: "등록된 페르소나가 없습니다",
+      });
+      listEl.innerHTML = "";
+      listEl.appendChild(table);
+    };
+    const reload = async (selectId) => {
+      list = await fetchPersonas();
+      const sel = list.find((p) => p.id === selectId);
+      fillForm(sel || null);
+      renderList();
+    };
+    reload();
+
+    backdrop.querySelector("#pm-new").addEventListener("click", () => { fillForm(null); renderList(); });
+
+    backdrop.querySelector("#pm-save").addEventListener("click", async () => {
+      const name = nameEl.value.trim();
+      if (!name) { window.Toast.show("이름을 입력하세요", "error"); nameEl.focus(); return; }
+      if (!tmplEl.value.trim()) { window.Toast.show("프롬프트 템플릿을 입력하세요", "error"); return; }
+      const body = { persona_name: name, description: descEl.value, prompt_tmpl: tmplEl.value };
+      const btn = backdrop.querySelector("#pm-save");
+      btn.disabled = true;
+      try {
+        if (editingId != null) await window.API.put(`/api/personas/${editingId}`, body);
+        else await window.API.post("/api/personas", body);
+      } catch (err) {
+        window.Toast.show(errMsg(err, "저장 실패"), "error");
+        return;
+      } finally {
+        btn.disabled = false;
+      }
+      window.Toast.show("저장됨", "success");
+      await reload(editingId);
+      if (onSaved) onSaved();
+    });
+
+    backdrop.querySelector("#pm-delete").addEventListener("click", async () => {
+      if (editingId == null) { window.Toast.show("삭제할 페르소나를 목록에서 선택하세요", "error"); return; }
+      try {
+        await window.API.delete(`/api/personas/${editingId}`);
+      } catch (err) {
+        window.Toast.show(errMsg(err, "삭제 실패"), "error");
+        return;
+      }
+      window.Toast.show("삭제됨", "success");
+      await reload(null);
+      if (onSaved) onSaved();
+    });
+
+    backdrop.querySelector("#pm-close").addEventListener("click", close);
+    backdrop.querySelector("#pm-close2").addEventListener("click", close);
   }
 
   window.Views = window.Views || {};

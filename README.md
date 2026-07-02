@@ -23,7 +23,7 @@ Oracle Autonomous Database 23ai 의 **SELECT AI** (`DBMS_CLOUD_AI.GENERATE`), **
 | 사전 준비 | 서브넷 보안 목록에 **앱 포트(기본 8000) 인바운드**만 | 서브넷에 443(및 80) 인바운드 + LB 가 인증서 읽도록 **IAM 정책** 1회 ([HTTPS 사전 준비](#https-사전-준비-필수)) | 좌측 + LB→VM **app_port** 인바운드 + 기존 VM **공인 IP·SSH(22)·SSH 개인키**(소스 설치용) |
 | 권장 | 빠른 데모/내부 PoC (평문 HTTP) | 외부 노출/TLS 필요 시 | 앱 없는(또는 재설치할) 기존 VM 에 소스+TLS 를 한 번에 |
 
-배포가 끝나면 스택 Outputs 의 `app_url`(HTTP) 또는 `https_url`(HTTPS) 로 접속 → **[Database 관리]** 메뉴에서 ADB Wallet 을 업로드해 첫 DB 를 등록합니다. 자세한 절차는 [§4. OCI Resource Manager 배포](#4-oci-resource-manager-배포) 또는 별도 문서 **[DEPLOY_OCI.md](DEPLOY_OCI.md)** 참조.
+배포가 끝나면 스택 Outputs 의 `app_url`(HTTP) 또는 `https_url`(HTTPS) 로 접속 → **[Database 관리]** 메뉴에서 ADB Wallet 을 업로드해 첫 DB 를 등록합니다. 자세한 절차는 [§4. OCI Resource Manager 배포](#4-oci-resource-manager-배포) 또는 별도 문서 **[Guide_Deploy_OCI.md](Guide_Deploy_OCI.md)** 참조.
 
 ---
 
@@ -69,7 +69,7 @@ Oracle Autonomous Database 23ai 의 **SELECT AI** (`DBMS_CLOUD_AI.GENERATE`), **
 
 ### [메뉴 5] 접근 키 관리
 - 관리자가 접근 키와 관리자 이메일을 설정·관리하는 화면.
-- 구현·운영 세부는 별도 내부 문서 `SECURITY_INFO.md` 참조(저장소 미포함).
+- 구현·운영 세부는 별도 내부 문서 `Guide_Security_info.md` 참조(저장소 미포함).
 
 ---
 
@@ -256,7 +256,7 @@ LB/리스너/백엔드는 Terraform 이 만들지만, 다음 2가지는 **Terraf
    ```
    (정확한 표현은 OCI 문서 "Load Balancer + Certificates Service" 로 확인)
 
-> **Private 인증서 신뢰:** Private CA 발급 인증서는 브라우저가 기본 신뢰하지 않아 경고가 뜹니다. 클라이언트가 해당 **Private CA 루트를 신뢰 저장소에 추가**해야 경고 없이 접속됩니다(내부망용 정상 동작). 도메인 없이 Private CA 로 발급하는 상세 절차는 **[PRIVATE_CA_HTTPS.md](PRIVATE_CA_HTTPS.md)** 참조.
+> **Private 인증서 신뢰:** Private CA 발급 인증서는 브라우저가 기본 신뢰하지 않아 경고가 뜹니다. 클라이언트가 해당 **Private CA 루트를 신뢰 저장소에 추가**해야 경고 없이 접속됩니다(내부망용 정상 동작). 도메인 없이 Private CA 로 발급하는 상세 절차는 **[Guide_Private_CA_HTTPS.md](Guide_Private_CA_HTTPS.md)** 참조.
 > **`deploy/https-existing-vm` 추가 주의:** 이 방식은 **기존 VM 에 SSH(22)로 소스를 설치**하므로 대상 VM 의 **공인 IP·SSH(22) 인바운드**와 **SSH 개인키**가 필요합니다. 설치 후 LB 백엔드 health 가 OK 가 되려면 LB→기존 VM 의 **app_port 인바운드**(위 1번의 8000)도 열려 있어야 합니다.
 > **검증:** `curl -vkI https://<LB IP>` 로 TLS 핸드셰이크/인증서 체인 확인, 콘솔 LB → Backend Sets 의 health 가 **OK** 인지 확인.
 
@@ -304,7 +304,7 @@ sudo systemctl restart select-ai-test   # 앱 재기동
 ```
 project/   (= GitHub 리포 select-ai-test 루트)
 ├─ README.md                  # 본 문서 (상단에 Deploy to Oracle Cloud 버튼)
-├─ DEPLOY_OCI.md              # OCI RM 배포 상세 가이드
+├─ Guide_Deploy_OCI.md              # OCI RM 배포 상세 가이드
 ├─ deploy/                    # OCI RM 스택 (방식별 폴더 — RM Working directory 로 선택)
 │   ├─ http/                  # HTTP 변형 (LB/인증서 없음, 인스턴스 직접 :app_port)
 │   │   ├─ main.tf            #   provider/컴퓨트/이미지

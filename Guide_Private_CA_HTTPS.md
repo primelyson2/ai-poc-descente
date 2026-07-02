@@ -2,7 +2,7 @@
 
 공개 도메인 없이 **OCI Certificates 서비스의 Private CA** 로 TLS 서버 인증서를 발급해, `deploy/https` 스택(Load Balancer 443 종단)에서 쓰는 절차입니다. 실제로 `apackrsct` 테넌시 / `us-ashburn-1` / `Changho.Son` 구획에서 수행한 기록을 재사용 가능한 형태로 정리했습니다.
 
-> 관련 문서: 배포 전체 절차는 [`DEPLOY_OCI.md`](DEPLOY_OCI.md), HTTP/HTTPS 사전 준비는 [`Prerequisites.md`](Prerequisites.md) §"프로젝트 배포(설치) 사전 준비" 참고.
+> 관련 문서: 배포 전체 절차는 [`Guide_Deploy_OCI.md`](Guide_Deploy_OCI.md), HTTP/HTTPS 사전 준비는 [`Prerequisites.md`](Prerequisites.md) §"프로젝트 배포(설치) 사전 준비" 참고.
 
 ---
 

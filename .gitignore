@@ -14,7 +14,7 @@ config.yaml
 wallets/
 
 # 내부 보안 문서 (공개 금지)
-SECURITY_INFO.md
+Guide_Security_info.md
 
 # OS
 .DS_Store
