@@ -94,6 +94,156 @@ END;
 /
 ```
 
+> Principal Auth 로 "DB 가 클라우드 인증을 써도 된다"를 켠 뒤에는, 그 주체가 실제로 **OCI Generative AI 를
+> 호출할 수 있도록** IAM 정책을 부여해야 합니다 → 아래 [필요 IAM 정책 (Policy) 모음](#필요-iam-정책-policy-모음) 1) 참조.
+
+## 필요 IAM 정책 (Policy) 모음
+
+사전 설정에 필요한 **OCI IAM 정책**을 한곳에 모았습니다. 모두 **OCI 콘솔 → Identity & Security → Policies**
+에서 **관리자(테넌시/구획 admin)** 가 1회 생성하며, 반영에는 수 초가 걸릴 수 있습니다. `<구획>`·`<...OCID>` 는
+실제 값으로 바꿔 넣으세요. (구획 이름 대신 `in tenancy` 로 테넌시 전체에 줄 수도 있습니다.)
+
+| # | 정책 | 언제 필요한가 |
+|---|---|---|
+| 1 | SELECT AI ↔ OCI Generative AI 접근 | **필수** — SELECT AI/Agent 가 OCI GenAI 를 LLM 으로 사용 |
+| 2 | Load Balancer 인증서 읽기 | **HTTPS 배포 시 필수** |
+| 3 | Private CA 키 사용(certificateauthority) | 도메인 없이 Private CA 로 HTTPS 발급 시(선택) |
+| 4 | 배포 실행 사용자 리소스 관리 | RM 스택 실행자가 테넌시 admin 이 아닐 때(참고) |
+
+### 1) SELECT AI ↔ OCI Generative AI 접근 (필수)
+
+위 [클라우드 인증(Principal Auth) 활성화](#클라우드-인증principal-auth-활성화) 로 ADB 가 **리소스 주체
+(resource principal)** 로 OCI Generative AI 를 호출하도록 설정했다면, 그 주체가 GenAI 를 사용할 수 있도록
+IAM 정책이 필요합니다. **이 정책이 없으면 `DBMS_CLOUD_AI.GENERATE` 호출이 인가 오류
+(`NotAuthorizedOrNotFound`/`ORA-20401` 등)로 실패합니다.** 아래 **방법 A(동적 그룹)** 를 기본으로 사용하고,
+동적 그룹을 만들기 어려운 경우에만 **방법 B(any-user 조건)** 를 차선책으로 사용하세요.
+
+**방법 A — 동적 그룹(Dynamic Group) + 정책 (권장)**
+
+**① 동적 그룹 생성** — Identity & Security → Domains → Dynamic groups. 대상 ADB 를 묶는 매칭 규칙(둘 중 하나):
+
+```
+# 구획 안의 모든 ADB 를 포함
+ALL {resource.type='autonomousdatabase', resource.compartment.id='<구획 OCID>'}
+```
+```
+# 또는 특정 ADB 하나만
+resource.id = '<ADB OCID>'
+```
+
+**② 정책 생성** — Identity & Security → Policies. 그 동적 그룹에 GenAI 사용 권한을 부여:
+
+```
+Allow dynamic-group <DG_NAME> to use generative-ai-family in compartment <구획>
+```
+
+(Identity Domains 사용 시 정책에서 도메인 경로로 참조: `dynamic-group '<도메인>'/'<DG_NAME>'`, 기본 도메인은 `'Default'/'<DG_NAME>'`)
+
+**방법 B — 리소스 주체 조건 정책 (차선책 · 동적 그룹 없이)**
+
+동적 그룹을 만들 수 없을 때, 정책 한 줄의 `where` 조건으로 동일한 리소스 주체를 직접 지정합니다:
+
+```
+Allow any-user to use generative-ai-family in compartment <구획> where all {
+  request.principal.type = 'autonomousdatabase',
+  request.principal.id = '<ADB OCID>'
+}
+```
+
+> ⚠️ `where all { ... }` 조건을 **절대 빼지 마세요.** `request.principal.id` 없이 `any-user` 에 권한을 주면
+> 아무 주체나 GenAI 를 쓸 수 있는 보안 구멍이 됩니다(그래서 방법 A 의 동적 그룹이 더 안전합니다).
+
+**방법 A · B 공통 참고**
+
+> - **리전 주의**: OCI Generative AI 는 일부 리전에서만 제공됩니다. ADB 리전에 GenAI 가 없으면 지원 리전으로
+>   ADB 를 두거나 리전 간 구성이 필요합니다.
+> - 권한 verb 는 최소권한 기준 `use` 로 충분합니다(일부 문서는 `manage` 사용). 실패 시
+>   [OCI Select AI 문서](https://docs.oracle.com/en-us/iaas/autonomous-database-serverless/doc/select-ai-get-started.html)
+>   로 정확한 표현을 확인하세요.
+> - **API 키 방식**(`DBMS_CLOUD.CREATE_CREDENTIAL` 로 사용자/API 키 등록)을 쓰면 이 정책 대신 해당 **IAM
+>   사용자**에게 GenAI 권한이 필요합니다(Principal Auth·동적 그룹 미사용 경로).
+
+### 2) HTTPS 배포 — Load Balancer 인증서 읽기 (HTTPS 배포 시 필수)
+
+공용 Load Balancer 가 OCI Certificates 서비스의 인증서 번들을 읽도록 허용합니다. 없으면 LB 443 리스너가
+인증서를 못 읽어 동작하지 않습니다. 1)과 마찬가지로 **동적 그룹(방법 A)** 을 우선 시도하고, 환경에서
+동작하지 않으면 **서비스 주체 조건(방법 B)** 을 사용하세요.
+
+**방법 A — 동적 그룹(Dynamic Group) + 정책**
+
+**① 동적 그룹 생성** — 대상 LB 를 묶는 매칭 규칙(둘 중 하나):
+
+```
+# 구획 안의 모든 LB
+ALL {resource.type='loadbalancer', resource.compartment.id='<구획 OCID>'}
+```
+```
+# 또는 특정 LB 하나만
+resource.id = '<LB OCID>'
+```
+
+**② 정책 생성** — 그 동적 그룹에 인증서 번들 읽기 권한:
+
+```
+Allow dynamic-group <DG_NAME> to read leaf-certificate-bundles in compartment <구획>
+```
+
+**방법 B — 서비스 주체 조건 (Oracle 문서 표준 · 차선책)**
+
+동적 그룹이 적용되지 않으면 LB 서비스 주체를 조건으로 직접 지정합니다. OCI Certificates + Load Balancer
+통합에서 **문서로 안내되는 표준 형태**라 가장 확실합니다:
+
+```
+Allow any-user to read leaf-certificate-bundles in compartment <구획> where all { request.principal.type = 'loadbalancer' }
+```
+
+> ⚠️ 방법 B 의 `where all { ... }` 조건을 **절대 빼지 마세요**(광범위 허용 방지). 이 조건은 `any-user` 를 LB
+> 서비스 주체로 이미 한정하므로 1)의 방법 B 와 같은 수준의 최소권한입니다. 특정 LB 로 더 좁히려면
+> `request.principal.id = '<LB OCID>'` 를 추가합니다.
+> ℹ️ **주의**: OCI Native Ingress Controller 등에서 보이는 `Allow dynamic-group … to read leaf-certificate-bundles`
+> 의 동적 그룹은 보통 **LB 를 운영하는 주체(OKE·인스턴스)** 를 가리킵니다. 위 방법 A 는 **LB 자체를 멤버로**
+> 지정하는 형태로, 리전/테넌시에 따라 인증이 안 될 수 있으니 그때는 방법 B 로 전환하세요.
+
+> 상세: [`Guide_Deploy_OCI.md`](Guide_Deploy_OCI.md) · [HTTPS 배포 추가 준비](#https-배포-deployhttps--추가-준비-terraform-밖에서-필수).
+
+### 3) Private CA(도메인 없이 HTTPS) — CA 키 사용 (선택)
+
+Private CA 로 사설 인증서를 발급하는 내부망 구성에서 **CA(certificateauthority) 리소스가 Vault(HSM) 키로
+서명**하려면 키 사용 권한이 필요합니다. 1)과 마찬가지로 **동적 그룹(방법 A)** 을 우선 사용하고 어려우면
+**any-user 조건절(방법 B)** 을 차선책으로 씁니다.
+
+**방법 A — 동적 그룹 (권장)**
+
+```
+# CA 리소스를 묶는 동적 그룹(매칭 규칙)
+resource.type='certificateauthority'
+# 정책
+Allow dynamic-group <DG_CA> to use keys in compartment <구획>
+```
+
+**방법 B — any-user 조건절 (차선책 · 동적 그룹 없이)**
+
+```
+Allow any-user to use keys in compartment <구획> where all { request.principal.type = 'certificateauthority' }
+```
+
+> ⚠️ 방법 B 의 `where { request.principal.type = 'certificateauthority' }` 조건을 **절대 빼지 마세요**(빼면 아무
+> 사용자·리소스나 키를 쓸 수 있는 보안 구멍).
+> ℹ️ LB 가 발급된 인증서 번들을 읽는 정책은 [2)](#2-https-배포--load-balancer-인증서-읽기-https-배포-시-필수) 를 참고하세요.
+>
+> 전체 절차·검증: [`Guide_Private_CA_HTTPS.md`](Guide_Private_CA_HTTPS.md).
+
+### 4) 배포 실행 사용자 (참고)
+
+OCI Resource Manager 스택으로 컴퓨트/네트워크/LB 를 생성하려면 실행 IAM 사용자(그룹)에게 해당 구획의
+리소스 관리 권한이 있어야 합니다(테넌시 admin 이면 불필요).
+
+```
+Allow group <배포자그룹> to manage instance-family      in compartment <구획>
+Allow group <배포자그룹> to manage load-balancers        in compartment <구획>
+Allow group <배포자그룹> to use    virtual-network-family in compartment <구획>
+```
+
 ## SELECT AI 데이터 접근 제어 (Data Access)
 
 SELECT AI 가 **실제 테이블 데이터에 접근**하는 것을 DB 전체 수준에서 켜고/끌 수 있습니다.
