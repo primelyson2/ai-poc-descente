@@ -215,6 +215,30 @@
       </div>`;
     wrap.appendChild(actionPanel);
 
+    // ── 메뉴 관리 (좌측 메뉴 노출 제어) ──
+    // 체크한 메뉴만 좌측 nav 에 노출. Database 관리·Tool관리 는 항상 노출(관리 진입점).
+    const menuPanel = document.createElement("div");
+    menuPanel.className = "panel";
+    const managed = (window.MenuConfig && window.MenuConfig.MANAGED) || [];
+    const hiddenMenus = (window.MenuConfig && window.MenuConfig.getHidden()) || [];
+    menuPanel.innerHTML = `
+      <div class="panel-header"><h2>메뉴 관리</h2></div>
+      <div class="panel-body">
+        <div class="stack" id="menu-toggles" style="gap:8px;">
+          ${managed
+            .map(
+              (m) => `
+          <label class="row" style="gap:8px; align-items:center; cursor:pointer;">
+            <input type="checkbox" data-menu-route="${m.route}" ${hiddenMenus.includes(m.route) ? "" : "checked"} />
+            <strong>${m.label}</strong>
+          </label>`
+            )
+            .join("")}
+        </div>
+        <span class="field-hint">체크한 메뉴만 좌측 메뉴에 노출됩니다. <strong>Database 관리·Tool관리</strong> 는 항상 노출됩니다. (이 설정은 이 브라우저에 저장됩니다.)</span>
+      </div>`;
+    wrap.appendChild(menuPanel);
+
     // ── 데이터 내보내기 / 가져오기 (localStorage) ──
     const dataPanel = document.createElement("div");
     dataPanel.className = "panel";
@@ -240,6 +264,15 @@
 
     bindActionToggle("act-runsql", "runsql");
     bindActionToggle("act-narrate", "narrate");
+
+    menuPanel.querySelectorAll("input[data-menu-route]").forEach((cb) => {
+      cb.addEventListener("change", () => {
+        const route = cb.dataset.menuRoute;
+        if (window.MenuConfig) window.MenuConfig.setHidden(route, !cb.checked);
+        const label = (managed.find((m) => m.route === route) || {}).label || route;
+        window.Toast.show(`메뉴 '${label}' ${cb.checked ? "노출" : "숨김"}`, "success");
+      });
+    });
 
     document.getElementById("ls-export").addEventListener("click", exportLocalStorage);
     const importFile = document.getElementById("ls-import-file");
