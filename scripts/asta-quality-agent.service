@@ -1,0 +1,17 @@
+[Unit]
+Description=ASTA hourly result-quality experiment and review report
+After=network-online.target
+
+[Service]
+Type=oneshot
+TimeoutStartSec=56min
+WorkingDirectory=/opt/select-ai-test
+ExecStart=/opt/select-ai-test/.venv/bin/python tools/asta_quality_agent.py --config asta-quality-agent.yaml
+User=opc
+Group=opc
+
+# 이 서비스는 코드/DB를 배포하지 않으며 보고서만 기록한다.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/select-ai-test/reports

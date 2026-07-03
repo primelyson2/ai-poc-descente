@@ -1,0 +1,12 @@
+[Unit]
+Description=Run ASTA quality experiment every hour
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=1h
+Persistent=true
+RandomizedDelaySec=2min
+Unit=asta-quality-agent.service
+
+[Install]
+WantedBy=timers.target

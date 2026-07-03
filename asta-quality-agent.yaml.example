@@ -1,0 +1,38 @@
+report_dir: reports/asta_quality_agent
+
+quality:
+  # 고객 제공 SQL: 이 SQL이 gate를 통과하지 못하면 배포 검토 상태가 되지 않는다.
+  customer_sample_id: asta-awr-01
+  customer_min_runs: 3
+  customer_min_success_rate: 1.0
+  history_cycles: 5
+  min_batch_elapsed_reduction_pct: 5
+  min_oltp_buffer_reduction_pct: 5
+
+sample_workloads:
+  asta-awr-01: BATCH
+  asta-awr-02: OLTP
+  asta-awr-03: BATCH
+
+# 비용이 싼 순서. 현재 A/B/C 실험 결과와 연결되며 SQL+XPLAN 단계는 다음 DB 변경 후보이다.
+variants:
+  - id: A
+    evidence: SQL + 사용자 목표
+  - id: B
+    evidence: SQL + 실행 metrics
+  - id: C
+    evidence: SQL + XPLAN + metrics + object metadata + Advisor + positive Vector
+
+# 1시간 timer가 한 회차에 한 번 실행한다. 55분을 넘기면 중단해 다음 회차 중첩을 막는다.
+experiment:
+  command:
+    - /opt/select-ai-test/.venv/bin/python
+    - tools/run_asta_prompt_abc_adb.py
+    - --samples
+    - asta-awr-01,asta-awr-02,asta-awr-03
+    - --modes
+    - A,B,C
+    - --profile
+    - ASTA_GPT5_PROFILE
+  summary_file: reports/asta_prompt_abc_adb_latest/summary.json
+  timeout_sec: 3300

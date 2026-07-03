@@ -111,7 +111,23 @@ def aggregate_verdicts(summaries):
     return Counter(item.get("verdict") or "UNKNOWN" for item in summaries)
 
 
-def main():
+def batch_is_healthy(results: list[dict], expected_count: int = 10) -> bool:
+    """Loop/CI gate: 전 건 완료 및 안전한 deterministic verdict인지 확인한다."""
+    valid_verdicts = {
+        "IMPROVED", "NOT_IMPROVED", "CANDIDATE_FAILED", "NON_EQUIVALENT",
+        "NO_REWRITE", "INSUFFICIENT_EVIDENCE",
+    }
+    if len(results) != expected_count:
+        return False
+    return all(
+        item.get("http_status") == 200
+        and (item.get("summary") or {}).get("status") == "COMPLETED"
+        and (item.get("summary") or {}).get("verdict") in valid_verdicts
+        for item in results
+    )
+
+
+def main() -> int:
     """명령행 인자를 읽어 ASTA 도구의 전체 작업 흐름을 실행한다."""
     samples = load_samples()
     all_results = []
@@ -152,6 +168,7 @@ def main():
             if s.get(k): flags.append(k)
         lines.append(f"| {r['seq']} | {r['id']} | {r['http_status']} | {s.get('status')} | {s.get('verdict')} | {s.get('advisor_status')} | {s.get('run_id')} | {', '.join(flags) or '-'} |")
     (OUTDIR / "summary.md").write_text("\n".join(lines)+"\n", encoding="utf-8")
+    return 0 if batch_is_healthy(all_results, expected_count=len(samples)) else 1
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

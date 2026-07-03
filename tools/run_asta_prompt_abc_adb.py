@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pathlib
 import sys
 import time
@@ -102,6 +103,14 @@ def compare(before: dict, after: dict) -> dict:
     }
 
 
+def rotate_modes(modes: list[str], sample_index: int, cycle_rotation: int) -> list[str]:
+    """시간 회차와 sample 위치를 합쳐 mode 실행 순서 편향을 분산한다."""
+    if not modes:
+        return []
+    offset = (sample_index + cycle_rotation) % len(modes)
+    return modes[offset:] + modes[:offset]
+
+
 def write_summary(outdir: pathlib.Path, results: list[dict], started: str) -> None:
     payload = {"started_at": started, "completed_at": datetime.now(timezone.utc).isoformat(), "results": results}
     (outdir / "summary.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -118,6 +127,7 @@ def main() -> int:
     ap.add_argument("--modes", default="A,B,C")
     ap.add_argument("--profile", default="ASTA_GPT5_PROFILE")
     ap.add_argument("--outdir", default=str(ROOT / "reports" / "asta_prompt_abc_adb_latest"))
+    ap.add_argument("--rotation", type=int, default=int(os.environ.get("ASTA_EXPERIMENT_ROTATION", "0")))
     args = ap.parse_args()
     ids = {x.strip() for x in args.samples.split(",") if x.strip()}
     modes = [x.strip().upper() for x in args.modes.split(",") if x.strip()]
@@ -130,8 +140,8 @@ def main() -> int:
             root_id = f"ABC{uuid.uuid4().hex[:12].upper()}"
             before = source_evidence(cur, sample["sql"], root_id + "B")
             vector = vector_evidence(cur, sample["sql"])
-            ordered_modes = modes[sample_idx % len(modes):] + modes[:sample_idx % len(modes)]
-            for mode in ordered_modes:
+            ordered_modes = rotate_modes(modes, sample_idx, args.rotation)
+            for order_index, mode in enumerate(ordered_modes, 1):
                 prompt = build_prompt(cur, sample["sql"], mode, before, vector)
                 raw, calls, llm_ms = generate(cur, prompt, args.profile)
                 candidate, error = extract_candidate(cur, raw)
@@ -139,6 +149,7 @@ def main() -> int:
                 comp = compare(before, after) if candidate and after.get("status") == "COMPLETED" else {}
                 row = {
                     "sample_id": sample["id"], "label": sample.get("label"), "mode": mode,
+                    "execution_order": order_index, "cycle_rotation": args.rotation,
                     "profile": args.profile, "prompt_chars": len(prompt), "llm_call_count": calls,
                     "llm_elapsed_ms": llm_ms, "raw_response_chars": len(raw),
                     "candidate_generated": bool(candidate), "candidate_error": error,

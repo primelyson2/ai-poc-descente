@@ -1,0 +1,40 @@
+# ASTA loop agent 설정 예시. 복사 후 asta-loop.yaml로 사용한다.
+report_dir: reports/asta_loop
+
+policy:
+  require_clean_worktree: true
+  max_iterations: 3
+  target_score: 100
+  min_score_gain: 0.01
+  improve_timeout_sec: 1800
+  allowed_paths:
+    - app
+    - db
+    - static
+    - tests
+    - tools
+    - docs
+
+# 모든 점수는 합계 100. required 실패 변경은 점수와 관계없이 거부한다.
+checks:
+  - name: python_contract_tests
+    command: ["uv", "run", "--with", "pytest", "pytest", "-q"]
+    timeout_sec: 300
+    weight: 60
+    required: true
+
+  - name: asta_10_sql_live
+    command: ["uv", "run", "python", "tools/run_asta_10_sqls.py"]
+    timeout_sec: 4800
+    weight: 40
+    required: false
+
+# 개선 명령을 생략하면 평가와 improvement_brief 생성 없이 종료한다.
+# 아래 예시는 brief를 Codex에 전달한다. 환경에 맞는 승인/샌드박스 옵션을 선택한다.
+# improve_command:
+#   - codex
+#   - exec
+#   - --full-auto
+#   - --cd
+#   - "{root}"
+#   - "{brief} 파일의 지시를 읽고 그 범위에서 ASTA를 개선하라."
