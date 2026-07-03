@@ -131,6 +131,18 @@ def test_all_prompt_modes_require_complete_and_resolvable_asta_awr_01_sql():
     assert "to a column projected by that exact CTE or inline-view alias" in prompt
 
 
+def test_all_prompt_modes_reject_asta_awr_01_noop_rewrites():
+    llm = read("db/adb/asta_llm_pkg.sql")
+    prompt = llm[llm.index("FUNCTION build_tuning_prompt("):llm.index("END build_tuning_prompt;")]
+    contract = "Structural effectiveness preflight is mandatory"
+    assert contract in prompt
+    assert prompt.index(contract) < prompt.index("IF l_mode IN ('A', 'B') THEN")
+    assert "must actually implement its stated rewrite" in prompt
+    assert "eliminate at least one repeated base-table access, correlated subquery execution, UNION branch scan" in prompt
+    assert "only a redundant predicate, optimizer hint, or comment is not a structural rewrite" in prompt
+    assert "return no candidate when no safe effective rewrite can be completed" in prompt
+
+
 def test_long_asta_awr_01_prompt_limits_rewrite_to_one_query_block():
     llm = read("db/adb/asta_llm_pkg.sql")
     prompt = llm[llm.index("FUNCTION build_tuning_prompt("):llm.index("END build_tuning_prompt;")]
