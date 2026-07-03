@@ -143,14 +143,17 @@ def test_all_prompt_modes_reject_asta_awr_01_noop_rewrites():
     assert "return no candidate when no safe effective rewrite can be completed" in prompt
 
 
-def test_long_asta_awr_01_prompt_limits_rewrite_to_one_query_block():
+def test_long_asta_awr_01_prompt_allows_one_cross_block_repeated_access_rewrite():
     llm = read("db/adb/asta_llm_pkg.sql")
     prompt = llm[llm.index("FUNCTION build_tuning_prompt("):llm.index("END build_tuning_prompt;")]
-    boundary = "Long-SQL rewrite boundary: make exactly one localized structural change in one existing query block"
+    boundary = "Long-SQL rewrite boundary: target exactly one repeated-access pattern"
     assert "DBMS_LOB.GETLENGTH(p_sql), 0) >= 12000" in prompt
     assert boundary in prompt
     assert prompt.index(boundary) < prompt.index("IF l_mode IN ('A', 'B') THEN")
-    assert "copy every unaffected query block, CTE, UNION ALL branch, join, predicate, and select-list expression verbatim" in prompt
+    assert "one existing query block" not in prompt
+    assert "add one helper CTE and replace every occurrence of that same logical computation" in prompt
+    assert "in the required producer and consumer query blocks; this still counts as one localized structural change" in prompt
+    assert "Copy every unrelated query block, CTE, UNION ALL branch, join, predicate, and select-list expression verbatim" in prompt
     assert "Do not decompose or rebuild the full statement into a new CTE architecture." in prompt
     assert "do not change any UNION ALL branch projection count" in prompt
     assert "reference a grouping key after it has been removed by aggregation" in prompt
