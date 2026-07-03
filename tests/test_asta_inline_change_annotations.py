@@ -118,3 +118,14 @@ def test_all_prompt_modes_prevent_asta_awr_01_invalid_set_projections():
     assert "same number of expressions in the same semantic order with compatible datatypes in every branch" in prompt
     assert "using typed zero or NULL placeholders where a measure is absent" in prompt
     assert "After joining sources, qualify every referenced column with its source alias." in prompt
+
+
+def test_all_prompt_modes_require_complete_and_resolvable_asta_awr_01_sql():
+    llm = read("db/adb/asta_llm_pkg.sql")
+    prompt = llm[llm.index("FUNCTION build_tuning_prompt("):llm.index("END build_tuning_prompt;")]
+    contract = "Executable completeness preflight is mandatory"
+    assert contract in prompt
+    assert prompt.index(contract) < prompt.index("IF l_mode IN ('A', 'B') THEN")
+    assert "never emit ellipses (... or …), TODO text, \"unchanged\" shorthand, or placeholder comments" in prompt
+    assert "trace every alias.column reference in SELECT, JOIN, WHERE, GROUP BY, HAVING, and ORDER BY" in prompt
+    assert "to a column projected by that exact CTE or inline-view alias" in prompt
