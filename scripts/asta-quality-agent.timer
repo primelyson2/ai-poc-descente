@@ -4,7 +4,7 @@ Description=Run ASTA quality improvement and deployment loop
 [Timer]
 OnBootSec=10min
 # 긴 회차가 끝난 뒤 한 시간 후 다음 회차를 시작해 중첩을 막는다.
-OnUnitActiveSec=1h
+OnUnitInactiveSec=1h
 Persistent=true
 RandomizedDelaySec=2min
 Unit=asta-quality-agent.service
