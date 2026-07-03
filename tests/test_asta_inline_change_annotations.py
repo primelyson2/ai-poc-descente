@@ -107,3 +107,14 @@ def test_all_prompt_modes_prevent_asta_awr_01_invalid_identifier_rewrites():
     assert prompt.index(identifier_contract) < prompt.index("IF l_mode IN ('A', 'B') THEN")
     assert "never guess abbreviated column names" in prompt
     assert "Every introduced CTE or inline view must project each column referenced downstream from a valid source expression." in prompt
+
+
+def test_all_prompt_modes_prevent_asta_awr_01_invalid_set_projections():
+    llm = read("db/adb/asta_llm_pkg.sql")
+    prompt = llm[llm.index("FUNCTION build_tuning_prompt("):llm.index("END build_tuning_prompt;")]
+    projection_contract = "never use SELECT * in a UNION, INTERSECT, or MINUS"
+    assert projection_contract in prompt
+    assert prompt.index(projection_contract) < prompt.index("IF l_mode IN ('A', 'B') THEN")
+    assert "same number of expressions in the same semantic order with compatible datatypes in every branch" in prompt
+    assert "using typed zero or NULL placeholders where a measure is absent" in prompt
+    assert "After joining sources, qualify every referenced column with its source alias." in prompt
