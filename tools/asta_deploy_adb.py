@@ -155,17 +155,11 @@ def main():
               FROM dual
             ) s
             ON (t.source_db_id = s.source_db_id)
-            WHEN MATCHED THEN UPDATE SET
-              t.db_link_name = s.db_link_name,
-              t.source_schema = s.source_schema,
-              t.description = s.description,
-              t.enabled = 'Y',
-              t.updated_at = SYSTIMESTAMP
             WHEN NOT MATCHED THEN INSERT(source_db_id, db_link_name, source_schema, description, enabled)
               VALUES(s.source_db_id, s.db_link_name, s.source_schema, s.description, 'Y')
             """
         )
-        log.append("upserted ASTA_SOURCE_CONNECTIONS DB0903_TESTDB -> DB0903_LINK/DEVDO")
+        log.append("preserved existing ASTA_SOURCE_CONNECTIONS mapping; inserted DB0903_LINK/DEVDO only if absent")
         conn.commit()
 
         # ORDS module install. This may fail if ORDS is not enabled/granted.
@@ -207,4 +201,3 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
-

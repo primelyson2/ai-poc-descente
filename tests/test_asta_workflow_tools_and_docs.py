@@ -61,6 +61,13 @@ def test_deploy_compile_order_is_dependency_order():
     ]
 
 
+def test_deployer_never_overwrites_an_existing_source_link_mapping():
+    deploy = (ROOT / "tools" / "asta_deploy_adb.py").read_text(encoding="utf-8")
+    merge = deploy[deploy.index("MERGE INTO asta_source_connections"):deploy.index("log.append", deploy.index("MERGE INTO asta_source_connections"))]
+    assert "WHEN NOT MATCHED THEN INSERT" in merge
+    assert "WHEN MATCHED THEN UPDATE" not in merge
+
+
 def test_smoke_contract_accepts_representative_scenarios_and_requeries():
     smoke = load_tool("asta_smoke_adb")
     scenarios = [
