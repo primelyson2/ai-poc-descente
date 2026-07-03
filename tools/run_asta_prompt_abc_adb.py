@@ -53,10 +53,12 @@ def build_prompt(cur, sql: str, mode: str, source: dict, vector: dict) -> str:
 
 def generate(cur, prompt: str, profile: str, max_attempts: int = 3) -> tuple[str, int, float]:
     started = time.monotonic()
+    prompt_clob = cur.var(oracledb.DB_TYPE_CLOB)
+    prompt_clob.setvalue(0, prompt)
     for attempt in range(1, max_attempts + 1):
         cur.execute(
             "select dbms_cloud_ai.generate(prompt=>:p,profile_name=>:profile,action=>'chat') from dual",
-            p=prompt,
+            p=prompt_clob,
             profile=profile,
         )
         raw = clob_text(cur.fetchone()[0])

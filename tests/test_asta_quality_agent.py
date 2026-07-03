@@ -8,6 +8,7 @@ sys.path.insert(0, str(ROOT))
 
 from tools.asta_quality_agent import calculate_stats, choose_variant, normalize_result, report_markdown
 from tools.run_asta_prompt_abc_adb import rotate_modes
+from tools.run_asta_prompt_abc_adb import generate
 
 
 def config():
@@ -84,3 +85,34 @@ def test_variant_order_rotates_to_reduce_cache_warming_bias():
     assert rotate_modes(modes, sample_index=0, cycle_rotation=0) == ["A", "B", "C"]
     assert rotate_modes(modes, sample_index=0, cycle_rotation=1) == ["B", "C", "A"]
     assert rotate_modes(modes, sample_index=1, cycle_rotation=2) == ["A", "B", "C"]
+
+
+def test_long_prompt_is_bound_as_clob(monkeypatch):
+    class Bind:
+        value = None
+
+        def setvalue(self, index, value):
+            assert index == 0
+            self.value = value
+
+    class Cursor:
+        def __init__(self):
+            self.bind = Bind()
+            self.params = None
+
+        def var(self, db_type):
+            assert db_type is not None
+            return self.bind
+
+        def execute(self, sql, **params):
+            self.params = params
+
+        def fetchone(self):
+            return ["candidate"]
+
+    cursor = Cursor()
+    raw, attempts, _ = generate(cursor, "x" * 40000, "ASTA_TEST", max_attempts=1)
+    assert raw == "candidate"
+    assert attempts == 1
+    assert cursor.bind.value == "x" * 40000
+    assert cursor.params["p"] is cursor.bind

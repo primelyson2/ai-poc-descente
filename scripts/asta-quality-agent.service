@@ -10,6 +10,7 @@ ExecStart=/opt/select-ai-test/.venv/bin/python tools/asta_quality_agent.py --con
 ExecStart=/opt/select-ai-test/.venv/bin/python tools/asta_quality_autopilot.py
 User=opc
 Group=opc
+Environment=PATH=/home/opc/bin:/home/opc/.local/bin:/usr/local/bin:/usr/bin:/bin
 
 # 이 서비스는 코드/DB를 배포하지 않으며 보고서만 기록한다.
 NoNewPrivileges=true
