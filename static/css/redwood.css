@@ -236,7 +236,11 @@ label { font-size: var(--fs-sm); color: var(--text-muted); font-weight: 500; }
   font-size: var(--fs-sm);
   font-family: var(--font-mono);
   color: var(--text);
-  white-space: nowrap;
+  /* 긴 annotation(예: IN-list 값)이 화면을 벗어나지 않도록 컨테이너 폭 안에서 줄바꿈 */
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 /* --- Tabs --- */
@@ -381,7 +385,11 @@ label { font-size: var(--fs-sm); color: var(--text-muted); font-weight: 500; }
   padding: var(--space-4);
   border-bottom: 1px solid var(--border);
   display: flex; align-items: center; justify-content: space-between;
+  gap: var(--space-3);
 }
+/* 긴 식별자(owner.table.column 등 공백 없는 문자열)가 헤더를 넘치지 않도록 줄바꿈 */
+.modal-header h2 { min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
+.modal-header .btn { flex-shrink: 0; }
 .modal-body { padding: var(--space-4); overflow: auto; }
 .modal-footer {
   padding: var(--space-4);

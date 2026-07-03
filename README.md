@@ -12,18 +12,18 @@ Oracle Autonomous Database 23ai 의 **SELECT AI** (`DBMS_CLOUD_AI.GENERATE`), **
 
 [![Deploy to Oracle Cloud](https://oci-resourcemanager-plugin.plugins.oci.oraclecloud.com/latest/deploy-to-oracle-cloud.svg)](https://cloud.oracle.com/resourcemanager/stacks/create?zipUrl=https://github.com/primelyson2/select-ai-test/archive/refs/heads/main.zip)
 
-> 버튼은 **하나**입니다. 배포 방식(HTTP/HTTPS)은 클릭 후 **Create Stack 화면의 `Working directory` 드롭다운에서 폴더를 고르는 것**으로 결정합니다. (Deploy 버튼 URL 은 working directory 를 미리 지정할 수 없어, 두 방식이 같은 zip 을 공유합니다.)
+> 버튼은 **하나**입니다. 배포 방식(HTTP/HTTPS/HTTPS+기존VM)은 클릭 후 **Create Stack 화면의 `Working directory` 드롭다운에서 폴더를 고르는 것**으로 결정합니다. (Deploy 버튼 URL 은 working directory 를 미리 지정할 수 없어, 세 방식이 같은 zip 을 공유합니다.)
 
-| | **옵션 A — HTTP** (인증서 불필요, 간편) | **옵션 B — HTTPS** (Load Balancer + 인증서) |
-|---|---|---|
-| Working directory | **`deploy/http`** 선택 | **`deploy/https`** 선택 |
-| 입력 | 구획/네트워크만 | + **인증서 OCID** 등 |
-| 동작 | LB 없이 인스턴스 공인 IP 직접 접속 | 공용 LB 가 TLS 종단 → 인스턴스 `:8000` 전달 |
-| 접속 URL | `app_url` = `http://<공인IP>:8000` | `https_url` = `https://<LB IP>` |
-| 사전 준비 | 서브넷 보안 목록에 **앱 포트(기본 8000) 인바운드**만 | 서브넷에 443(및 80) 인바운드 + LB 가 인증서 읽도록 **IAM 정책** 1회 ([HTTPS 사전 준비](#https-사전-준비-필수)) |
-| 권장 | 빠른 데모/내부 PoC (평문 HTTP) | 외부 노출/TLS 필요 시 |
+| | **옵션 A — HTTP** (인증서 불필요, 간편) | **옵션 B — HTTPS** (Load Balancer + 인증서) | **옵션 C — HTTPS + 기존 VM** (LB 만) |
+|---|---|---|---|
+| Working directory | **`deploy/http`** 선택 | **`deploy/https`** 선택 | **`deploy/https-existing-vm`** 선택 |
+| 입력 | 구획/네트워크만 | + **인증서 OCID** 등 | 기존 **인스턴스 OCID** + **인증서 OCID** |
+| 동작 | LB 없이 인스턴스 공인 IP 직접 접속 | 새 VM 생성 + 공용 LB 가 TLS 종단 → 인스턴스 `:8000` 전달 | **컴퓨트 미생성** — **기존 VM 에 SSH 로 소스 설치** + 공용 LB 가 TLS 종단 → 기존 VM `:8000` 전달 |
+| 접속 URL | `app_url` = `http://<공인IP>:8000` | `https_url` = `https://<LB IP>` | `https_url` = `https://<LB IP>` |
+| 사전 준비 | 서브넷 보안 목록에 **앱 포트(기본 8000) 인바운드**만 | 서브넷에 443(및 80) 인바운드 + LB 가 인증서 읽도록 **IAM 정책** 1회 ([HTTPS 사전 준비](#https-사전-준비-필수)) | 좌측 + LB→VM **app_port** 인바운드 + 기존 VM **공인 IP·SSH(22)·SSH 개인키**(소스 설치용) |
+| 권장 | 빠른 데모/내부 PoC (평문 HTTP) | 외부 노출/TLS 필요 시 | 앱 없는(또는 재설치할) 기존 VM 에 소스+TLS 를 한 번에 |
 
-배포가 끝나면 스택 Outputs 의 `app_url`(HTTP) 또는 `https_url`(HTTPS) 로 접속 → **[Database 관리]** 메뉴에서 ADB Wallet 을 업로드해 첫 DB 를 등록합니다. 자세한 절차는 [§4. OCI Resource Manager 배포](#4-oci-resource-manager-배포) 또는 별도 문서 **[DEPLOY_OCI.md](DEPLOY_OCI.md)** 참조.
+배포가 끝나면 스택 Outputs 의 `app_url`(HTTP) 또는 `https_url`(HTTPS) 로 접속 → **[Database 관리]** 메뉴에서 ADB Wallet 을 업로드해 첫 DB 를 등록합니다. 자세한 절차는 [§4. OCI Resource Manager 배포](#4-oci-resource-manager-배포) 또는 별도 문서 **[Guide_Deploy_OCI.md](Guide_Deploy_OCI.md)** 참조.
 
 ---
 
@@ -69,7 +69,7 @@ Oracle Autonomous Database 23ai 의 **SELECT AI** (`DBMS_CLOUD_AI.GENERATE`), **
 
 ### [메뉴 5] 접근 키 관리
 - 관리자가 접근 키와 관리자 이메일을 설정·관리하는 화면.
-- 구현·운영 세부는 별도 내부 문서 `SECURITY_INFO.md` 참조(저장소 미포함).
+- 구현·운영 세부는 별도 내부 문서 `Guide_Security_info.md` 참조(저장소 미포함).
 
 ### [확장 메뉴] AI SQL Tuning Assistant
 - OADT2의 독립 extension 화면으로, SQL을 입력하면 ADB ORDS `ASTA_PKG.ANALYZE_SQL`을 호출해 상세 SQL 튜닝 결과서를 생성합니다.
@@ -169,31 +169,32 @@ kill -9 <PID>
 
 ## 4. OCI Resource Manager 배포
 
-GitHub 리포(`select-ai-test`)를 소스로 삼아 **원클릭**으로 Oracle Linux 인스턴스를 만들고 앱을 기동합니다. Terraform 스택은 **방식별로 폴더가 분리**되어 있으며, 각 폴더가 독립적인 완결 스택입니다 (각 폴더에 `main.tf`/`variables.tf`/`outputs.tf`/`schema.yaml`/`cloud-init.tftpl`).
+GitHub 리포(`select-ai-test`)를 소스로 삼아 **원클릭**으로 Oracle Linux 인스턴스를 만들고 앱을 기동합니다. Terraform 스택은 **방식별로 폴더가 분리**되어 있으며, 각 폴더가 독립적인 완결 스택입니다 (`deploy/http`·`deploy/https` 는 `main.tf`/`variables.tf`/`outputs.tf`/`schema.yaml`/`cloud-init.tftpl`, `deploy/https-existing-vm` 은 컴퓨트를 안 만드는 대신 **SSH 설치 스크립트 `install.sh.tftpl`** 를 포함해 5개 파일).
 
 | 폴더 | 방식 | LB/인증서 | 접속 |
 |---|---|---|---|
 | **`deploy/http/`** | HTTP (간편) | 없음 | `http://<공인IP>:8000` (인스턴스 직접) |
 | **`deploy/https/`** | HTTPS (Load Balancer) | 공용 LB + 인증서 OCID | `https://<LB IP>` (LB TLS 종단 → 인스턴스 :8000) |
+| **`deploy/https-existing-vm/`** | HTTPS (기존 VM 재사용) | 공용 LB + 인증서 OCID (**컴퓨트 미생성**) | `https://<LB IP>` (LB TLS 종단 → **기존 VM** :8000). **기존 VM 에 SSH 로 소스 자동 설치** |
 
 각 폴더 공통 파일:
 
 | 파일 | 역할 |
 |---|---|
-| `main.tf` | provider + 컴퓨트 인스턴스(**기존 VCN/서브넷 선택**) + 최신 Oracle Linux 이미지 조회 (https 폴더는 추가로 **HTTPS Load Balancer** 443 리스너·백엔드·헬스체크) |
-| `variables.tf` | 입력 변수 (인스턴스 이름, shape, OCPU/메모리, SSH 키, VCN/서브넷, 공인 IP, 포트, 리포 URL/브랜치 — https 폴더는 추가로 **인증서 OCID/HTTPS/LB**) |
-| `outputs.tf` | http: `app_url`/`public_ip`/`private_ip`/`ssh_command` · https: 추가로 `https_url`/`load_balancer_ip` |
-| `cloud-init.tftpl` | 부팅 스크립트 — `git clone` → `uv sync` → systemd `select-ai-test` 서비스 등록·기동 → 방화벽 개방 (두 폴더 동일) |
+| `main.tf` | provider + 컴퓨트 인스턴스(**기존 VCN/서브넷 선택**) + 최신 Oracle Linux 이미지 조회 (https 폴더는 추가로 **HTTPS Load Balancer** 443 리스너·백엔드·헬스체크). **`https-existing-vm` 은 컴퓨트/이미지 대신 `data.oci_core_instance` 로 기존 인스턴스 조회 + `null_resource`(SSH remote-exec)로 소스 설치 + LB 리소스** |
+| `variables.tf` | 입력 변수 (인스턴스 이름, shape, OCPU/메모리, SSH 키, VCN/서브넷, 공인 IP, 포트, 리포 URL/브랜치 — https 폴더는 추가로 **인증서 OCID/HTTPS/LB**). **`https-existing-vm` 은 컴퓨트 shape 계열 없이 `instance_ocid`+**SSH 개인키/리포**+LB·네트워크·인증서 변수** |
+| `outputs.tf` | http: `app_url`/`public_ip`/`private_ip`/`ssh_command` · https: 추가로 `https_url`/`load_balancer_ip` · `https-existing-vm`: `https_url`/`load_balancer_ip`/`backend_ip` |
+| `cloud-init.tftpl` | 부팅 스크립트 — `git clone` → `uv sync` → systemd `select-ai-test` 서비스 등록·기동 → 방화벽 개방 (http·https 두 폴더 동일). **`https-existing-vm` 은 이 파일 대신 `install.sh.tftpl`** — 같은 로직을 부팅이 아니라 **SSH(remote-exec)로 기존 VM 에서 실행** |
 | `schema.yaml` | Resource Manager 변수 입력 UI |
 
-> **네트워크는 직접 생성하지 않고 기존 VCN/서브넷을 선택**합니다. 선택한 서브넷의 보안 목록(Security List)에서 **앱 포트(기본 8000)** 와 **SSH(22)** 인바운드를 미리 허용해 두어야 합니다. (VCN/서브넷이 없다면 OCI 콘솔의 *Networking → VCN* 에서 먼저 생성하세요.) HTTPS 는 추가로 **443/80 인바운드 + IAM 정책** 이 필요합니다 ([HTTPS 사전 준비](#https-사전-준비-필수)).
+> **네트워크는 직접 생성하지 않고 기존 VCN/서브넷을 선택**합니다. 선택한 서브넷의 보안 목록(Security List)에서 **앱 포트(기본 8000)** 와 **SSH(22)** 인바운드를 미리 허용해 두어야 합니다. (VCN/서브넷이 없다면 OCI 콘솔의 *Networking → VCN* 에서 먼저 생성하세요.) HTTPS 는 추가로 **443/80 인바운드 + IAM 정책** 이 필요합니다 ([HTTPS 사전 준비](#https-사전-준비-필수)). `https-existing-vm` 은 새 인스턴스를 안 만드는 대신 **기존 VM 에 SSH(22)로 소스를 설치**하므로, 대상 VM 이 **공인 IP + 22 인바운드**를 갖고 **SSH 개인키**를 입력해야 하며, LB→기존 VM 의 **app_port 인바운드**도 열려 있어야 합니다.
 
 ### 동작 방식 (Deploy 버튼)
 README 상단의 **Deploy to Oracle Cloud** 버튼(하나)은 아래 URL 로 연결됩니다 — RM 이 GitHub 아카이브 zip 을 받아 스택으로 만듭니다.
 ```
 https://cloud.oracle.com/resourcemanager/stacks/create?zipUrl=https://github.com/primelyson2/select-ai-test/archive/refs/heads/main.zip
 ```
-> 루트에는 `.tf` 가 없고 `deploy/http`·`deploy/https` 두 폴더에 들어 있으므로, RM 이 **Working directory** 드롭다운을 띄웁니다. 여기서 고른 폴더가 HTTP/HTTPS 방식을 결정합니다. (Deploy 버튼 URL 은 working directory 를 미리 지정할 수 없습니다.) 다른 리포/브랜치로 바꾸려면 `zipUrl` 의 경로와 `…/refs/heads/<branch>.zip` 을 수정하세요.
+> 루트에는 `.tf` 가 없고 `deploy/http`·`deploy/https`·`deploy/https-existing-vm` 세 폴더에 들어 있으므로, RM 이 **Working directory** 드롭다운을 띄웁니다. 여기서 고른 폴더가 배포 방식을 결정합니다. (Deploy 버튼 URL 은 working directory 를 미리 지정할 수 없습니다.) 다른 리포/브랜치로 바꾸려면 `zipUrl` 의 경로와 `…/refs/heads/<branch>.zip` 을 수정하세요.
 
 ### 단계 0. (최초 1회) GitHub 에 소스 푸시
 이 `project/` 폴더가 **리포 루트**가 되도록 푸시합니다 (`config.yaml`·`wallets/` 는 `.gitignore` 로 자동 제외 — 비밀이 올라가지 않습니다).
@@ -208,12 +209,12 @@ git push -u origin main
 
 ### 단계 1. Deploy 버튼 클릭 → Stack information
 - README 상단 **Deploy to Oracle Cloud** 버튼 클릭 → OCI 로그인 → **Create stack** 진입 (Terraform 구성이 자동 로드됨)
-- **Working directory** 드롭다운에서 방식을 선택: **`deploy/http`**(간편) 또는 **`deploy/https`**(인증서/LB). 선택한 폴더의 `schema.yaml` 에 따라 다음 단계의 변수 폼이 달라집니다.
+- **Working directory** 드롭다운에서 방식을 선택: **`deploy/http`**(간편) · **`deploy/https`**(새 VM+인증서/LB) · **`deploy/https-existing-vm`**(기존 VM 앞에 LB 만). 선택한 폴더의 `schema.yaml` 에 따라 다음 단계의 변수 폼이 달라집니다.
 - "I have reviewed and accept the Oracle Terms of Use" 체크 → **Next**
 
 ### 단계 2. Configure variables
 
-> 아래 **컴퓨트 / 네트워크 접근 / 애플리케이션 소스** 변수는 두 방식 공통입니다. **HTTPS (Load Balancer)** 변수는 `deploy/https` 를 고른 경우에만 나타납니다 (HTTP 방식은 이 표를 건너뛰고 바로 Apply).
+> 아래 **컴퓨트 / 네트워크 접근 / 애플리케이션 소스** 변수는 `deploy/http`·`deploy/https` 공통입니다. **HTTPS (Load Balancer)** 변수는 `deploy/https` 를 고른 경우에만 나타납니다 (HTTP 방식은 이 표를 건너뛰고 바로 Apply). **`deploy/https-existing-vm`** 은 컴퓨트 shape 계열 변수 대신 **대상 인스턴스 OCID + SSH 개인키/리포**(소스 설치용)를 받습니다 — 아래 [기존 VM 변형](#deployhttps-existing-vm-기존-vm-변형) 참조.
 
 **컴퓨트**
 | 변수 | 설명 |
@@ -249,6 +250,21 @@ git push -u origin main
 |---|---|
 | **Git 리포지토리 URL / 브랜치** | 기본값이 위 리포로 채워져 있음 |
 
+#### `deploy/https-existing-vm` (기존 VM 변형)
+> 이 폴더는 **새 VM 을 만들지 않고**, 지정한 기존 인스턴스에 **SSH 로 소스를 설치**한 뒤 그 앞에 HTTPS LB 를 얹습니다. 컴퓨트 shape 계열 변수는 없고, 대신 **대상 인스턴스 + SSH 개인키/리포** 를 받습니다. 대상 VM 은 **공인 IP + SSH(22) 접근**이 가능해야 합니다.
+
+| 그룹 | 변수 | 설명 |
+|---|---|---|
+| 일반 | **구획 (Compartment)** | LB 를 만들 구획 |
+| 대상 인스턴스 | **기존 컴퓨트 인스턴스** *(필수)* | 소스 설치 + LB 백엔드로 연결할 기존 인스턴스 선택. `data.oci_core_instance` 로 공인/사설 IP 자동 조회 |
+| 애플리케이션 설치 | **SSH 개인키(PEM)** *(필수)* / **SSH 사용자** / **Git URL** / **브랜치** | 기존 VM 에 SSH 접속해 `git clone → uv sync → systemd 기동`. 사용자 기본 `opc`, URL/브랜치 기본 위 리포/`main` |
+| 네트워크 접근 | **VCN / LB 서브넷** | LB 를 배치할 기존 VCN·서브넷 |
+| HTTPS (Load Balancer) | **Certificate OCID** *(필수)* / **HTTPS 포트** / **LB 표시 이름** / **80→443 리다이렉트** / **Private LB / 대역폭** | https 방식과 동일 |
+| 애플리케이션 | **앱 포트** | 설치한 앱이 수신할 포트 (LB 백엔드·헬스체크 대상, 기본 `8000`) |
+
+출력: `https_url` / `load_balancer_ip` / `backend_ip`(연결된 기존 인스턴스 사설 IP).
+> 설치는 SSH `remote-exec` 로 `install.sh.tftpl`(cloud-init 과 동일 로직)을 실행합니다. `instance_ocid`/리포/브랜치/`app_port` 가 바뀌면 Apply 시 **재설치**됩니다(스크립트는 멱등). **SSH 개인키는 스택 민감 변수**로 저장되니 주의하세요.
+
 ### 단계 3. Review → Create
 - **Create** 후 자동으로 **Apply** 가 실행되도록 두거나, 스택 생성 후 **Apply** 버튼 클릭
 - Apply Job 로그 끝에서 **Outputs** 확인 → **HTTP**: `app_url`(예: `http://<공인IP>:8000`) · **HTTPS**: `https_url`(예: `https://<LB IP>`) 클릭
@@ -267,7 +283,7 @@ git push -u origin main
 > ```
 
 ### HTTPS 사전 준비 (필수)
-> `deploy/https` 방식에만 해당합니다. **HTTP(`deploy/http`) 방식은 인증서·IAM 정책·LB 가 전혀 필요 없고**, 선택한 서브넷 보안 목록에 **앱 포트(기본 8000) 인바운드**만 열면 됩니다.
+> `deploy/https` **및 `deploy/https-existing-vm`** 방식에 해당합니다. **HTTP(`deploy/http`) 방식은 인증서·IAM 정책·LB 가 전혀 필요 없고**, 선택한 서브넷 보안 목록에 **앱 포트(기본 8000) 인바운드**만 열면 됩니다.
 
 LB/리스너/백엔드는 Terraform 이 만들지만, 다음 2가지는 **Terraform 범위 밖**이라 별도로 준비해야 합니다.
 
@@ -280,17 +296,36 @@ LB/리스너/백엔드는 Terraform 이 만들지만, 다음 2가지는 **Terraf
    ```
    (정확한 표현은 OCI 문서 "Load Balancer + Certificates Service" 로 확인)
 
-> **Private 인증서 신뢰:** Private CA 발급 인증서는 브라우저가 기본 신뢰하지 않아 경고가 뜹니다. 클라이언트가 해당 **Private CA 루트를 신뢰 저장소에 추가**해야 경고 없이 접속됩니다(내부망용 정상 동작).
+> **Private 인증서 신뢰:** Private CA 발급 인증서는 브라우저가 기본 신뢰하지 않아 경고가 뜹니다. 클라이언트가 해당 **Private CA 루트를 신뢰 저장소에 추가**해야 경고 없이 접속됩니다(내부망용 정상 동작). 도메인 없이 Private CA 로 발급하는 상세 절차는 **[Guide_Private_CA_HTTPS.md](Guide_Private_CA_HTTPS.md)** 참조.
+> **`deploy/https-existing-vm` 추가 주의:** 이 방식은 **기존 VM 에 SSH(22)로 소스를 설치**하므로 대상 VM 의 **공인 IP·SSH(22) 인바운드**와 **SSH 개인키**가 필요합니다. 설치 후 LB 백엔드 health 가 OK 가 되려면 LB→기존 VM 의 **app_port 인바운드**(위 1번의 8000)도 열려 있어야 합니다.
 > **검증:** `curl -vkI https://<LB IP>` 로 TLS 핸드셰이크/인증서 체인 확인, 콘솔 LB → Backend Sets 의 health 가 **OK** 인지 확인.
 
 ### 업데이트 / 재배포
-소스를 GitHub 에 다시 푸시한 뒤 인스턴스에서:
+소스를 GitHub 에 다시 푸시한 뒤, 배포된 인스턴스에서 최신 소스를 받아 반영합니다. 앱은 `/opt/select-ai-test` 에 있고 `uv` + systemd(`select-ai-test`) 로 구동됩니다.
 ```bash
 ssh opc@<공인IP>
-cd /opt/select-ai-test && git pull && ~/.local/bin/uv sync
-sudo systemctl restart select-ai-test
+
+cd /opt/select-ai-test
+git pull                                # 최신 소스 가져오기
+~/.local/bin/uv sync                    # 의존성 변경분 반영 (.venv 갱신)
+sudo systemctl restart select-ai-test   # 앱 재기동
 ```
-또는 Resource Manager 스택에서 **Destroy** 후 다시 **Apply** 하면 새 인스턴스로 깨끗하게 재배포됩니다.
+
+- **소스만 바뀐 경우**(파이썬 의존성 변화 없음): `git pull` → `sudo systemctl restart select-ai-test` 만 해도 됩니다. 정적 JS/HTML 은 재시작 없이 브라우저 새로고침만으로 반영됩니다.
+- **로컬 변경으로 `git pull` 이 거부되면** — 원격 `main` 으로 강제 정렬:
+  ```bash
+  git -C /opt/select-ai-test fetch origin
+  git -C /opt/select-ai-test reset --hard origin/main
+  ```
+  `config.yaml`·`wallets/` 는 `.gitignore` 대상이라 `reset --hard` 로도 지워지지 않습니다(비밀 안전).
+- **특정 브랜치/커밋으로 맞추기**: `git -C /opt/select-ai-test checkout <브랜치/커밋>` → `~/.local/bin/uv sync` → restart.
+- **상태 확인**:
+  ```bash
+  systemctl status select-ai-test        # 서비스 상태
+  journalctl -u select-ai-test -f        # 앱 로그 실시간
+  ```
+
+> `deploy/https-existing-vm` 은 위 SSH 명령으로 직접 업데이트해도 되고, 스택에서 **리포 URL/브랜치를 바꿔 Apply** 하면 remote-exec 가 **재설치**합니다(LB 는 유지). Destroy 하면 LB 는 지워지지만 **기존 VM 자체는 이 스택이 만든 게 아니라 삭제되지 않습니다**(설치된 앱도 그대로 남음).
 
 ---
 
@@ -309,7 +344,7 @@ sudo systemctl restart select-ai-test
 ```
 project/   (= GitHub 리포 select-ai-test 루트)
 ├─ README.md                  # 본 문서 (상단에 Deploy to Oracle Cloud 버튼)
-├─ DEPLOY_OCI.md              # OCI RM 배포 상세 가이드
+├─ Guide_Deploy_OCI.md              # OCI RM 배포 상세 가이드
 ├─ deploy/                    # OCI RM 스택 (방식별 폴더 — RM Working directory 로 선택)
 │   ├─ http/                  # HTTP 변형 (LB/인증서 없음, 인스턴스 직접 :app_port)
 │   └─ https/                 # HTTPS 변형 (공용 LB + 인증서 OCID, TLS 종단)

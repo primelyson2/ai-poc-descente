@@ -7,6 +7,8 @@
     profiles:  { render: () => window.Views.profileTest(),    label: "AI Profile Test" },
     agents:    { render: () => window.Views.agentTest(),      label: "AI Agent Team Test" },
     chat:      { render: () => window.Views.aiChat(),         label: "AI Chat" },
+    nl2sql:    { render: () => window.Views.nl2sql(),         label: "Select AI Test - Table list" },
+    predefined:{ render: () => window.Views.predefinedQuery(), label: "Select AI Test - Predefined Query" },
     api:       { render: () => window.Views.apiAdmin(),       label: "API관리" },
     databases: { render: () => window.Views.databaseAdmin(),  label: "Database 관리" },
     access:    { render: () => window.Views.accessAdmin(),    label: "Tool관리" },
@@ -21,9 +23,50 @@
   const DEFAULT_ROUTE = "profiles";
   const NAV_COLLAPSED_KEY = "oadt2.nav.collapsed";
 
+  // ── 메뉴 노출 관리 ──────────────────────────────────────────────
+  // Tool관리(access) 화면의 "메뉴 관리"에서 좌측 메뉴별 조회여부를 켜고 끈다.
+  // Database 관리(databases)·Tool관리(access) 는 관리 진입점이라 항상 노출한다.
+  // 설정은 전역 localStorage 키(DB 무관 도구 설정) 에 "숨긴 라우트 배열" 로 저장.
+  const MENU_KEY = "oai.menu.hidden";
+  const ALWAYS_ON = new Set(["databases", "access"]);
+  // nav 순서(index.html)와 동일한 순서로 관리 대상 메뉴를 정의한다.
+  const MANAGED_MENUS = [
+    { route: "profiles",   label: "AI Profile Test" },
+    { route: "agents",     label: "AI Agent Team Test" },
+    { route: "objects",    label: "AI Profile Object Meta" },
+    { route: "nl2sql",     label: "Select AI Test - Table list" },
+    { route: "predefined", label: "Select AI Test - Predefined Query" },
+    { route: "chat",       label: "AI Chat" },
+    { route: "api",        label: "API관리(개발중)" },
+  ];
+  function getHiddenMenus() {
+    try {
+      const arr = JSON.parse(localStorage.getItem(MENU_KEY) || "[]");
+      return Array.isArray(arr) ? arr.filter((r) => !ALWAYS_ON.has(r)) : [];
+    } catch (_) { return []; }
+  }
+  function isMenuHidden(route) {
+    return !ALWAYS_ON.has(route) && getHiddenMenus().includes(route);
+  }
+  function firstVisibleRoute() {
+    const hidden = getHiddenMenus();
+    const m = MANAGED_MENUS.find((x) => !hidden.includes(x.route));
+    return m ? m.route : "databases"; // 모두 숨겨도 항상 노출되는 관리 메뉴로 폴백
+  }
+  function applyMenuVisibility() {
+    const hidden = getHiddenMenus();
+    document.querySelectorAll(".nav-item").forEach((el) => {
+      const r = el.dataset.route;
+      el.style.display = r && hidden.includes(r) && !ALWAYS_ON.has(r) ? "none" : "";
+    });
+  }
+
   function currentRoute() {
     const hash = (window.location.hash || "").replace(/^#\/?/, "");
-    return ROUTES[hash] ? hash : DEFAULT_ROUTE;
+    let route = ROUTES[hash] ? hash : DEFAULT_ROUTE;
+    // 숨긴 메뉴로 진입하면 첫 노출 메뉴로 대체(직접 URL/이전 hash 대비).
+    if (isMenuHidden(route)) route = firstVisibleRoute();
+    return route;
   }
 
   function setActiveNav(route) {
@@ -115,8 +158,28 @@
     }
   }
 
+  // Tool관리 화면(access_admin.js)이 메뉴 노출을 켜고 끌 때 쓴다.
+  window.MenuConfig = {
+    MANAGED: MANAGED_MENUS,
+    ALWAYS_ON,
+    getHidden: getHiddenMenus,
+    isHidden: isMenuHidden,
+    apply: applyMenuVisibility,
+    setHidden(route, hidden) {
+      if (ALWAYS_ON.has(route)) return; // 항상 노출 메뉴는 무시
+      const set = new Set(getHiddenMenus());
+      if (hidden) set.add(route); else set.delete(route);
+      localStorage.setItem(MENU_KEY, JSON.stringify([...set]));
+      applyMenuVisibility();
+      // 지금 보고 있는 메뉴를 숨겼다면 첫 노출 메뉴로 이동.
+      const rawHash = (window.location.hash || "").replace(/^#\/?/, "");
+      if (hidden && rawHash === route) scheduleRender();
+    },
+  };
+
   function init() {
     initNavToggle();
+    applyMenuVisibility();
     document.querySelectorAll(".nav-item").forEach((el) => {
       el.addEventListener("click", () => {
         window.location.hash = `#/${el.dataset.route}`;

@@ -1,0 +1,55 @@
+#!/bin/bash
+# 기존 VM 에 소스 설치 — remote-exec(SSH) 로 root 권한(sudo)에서 실행된다.
+# cloud-init.tftpl 과 동일한 로직(소스 clone → uv sync → systemd 기동).
+# 진행 로그는 /var/log/select-ai-deploy.log 에 남기고 동시에 콘솔(Terraform)로도 출력한다.
+set -euxo pipefail
+exec > >(tee /var/log/select-ai-deploy.log) 2>&1
+
+APP_DIR=/opt/select-ai-test
+APP_PORT=${app_port}
+
+# 1. 필수 패키지 (Oracle Linux 8/9)
+dnf install -y git python3.11 lsof || yum install -y git python3.11 lsof
+
+# 2. 소스 clone (공개 리포) — 재실행 시 깨끗하게 다시 받는다
+rm -rf "$APP_DIR"
+git clone -b ${repo_branch} ${repo_url} "$APP_DIR"
+chown -R opc:opc "$APP_DIR"
+
+# 3. uv 설치 (opc 사용자 홈에)
+sudo -u opc bash -lc 'curl -LsSf https://astral.sh/uv/install.sh | sh'
+
+# 4. 의존성 설치 (.venv 생성)
+sudo -u opc bash -lc "cd $APP_DIR && \$HOME/.local/bin/uv sync"
+
+# 5. systemd 서비스 — config.yaml 없이도 기동되며,
+#    배포 후 브라우저의 [Database 관리] 화면에서 ADB 를 등록한다.
+#    ExecStart 는 venv 의 uvicorn 을 직접 실행한다. (uv 는 /home/opc/.local/bin 에
+#    설치돼 SELinux 라벨 문제로 systemd 가 203/EXEC 로 실패할 수 있어,
+#    /opt 아래(usr_t) 의 .venv/bin/uvicorn 을 직접 호출한다.)
+cat >/etc/systemd/system/select-ai-test.service <<EOF
+[Unit]
+Description=Oracle AI Database Test Tool
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=opc
+WorkingDirectory=$APP_DIR
+ExecStart=$APP_DIR/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port $APP_PORT --workers 1
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now select-ai-test
+
+# 6. OS 방화벽 개방 (firewalld)
+firewall-cmd --permanent --add-port=$APP_PORT/tcp || true
+firewall-cmd --reload || true
+
+echo "=== select-ai-test 설치 완료: 포트 $APP_PORT ==="

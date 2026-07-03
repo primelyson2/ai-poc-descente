@@ -324,7 +324,7 @@ END;
     backdrop.querySelector("#at-sql-pre").textContent = sql;
     const close = () => { backdrop.remove(); document.removeEventListener("keydown", onKey); };
     const onKey = (e) => { if (e.key === "Escape") close(); };
-    backdrop.addEventListener("click", (e) => { if (e.target === backdrop) close(); });
+    // 바깥 클릭으로는 닫지 않음 — 닫기는 X 버튼으로만 (실수 닫힘 방지)
     backdrop.querySelector("#at-sql-close").addEventListener("click", close);
     backdrop.querySelector("#at-sql-copy").addEventListener("click", async () => {
       const ok = await copyToClipboard(sql);
@@ -924,7 +924,7 @@ END;
 
     const close = () => { backdrop.remove(); document.removeEventListener("keydown", onKey); };
     const onKey = (e) => { if (e.key === "Escape") close(); };
-    backdrop.addEventListener("click", (e) => { if (e.target === backdrop) close(); });
+    // 바깥 클릭으로는 닫지 않음 — 닫기는 X 버튼으로만 (실수 닫힘 방지)
     backdrop.querySelector("#ags-close").addEventListener("click", close);
     document.addEventListener("keydown", onKey);
     document.body.appendChild(backdrop);
@@ -1054,7 +1054,7 @@ END;
 
     const close = () => { backdrop.remove(); document.removeEventListener("keydown", onKey); };
     const onKey = (e) => { if (e.key === "Escape") close(); };
-    backdrop.addEventListener("click", (e) => { if (e.target === backdrop) close(); });
+    // 바깥 클릭으로는 닫지 않음 — 닫기는 X 버튼으로만 (실수 닫힘 방지)
     backdrop.querySelector("#ata-close").addEventListener("click", close);
     document.addEventListener("keydown", onKey);
     document.body.appendChild(backdrop);
@@ -1342,7 +1342,7 @@ END;
     `;
     const close = () => { backdrop.remove(); document.removeEventListener("keydown", onKey); };
     const onKey = (e) => { if (e.key === "Escape") close(); };
-    backdrop.addEventListener("click", (e) => { if (e.target === backdrop) close(); });
+    // 바깥 클릭으로는 닫지 않음 — 닫기는 X 버튼으로만 (실수 닫힘 방지)
     backdrop.querySelector("#at-node-close").addEventListener("click", close);
     document.addEventListener("keydown", onKey);
     document.body.appendChild(backdrop);

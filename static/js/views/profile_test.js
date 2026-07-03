@@ -4,6 +4,27 @@
   let REGIONS = [];  // region 속성 드롭다운 후보 (project/regions.txt)
   let MODELS = {};   // region -> model 후보 (project/models.txt)
 
+  // Tool관리 > "Select AI Action 관리" 에서 체크한 action 만 Action 드롭다운에 노출한다.
+  // runsql·narrate 는 실제 SQL 실행/데이터 노출을 동반하므로 기본 숨김(전역 localStorage 키).
+  const GATED_ACTIONS = ["runsql", "narrate"];
+  function actionEnabled(name) {
+    try { return JSON.parse(localStorage.getItem("oai.selectai.actions") || "{}")[name] === true; }
+    catch (_) { return false; }
+  }
+  function applyActionGate(selectEl) {
+    if (!selectEl) return;
+    GATED_ACTIONS.forEach((a) => {
+      const opt = selectEl.querySelector(`option[value="${a}"]`);
+      if (!opt) return;
+      const on = actionEnabled(a);
+      opt.hidden = !on;
+      opt.disabled = !on;
+    });
+    // 현재 선택이 숨겨진 action 이면 기본값(chat)으로 되돌림
+    const cur = selectEl.querySelector(`option[value="${selectEl.value}"]`);
+    if (cur && cur.disabled) selectEl.value = "chat";
+  }
+
   // region/model 후보 로드. force=true 면 항상 재요청, false 면 비어 있을 때만.
   async function ensureMeta(force) {
     if (force || !REGIONS.length) {
@@ -42,7 +63,8 @@
     const tabs = window.Tabs.create([
       { id: "list", label: "1. Profile 목록 / 속성", render: (host) => renderTab1(host, profiles) },
       { id: "bench", label: "2. 속도 측정 및 비교", render: (host) => renderTab2(host, profiles) },
-      { id: "feedback", label: "3. Feedback 관리", render: (host) => renderTab3(host, profiles) },
+      { id: "eval", label: "3. Profile평가", render: (host) => renderTabEval(host, profiles) },
+      { id: "feedback", label: "4. Feedback 관리", render: (host) => renderTab3(host, profiles) },
     ]);
     main.appendChild(tabs);
   }
@@ -205,6 +227,7 @@
       </div>
     `;
     wrap.appendChild(formPanel);
+    applyActionGate(document.getElementById("bm-action"));
 
     // object_list 가 필요한 action — 해당 action 선택 시 has_object_list='Y' 만 노출
     const OBJECT_LIST_ACTIONS = new Set(["runsql", "narrate", "showsql"]);
@@ -313,7 +336,8 @@
       ph.value = "";
       ph.textContent = list.length ? "저장된 프롬프트…" : "(저장된 프롬프트 없음)";
       bmSavedSel.appendChild(ph);
-      list.forEach((p) => {
+      // 제목 기준 오름차순으로 표시 (저장 순서 자체는 보존)
+      [...list].sort((a, b) => a.title.localeCompare(b.title)).forEach((p) => {
         const o = document.createElement("option");
         o.value = p.title;
         o.textContent = p.title;
@@ -436,7 +460,520 @@
   }
 
   // ====================================================================
-  // --- Tab 3: Feedback 관리 (서버 연동) ---
+  // --- Tab 3: Profile평가 — showsql 로 생성된 SQL 을 평가수행 Profile 이 적정/비적정 판정 ---
+  //   POST /api/profiles/evaluate { question, target_profile, target_model, evaluator_profile, iterations }
+  // ====================================================================
+  function renderTabEval(host, profiles) {
+    host.innerHTML = "";
+    const wrap = document.createElement("div");
+    wrap.className = "split-vert";
+    host.appendChild(wrap);
+
+    // profile_name -> { region, model } 캐시 (속성 재조회 방지)
+    const evalMetaCache = {};
+    async function getMeta(name) {
+      if (evalMetaCache[name]) return evalMetaCache[name];
+      const attrs = await window.API.get(`/api/profiles/${encodeURIComponent(name)}/attributes`);
+      const valueOf = (n) => {
+        const a = attrs.find((x) => x.attribute_name === n);
+        return a && a.attribute_value != null ? String(a.attribute_value) : "";
+      };
+      const meta = { region: valueOf("region"), model: valueOf("model") };
+      evalMetaCache[name] = meta;
+      return meta;
+    }
+
+    // 상단: 평가 조건 폼
+    const formPanel = document.createElement("div");
+    formPanel.className = "panel";
+    formPanel.innerHTML = `
+      <div class="panel-header"><h2>평가 조건</h2></div>
+      <div class="panel-body">
+        <div class="benchmark-form">
+          <div class="col-prompt stack-sm">
+            <div class="row" style="justify-content: space-between;">
+              <label>질의 <span class="muted">(평가대상 Profile 이 SQL 로 변환할 자연어 질의)</span></label>
+              <div class="row" style="gap:6px;">
+                <input type="text" id="ev-prompt-title" placeholder="저장할 제목" style="width:130px;">
+                <button class="btn" id="ev-prompt-add">추가</button>
+                <button class="btn" id="ev-prompt-update">수정</button>
+                <select id="ev-prompt-saved" style="min-width:150px;"></select>
+              </div>
+            </div>
+            <textarea id="ev-question" rows="2">전일자 주문 수량이 가장 많은 상품 TOP 5 를 알려줘.</textarea>
+          </div>
+          <div class="col-prompt stack-sm">
+            <label>평가대상 Profile <span class="muted" id="ev-target-hint"></span></label>
+            <select id="ev-target" style="max-width:320px;"></select>
+          </div>
+          <div class="col-prompt stack-sm">
+            <label>평가대상 Model <span class="muted">(선택 모델로 SET → 실행 → 원복)</span></label>
+            <select id="ev-model" style="max-width:320px;"></select>
+          </div>
+          <div class="col-prompt stack-sm">
+            <label>평가수행 Profile <span class="muted">(chat 으로 적정/비적정 판정)</span></label>
+            <select id="ev-judge" style="max-width:320px;"></select>
+          </div>
+          <div class="stack-sm">
+            <label>평가횟수 (1-10)</label>
+            <input type="number" id="ev-iter" min="1" max="10" value="5" />
+          </div>
+          <div class="col-prompt row end">
+            <button class="btn btn-primary" id="ev-run">▶ 평가 시작</button>
+          </div>
+        </div>
+      </div>
+    `;
+    wrap.appendChild(formPanel);
+
+    // 평가대상: ENABLED 且 object_list 보유 (showsql/showprompt 는 object_list 필요)
+    const targets = profiles.filter((p) => p.status === "ENABLED" && p.has_object_list === "Y");
+    // 평가수행: ENABLED 전체 (chat 만 필요)
+    const judges = profiles.filter((p) => p.status === "ENABLED");
+
+    const targetSel = document.getElementById("ev-target");
+    const modelSel = document.getElementById("ev-model");
+    const judgeSel = document.getElementById("ev-judge");
+    const targetHint = document.getElementById("ev-target-hint");
+
+    if (targets.length === 0) {
+      targetSel.innerHTML = `<option value="">object_list 설정된 ENABLED Profile 이 없습니다</option>`;
+    } else {
+      targetSel.innerHTML = targets.map((p) => `<option value="${window.escapeAttr(p.profile_name)}">${window.escapeHtml(p.profile_name)}</option>`).join("");
+    }
+    judgeSel.innerHTML = judges.length
+      ? judges.map((p) => `<option value="${window.escapeAttr(p.profile_name)}">${window.escapeHtml(p.profile_name)}</option>`).join("")
+      : `<option value="">사용 가능한 Profile 이 없습니다</option>`;
+    // 평가수행 기본값: 평가대상과 다른 Profile 우선
+    const altJudge = judges.find((p) => p.profile_name !== targetSel.value);
+    if (altJudge) judgeSel.value = altJudge.profile_name;
+
+    // 평가대상 model 단일 select — region 후보 + 현재 model 기본 선택
+    async function renderModelSelect() {
+      const name = targetSel.value;
+      targetHint.textContent = "";
+      if (!name) { modelSel.innerHTML = `<option value="">—</option>`; return; }
+      modelSel.innerHTML = `<option value="">조회 중...</option>`;
+      let meta;
+      try { meta = await getMeta(name); }
+      catch (e) { modelSel.innerHTML = `<option value="">${errMsg(e, "속성 조회 실패")}</option>`; return; }
+      if (targetSel.value !== name) return;  // 조회 중 선택이 바뀌면 무시
+      targetHint.textContent = meta.region ? `· region: ${meta.region}` : "· region 속성 없음";
+      const candidates = (MODELS && MODELS[meta.region]) || [];
+      const models = (meta.model && !candidates.includes(meta.model))
+        ? [meta.model, ...candidates] : candidates.slice();
+      if (models.length === 0) {
+        // 후보가 없으면 현재 model(있으면)만이라도 선택지로
+        modelSel.innerHTML = meta.model
+          ? `<option value="${window.escapeAttr(meta.model)}" selected>${window.escapeHtml(meta.model)}</option>`
+          : `<option value="">region '${window.escapeHtml(meta.region || "?")}' 모델 후보 없음</option>`;
+        return;
+      }
+      modelSel.innerHTML = models.map((m) => {
+        const sel = m === meta.model ? "selected" : "";
+        return `<option value="${window.escapeAttr(m)}" ${sel}>${window.escapeHtml(m)}</option>`;
+      }).join("");
+    }
+    renderModelSelect();
+    targetSel.addEventListener("change", renderModelSelect);
+
+    // --- 질의 저장/불러오기 (localStorage) — Profile평가 탭 전용 키 (다른 탭의 savedPrompts 와 분리) ---
+    const EV_PROMPTS_KEY = "profileTest.evalPrompts";
+    const evPromptEl = document.getElementById("ev-question");
+    const evTitleInput = document.getElementById("ev-prompt-title");
+    const evAddBtn = document.getElementById("ev-prompt-add");
+    const evUpdateBtn = document.getElementById("ev-prompt-update");
+    const evSavedSel = document.getElementById("ev-prompt-saved");
+
+    const evLoadSaved = () => {
+      try { return JSON.parse(window.Store.get(EV_PROMPTS_KEY)) || []; }
+      catch (e) { return []; }
+    };
+    const evRefreshCombo = (selectTitle) => {
+      const list = evLoadSaved();
+      evSavedSel.innerHTML = "";
+      const ph = document.createElement("option");
+      ph.value = "";
+      ph.textContent = list.length ? "저장된 프롬프트…" : "(저장된 프롬프트 없음)";
+      evSavedSel.appendChild(ph);
+      [...list].sort((a, b) => a.title.localeCompare(b.title)).forEach((p) => {
+        const o = document.createElement("option");
+        o.value = p.title;
+        o.textContent = p.title;
+        evSavedSel.appendChild(o);
+      });
+      if (selectTitle != null) evSavedSel.value = selectTitle;
+    };
+    evRefreshCombo();
+
+    // 추가 — 제목칸의 새 title 로 현재 질의를 신규 저장 (중복 title 거부)
+    evAddBtn.addEventListener("click", () => {
+      const title = evTitleInput.value.trim();
+      const prompt = evPromptEl.value;
+      if (!title) { window.Toast.show("추가할 제목을 입력하세요", "error"); evTitleInput.focus(); return; }
+      if (!prompt.trim()) { window.Toast.show("질의가 비어 있습니다", "error"); return; }
+      const list = evLoadSaved();
+      if (list.some((p) => p.title === title)) {
+        window.Toast.show("이미 있는 제목입니다. [수정]으로 변경하세요", "error");
+        return;
+      }
+      list.push({ title, prompt });
+      window.Store.set(EV_PROMPTS_KEY, JSON.stringify(list));
+      evRefreshCombo(title);
+      evTitleInput.value = "";
+      window.Toast.show(`'${title}' 추가됨`, "success");
+    });
+
+    // 수정 — 콤보에서 선택한 기존 title 의 질의를 현재 내용으로 변경
+    evUpdateBtn.addEventListener("click", () => {
+      const title = evSavedSel.value;
+      if (!title) { window.Toast.show("수정할 항목을 콤보에서 선택하세요", "error"); return; }
+      const prompt = evPromptEl.value;
+      if (!prompt.trim()) { window.Toast.show("질의가 비어 있습니다", "error"); return; }
+      const list = evLoadSaved();
+      const idx = list.findIndex((p) => p.title === title);
+      if (idx < 0) { window.Toast.show("저장된 항목을 찾을 수 없습니다", "error"); return; }
+      list[idx].prompt = prompt;
+      window.Store.set(EV_PROMPTS_KEY, JSON.stringify(list));
+      window.Toast.show(`'${title}' 수정됨`, "success");
+    });
+
+    evSavedSel.addEventListener("change", () => {
+      const title = evSavedSel.value;
+      if (!title) return;
+      const found = evLoadSaved().find((p) => p.title === title);
+      if (found) evPromptEl.value = found.prompt;
+    });
+
+    // 중단: 결과 (요약 + 회차별 표 + showprompt)
+    const resultPanel = document.createElement("div");
+    resultPanel.className = "panel";
+    resultPanel.innerHTML = `
+      <div class="panel-header"><h2>평가 결과</h2></div>
+      <div class="panel-body" id="ev-result"><div class="empty-state muted">[평가 시작] 을 눌러 평가를 시작하세요.</div></div>
+    `;
+    wrap.appendChild(resultPanel);
+
+    document.getElementById("ev-run").addEventListener("click", async () => {
+      const question = document.getElementById("ev-question").value.trim();
+      const target_profile = targetSel.value;
+      const target_model = modelSel.value;
+      const evaluator_profile = judgeSel.value;
+      const iterations = parseInt(document.getElementById("ev-iter").value, 10) || 1;
+      if (!question) { window.Toast.show("질의를 입력하세요", "warn"); return; }
+      if (!target_profile) { window.Toast.show("평가대상 Profile 을 선택하세요", "warn"); return; }
+      if (!evaluator_profile) { window.Toast.show("평가수행 Profile 을 선택하세요", "warn"); return; }
+
+      const RUN_COUNT_KEY = "profileTest.runCount";
+
+      const btn = document.getElementById("ev-run");
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner"></span> 평가 중...';
+      const resultHost = document.getElementById("ev-result");
+
+      // 회차를 1회씩 서버에 호출하며 진행상황을 회차별로 갱신 (속도측정 탭과 동일한 진행 표시 방식).
+      // 서버는 호출당 model SET→실행→원복을 수행하므로 회차마다 model 이 안전하게 복원됨.
+      const done = [];
+      let prompt_text = "";
+      let restored_model = null;
+      try {
+        for (let k = 1; k <= iterations; k++) {
+          renderEvalProgress(resultHost, target_profile, target_model, evaluator_profile, iterations, done, k);
+          // 동일 질의면 동일 SQL 이 생성되므로, 매 호출마다 질의 끝에 '.' 을 누적해 캐싱을 무력화.
+          const runCount = (parseInt(window.Store.get(RUN_COUNT_KEY) || "0", 10) || 0) + 1;
+          window.Store.set(RUN_COUNT_KEY, String(runCount));
+          const questionForRun = question + ".".repeat(runCount);
+          const data = await window.API.post("/api/profiles/evaluate",
+            { question: questionForRun, target_profile, target_model, evaluator_profile, iterations: 1 });
+          if (!prompt_text) prompt_text = data.prompt_text || "";
+          restored_model = data.restored_model;
+          const r = (data.results && data.results[0]) ||
+            { iteration: k, verdict: "오류", reason: "응답 없음", error: null };
+          r.iteration = k;  // 단일 호출은 항상 iteration=1 로 오므로 표시용 회차로 교정
+          done.push(r);
+        }
+        renderEvalResult(resultHost, buildEvalData(
+          { target_profile, target_model, evaluator_profile, iterations, question, prompt_text, restored_model }, done));
+      } catch (e) {
+        const msg = errMsg(e, "평가 실패");
+        if (done.length) {
+          renderEvalResult(resultHost, buildEvalData(
+            { target_profile, target_model, evaluator_profile, iterations, question, prompt_text, restored_model }, done));
+          window.Toast.show(`${msg} (${done.length}/${iterations} 회만 완료)`, "error");
+        } else {
+          resultHost.innerHTML = `<div class="empty-state muted">${msg}</div>`;
+          window.Toast.show(msg, "error");
+        }
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = "▶ 평가 시작";
+      }
+    });
+  }
+
+  // 회차별 진행 표시 — 완료(✓ 판정)/평가중(스피너 'k회 평가 중')/대기(·) 를 목록으로
+  function renderEvalProgress(host, targetProfile, targetModel, judgeProfile, iterations, done, currentIndex) {
+    const rows = [];
+    for (let k = 1; k <= iterations; k++) {
+      let icon, extra, mutedName = false;
+      if (k < currentIndex) {
+        const r = done[k - 1];
+        icon = "✓";
+        extra = r ? (r.verdict || "완료") : "완료";
+      } else if (k === currentIndex) {
+        icon = '<span class="spinner"></span>';
+        extra = `${k}회 평가 중...`;
+      } else {
+        icon = "·"; mutedName = true; extra = "대기";
+      }
+      rows.push(`<div class="row" style="gap:8px; padding:4px 0; align-items:center;">
+        <span style="width:18px; text-align:center;">${icon}</span>
+        <span style="${mutedName ? "color:var(--text-muted);" : "font-weight:600;"}">${k}회</span>
+        <span class="muted" style="font-size:var(--fs-sm);">· ${window.escapeHtml(String(extra))}</span>
+      </div>`);
+    }
+    host.innerHTML = `
+      <div class="stack-sm">
+        <div class="muted">평가대상 <b>${window.escapeHtml(targetProfile)}</b>${targetModel ? ` (model: <b>${window.escapeHtml(targetModel)}</b>)` : ""}
+          · 평가수행 <b>${window.escapeHtml(judgeProfile)}</b> · 회차 ${Math.min(currentIndex, iterations)}/${iterations}</div>
+        ${rows.join("")}
+      </div>`;
+  }
+
+  // 회차별 단일 결과들을 모아 renderEvalResult 가 기대하는 형태(summary 포함)로 조립
+  function buildEvalData(meta, results) {
+    const count = (v) => results.filter((r) => r.verdict === v).length;
+    return {
+      target_profile: meta.target_profile,
+      target_model: meta.target_model,
+      restored_model: meta.restored_model,
+      evaluator_profile: meta.evaluator_profile,
+      iterations: meta.iterations,
+      question: meta.question,
+      prompt_text: meta.prompt_text,
+      summary: {
+        appropriate: count("적정"),
+        inappropriate: count("비적정"),
+        unknown: count("판정불가"),
+        error: count("오류"),
+      },
+      results,
+    };
+  }
+
+  // 평가 결과 렌더 — 요약 + 회차별 카드(접이식). 각 카드 안에 단계별 LLM 프롬프트/응답을 접이식으로 표시.
+  function renderEvalResult(host, data) {
+    host.innerHTML = "";
+    const s = data.summary || {};
+    const total = data.results ? data.results.length : 0;
+    const rate = total ? Math.round(((s.appropriate || 0) / total) * 100) : 0;
+
+    // --- 공통 DOM 헬퍼 ---
+    const mkPre = (text) => {
+      const pre = document.createElement("pre");
+      pre.style.cssText = "white-space:pre-wrap; word-break:break-word; margin:6px 0 0; font-family:var(--font-mono); font-size:var(--fs-sm); background:var(--surface-alt); padding:var(--space-3); border-radius:var(--radius-md);";
+      pre.textContent = (text == null || text === "") ? "—" : text;
+      return pre;
+    };
+    const mkDetails = (summaryText, node, opts) => {
+      opts = opts || {};
+      const d = document.createElement("details");
+      if (opts.open) d.open = true;
+      d.style.margin = "4px 0";
+      const sm = document.createElement("summary");
+      sm.style.cssText = "cursor:pointer; font-weight:600; font-size:var(--fs-sm); color:var(--text-muted);" + (opts.summaryStyle || "");
+      sm.textContent = summaryText;
+      d.appendChild(sm);
+      d.appendChild(node);
+      return d;
+    };
+    const mkBadge = (v) => {
+      const color = v === "적정" ? "var(--success)" : v === "비적정" ? "#C74634" : v === "판정불가" ? "#b8860b" : "#999";
+      const span = document.createElement("span");
+      span.textContent = v;
+      span.style.cssText = `display:inline-block; padding:2px 10px; border-radius:999px; font-weight:700; font-size:var(--fs-sm); color:${color}; border:1px solid ${color};`;
+      return span;
+    };
+
+    // --- 요약 ---
+    const summaryEl = document.createElement("div");
+    summaryEl.className = "stack-sm";
+    summaryEl.innerHTML = `
+      <div class="muted">
+        평가대상 <b>${window.escapeHtml(data.target_profile || "")}</b>
+        ${data.target_model ? `(model: <b>${window.escapeHtml(data.target_model)}</b>)` : ""}
+        · 평가수행 <b>${window.escapeHtml(data.evaluator_profile || "")}</b>
+        · ${data.iterations} 회
+      </div>
+      <div class="row" style="gap:18px; margin:8px 0; font-size:var(--fs-lg);">
+        <span style="color:var(--success); font-weight:700;">적정 ${s.appropriate || 0}</span>
+        <span style="color:#C74634; font-weight:700;">비적정 ${s.inappropriate || 0}</span>
+        ${s.unknown ? `<span style="color:#b8860b; font-weight:700;">판정불가 ${s.unknown}</span>` : ""}
+        ${s.error ? `<span class="error" style="font-weight:700;">오류 ${s.error}</span>` : ""}
+        <span class="muted">· 적정 비율 ${rate}%</span>
+      </div>`;
+    host.appendChild(summaryEl);
+
+    // --- 평가대상 Profile 의 구성 프롬프트 (showprompt) ---
+    if (data.prompt_text) {
+      host.appendChild(mkDetails(
+        "평가대상 Profile 구성 프롬프트 (showprompt)",
+        mkPre(data.prompt_text),
+        { summaryStyle: "color:#C74634;" }));
+    }
+
+    // --- 회차별 카드 (접이식) ---
+    (data.results || []).forEach((r) => {
+      const card = document.createElement("details");
+      card.style.cssText = "margin:8px 0; border:1px solid var(--border); border-radius:var(--radius-md); padding:8px 12px;";
+
+      const sm = document.createElement("summary");
+      sm.style.cssText = "cursor:pointer; display:flex; align-items:center; gap:10px; font-weight:600;";
+      sm.appendChild(document.createTextNode(`#${r.iteration}`));
+      sm.appendChild(mkBadge(r.verdict));
+      const reasonSpan = document.createElement("span");
+      reasonSpan.className = "muted";
+      reasonSpan.style.cssText = "font-weight:400; font-size:var(--fs-sm); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:60%;";
+      reasonSpan.textContent = r.reason || "";
+      sm.appendChild(reasonSpan);
+      card.appendChild(sm);
+
+      const body = document.createElement("div");
+      body.style.marginTop = "6px";
+
+      // 1단계: showsql (평가대상)
+      const step1Title = document.createElement("div");
+      step1Title.style.cssText = "font-weight:700; margin-top:6px;";
+      step1Title.textContent = `1단계 · showsql — 평가대상 ${data.target_profile || ""}${data.target_model ? " / " + data.target_model : ""}`;
+      body.appendChild(step1Title);
+      body.appendChild(mkDetails("전달 프롬프트 (질의)", mkPre(r.showsql_prompt)));
+      const sqlLabel = document.createElement("div");
+      sqlLabel.style.cssText = "font-size:var(--fs-sm); color:var(--text-muted); margin-top:4px;";
+      sqlLabel.textContent = "응답 · 생성 SQL:";
+      body.appendChild(sqlLabel);
+      body.appendChild(mkPre(r.sql));
+
+      // 2단계: 평가 (평가수행)
+      if (r.eval_prompt || r.eval_response) {
+        const step2Title = document.createElement("div");
+        step2Title.style.cssText = "font-weight:700; margin-top:12px;";
+        step2Title.textContent = `2단계 · 평가 — 평가수행 ${data.evaluator_profile || ""}`;
+        body.appendChild(step2Title);
+        body.appendChild(mkDetails("전달 프롬프트 (생성SQL + 판정 지시)", mkPre(r.eval_prompt)));
+        body.appendChild(mkDetails("응답 · LLM 원문", mkPre(r.eval_response)));
+        const verdictLine = document.createElement("div");
+        verdictLine.style.cssText = "margin-top:8px; display:flex; align-items:center; gap:8px;";
+        verdictLine.appendChild(document.createTextNode("판정:"));
+        verdictLine.appendChild(mkBadge(r.verdict));
+        body.appendChild(verdictLine);
+        const reasonLine = document.createElement("div");
+        reasonLine.style.cssText = "margin-top:4px; font-size:var(--fs-sm);";
+        reasonLine.textContent = "사유: " + (r.reason || "—");
+        body.appendChild(reasonLine);
+      }
+
+      // 오류
+      if (r.error) {
+        const errLine = document.createElement("div");
+        errLine.className = "error";
+        errLine.style.marginTop = "6px";
+        errLine.textContent = "오류: " + r.error;
+        body.appendChild(errLine);
+      }
+
+      card.appendChild(body);
+      host.appendChild(card);
+    });
+
+    // --- 최종 결과 요약 표 (회차 / 판정 / 사유 / SQL / showsql 생성시간) ---
+    const fmtMs = (v) => (v == null ? "—" : Number(v).toLocaleString() + " ms");
+    const reasonOf = (r) => r.error ? `${r.reason} (${r.error})` : (r.reason || "");
+
+    // 제목 + 우측 상단 복사 버튼
+    const titleRow = document.createElement("div");
+    titleRow.className = "row";
+    titleRow.style.cssText = "justify-content:space-between; align-items:center; margin:18px 0 8px;";
+    const tableTitle = document.createElement("h3");
+    tableTitle.style.cssText = "margin:0; font-size:var(--fs-md);";
+    tableTitle.textContent = "최종 결과";
+    const copyBtn = document.createElement("button");
+    copyBtn.className = "btn";
+    copyBtn.textContent = "복사";
+    titleRow.appendChild(tableTitle);
+    titleRow.appendChild(copyBtn);
+    host.appendChild(titleRow);
+
+    // 복사 — 헤더 + 행을 TSV(탭 구분)로. 다중행 SQL/사유는 한 줄로 합쳐 셀 분리 깨짐 방지.
+    const headers = ["회차", "판정", "사유", "생성 SQL", "showsql 생성시간(ms)"];
+    const oneLine = (s) => String(s == null ? "" : s).replace(/\t/g, " ").replace(/\r?\n/g, " ").trim();
+    copyBtn.addEventListener("click", () => {
+      const lines = [headers.join("\t")];
+      (data.results || []).forEach((r) => {
+        lines.push([
+          `#${r.iteration}`,
+          r.verdict || "",
+          oneLine(reasonOf(r)),
+          oneLine(r.sql),
+          r.showsql_ms == null ? "" : r.showsql_ms,
+        ].join("\t"));
+      });
+      const text = lines.join("\n");
+      const done = () => window.Toast.show("최종 결과를 클립보드에 복사했습니다", "success");
+      const fail = () => window.Toast.show("복사 실패 — 표를 직접 선택해 복사하세요", "error");
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done).catch(() => fallbackCopy(text) ? done() : fail());
+      } else {
+        fallbackCopy(text) ? done() : fail();
+      }
+    });
+
+    const columns = [
+      { key: (r) => `#${r.iteration}`, label: "회차", className: "metric", headerAlign: "center" },
+      { key: "verdict", label: "판정", headerAlign: "center", format: (v) => mkBadge(v) },
+      { key: (r) => reasonOf(r), label: "사유", format: (v) => {
+          const d = document.createElement("div");
+          d.style.cssText = "white-space:pre-wrap; word-break:break-word; font-size:var(--fs-sm);";
+          d.textContent = v || "—";
+          return d;
+        }},
+      { key: "sql", label: "생성 SQL", format: (v) => {
+          const pre = document.createElement("pre");
+          pre.style.cssText = "white-space:pre-wrap; word-break:break-word; margin:0; font-family:var(--font-mono); font-size:var(--fs-sm);";
+          pre.textContent = v || "—";
+          return pre;
+        }},
+      { key: "showsql_ms", label: "showsql 생성시간", className: "metric", headerAlign: "center", format: fmtMs },
+    ];
+    const table = window.SimpleTable.create(columns, data.results || [], { className: "table-grid" });
+    // 사유·생성 SQL 컬럼 폭 동일 — 나머지는 고정폭, 두 컬럼은 남은 공간을 균등 분할(table-layout:fixed)
+    table.style.tableLayout = "fixed";
+    table.style.width = "100%";
+    const ths = table.querySelectorAll("thead th");
+    if (ths.length === 5) {
+      ths[0].style.width = "56px";   // 회차
+      ths[1].style.width = "84px";   // 판정
+      ths[4].style.width = "130px";  // showsql 생성시간
+      // 사유(ths[2])·생성 SQL(ths[3])은 폭 미지정 → 남은 공간 균등 분할 → 동일 폭
+    }
+    host.appendChild(table);
+  }
+
+  // 클립보드 폴백 — navigator.clipboard 불가(비보안 컨텍스트 등) 시 textarea + execCommand
+  function fallbackCopy(text) {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.cssText = "position:fixed; top:-1000px; left:-1000px; opacity:0;";
+      document.body.appendChild(ta);
+      ta.focus(); ta.select();
+      const ok = document.execCommand("copy");
+      ta.remove();
+      return ok;
+    } catch (e) { return false; }
+  }
+
+  // ====================================================================
+  // --- Tab 4: Feedback 관리 (서버 연동) ---
   //   - GET  /api/profiles/{name}/feedback/vectab : <PROFILE>_FEEDBACK_VECINDEX$VECTAB (display only)
   //   - GET  /api/profiles/feedback/mapped-sql    : v$mapped_sql (NL2SQL 실행 내역 + sql_id)
   //   - POST /api/profiles/{name}/feedback        : DBMS_CLOUD_AI.FEEDBACK 실행
@@ -499,13 +1036,17 @@ END;
   }
 
   // sql_text 기반 — 사전 실행 없이 프롬프트 + 기대 응답(SQL)으로 피드백 등록. 미리보기/복사용 스크립트.
-  function buildFeedbackByTextSql(profile, sqlText, feedbackType, response) {
+  //   feedbackContent 는 선택 — 값이 있을 때만 feedback_content 줄을 추가한다.
+  function buildFeedbackByTextSql(profile, sqlText, feedbackType, response, feedbackContent) {
+    const fcLine = feedbackContent
+      ? `,\n        feedback_content => '${fbSqlLit(feedbackContent)}'`
+      : "";
     return `BEGIN
     DBMS_CLOUD_AI.FEEDBACK(
         profile_name  => '${fbSqlLit(profile)}',
         sql_text      => '${fbSqlLit(sqlText)}',
         feedback_type => '${fbSqlLit(feedbackType)}',
-        response      => '${fbSqlLit(response)}'
+        response      => '${fbSqlLit(response)}'${fcLine}
     );
 END;
 /`;
@@ -535,7 +1076,7 @@ END;
     backdrop.querySelector("#fbm-pre").textContent = sql;
     const close = () => { backdrop.remove(); document.removeEventListener("keydown", onKey); };
     const onKey = (e) => { if (e.key === "Escape") close(); };
-    backdrop.addEventListener("click", (e) => { if (e.target === backdrop) close(); });
+    // 바깥 클릭으로는 닫지 않음 — 닫기는 X 버튼으로만 (실수 닫힘 방지)
     backdrop.querySelector("#fbm-close").addEventListener("click", close);
     backdrop.querySelector("#fbm-copy").addEventListener("click", async () => {
       try { await navigator.clipboard.writeText(sql); window.Toast.show("클립보드에 복사됨", "success"); }
@@ -621,7 +1162,7 @@ END;
     directPanel.className = "panel";
     directPanel.innerHTML = `
       <div class="panel-header">
-        <h2>Feedback 추가 — 실행내역 없이 <span class="muted" style="font-size:var(--fs-sm);">sql_text + response</span></h2>
+        <h2>Feedback 추가 — 실행내역 없이 <span class="muted" style="font-size:var(--fs-sm);">sql_text + response + feedback_content</span></h2>
         <button class="btn btn-primary" id="fb-gen-direct">추가</button>
       </div>
       <div class="panel-body stack-sm">
@@ -638,6 +1179,10 @@ END;
         <div class="stack-sm">
           <label>Response <span class="muted" style="font-size:var(--fs-sm);">— 기대하는(교정된) SQL. negative 일 때 권장</span></label>
           <textarea id="fb-response" rows="3" style="font-family:var(--font-mono); font-size:var(--fs-sm);">SELECT SUM(1) FROM "ADB_USER"."MOVIES"</textarea>
+        </div>
+        <div class="stack-sm">
+          <label>Feedback Content <span class="muted" style="font-size:var(--fs-sm);">— 자연어 피드백(선택). 입력 시 feedback_content 로 전달</span></label>
+          <textarea id="fb-feedback-content" rows="2"></textarea>
         </div>
       </div>
     `;
@@ -672,9 +1217,9 @@ END;
         listHost.innerHTML = '<div class="empty-state muted">컬럼 정보가 없습니다.</div>';
         return;
       }
-      // 행 끝에 삭제 버튼 컬럼 추가 — sql_id 가 있는 행에만 노출.
-      cols.push({ key: "_del", label: "", headerAlign: "center",
-        format: (_v, row) => buildVectabDeleteBtn(row, loadVectab) });
+      // 행 끝에 액션(수정/삭제) 버튼 컬럼 추가.
+      cols.push({ key: "_act", label: "", headerAlign: "center",
+        format: (_v, row) => buildVectabActions(row, loadVectab) });
       listHost.appendChild(window.SimpleTable.create(cols, data.rows || [], { className: "keep-case" }));
       if (!(data.rows || []).length) {
         listHost.appendChild(divFromHtml('<div class="empty-state muted">저장된 Feedback 이 없습니다.</div>'));
@@ -736,6 +1281,117 @@ END;
       return btn;
     }
 
+    // vectab 행의 액션 셀 — [수정](response 편집) + [삭제] 버튼을 한 칸에 배치.
+    function buildVectabActions(row, onDone) {
+      const sqlId = (row.sql_id || "").trim();
+      const sqlText = (row.sql_text || "").trim();
+      if (!sqlId && !sqlText) return divFromHtml('<span class="muted">—</span>');
+
+      const box = document.createElement("div");
+      box.className = "row";
+      box.style.gap = "6px";
+      box.style.justifyContent = "center";
+
+      // 수정 — response 만 바꿔 재등록(operation=add). response 전달은 sql_text 모드만 가능하므로
+      //        sql_text 가 있는 행에만 노출한다. 단 positive 는 response 가 시스템 파생값이고
+      //        positive+response 조합을 Oracle 이 거부하므로 negative 행에만 노출한다.
+      if (sqlText && (row.feedback_type || "").trim().toLowerCase() === "negative") {
+        const editBtn = document.createElement("button");
+        editBtn.className = "btn btn-ghost";
+        editBtn.textContent = "수정";
+        editBtn.title = "response 를 수정해 다시 저장 (operation=add)";
+        editBtn.addEventListener("click", () => showVectabEditModal(row, onDone));
+        box.appendChild(editBtn);
+      }
+
+      box.appendChild(buildVectabDeleteBtn(row, onDone));
+      return box;
+    }
+
+    // vectab 행의 "수정" 팝업 — content/feedback_type/sql_id/sql_text 는 읽기전용으로 보여주고
+    //   response 만 편집한다. [저장] 시 sql_text 모드로 FEEDBACK(operation=add) 재등록(같은 항목은
+    //   1건만 유지되어 response 가 갱신됨).
+    function showVectabEditModal(row, onDone) {
+      const profile = fbProfile();
+      if (!profile) { window.Toast.show("Profile 을 선택하세요", "warn"); return; }
+
+      const sqlText = (row.sql_text || "").trim();
+      const ft = row.feedback_type || "positive";
+
+      // 읽기전용 필드 한 칸을 만드는 헬퍼.
+      const roField = (label, value) => `
+        <div class="stack-sm">
+          <label style="font-size:var(--fs-sm); color:var(--text-muted);">${label}</label>
+          <pre style="white-space:pre-wrap; word-break:break-word; margin:0; font-family:var(--font-mono); font-size:var(--fs-sm); background:var(--surface-alt); padding:var(--space-2) var(--space-3); border-radius:var(--radius-md); max-height:120px; overflow:auto;">${window.escapeHtml(value || "—")}</pre>
+        </div>`;
+
+      const backdrop = document.createElement("div");
+      backdrop.className = "modal-backdrop";
+      backdrop.innerHTML = `
+        <div class="modal" style="width:760px;">
+          <div class="modal-header">
+            <h2>Feedback 수정 — response</h2>
+            <button class="btn btn-ghost" id="fbe-close">✕</button>
+          </div>
+          <div class="modal-body stack">
+            ${roField("content", row.content)}
+            <div class="row" style="gap:12px;">
+              <div style="flex:1; min-width:0;">${roField("feedback_type", row.feedback_type)}</div>
+              <div style="flex:1; min-width:0;">${roField("sql_id", row.sql_id)}</div>
+            </div>
+            ${roField("sql_text", row.sql_text)}
+            <div class="stack-sm">
+              <label>response <span class="muted" style="font-size:var(--fs-sm);">— 수정 가능</span></label>
+              <textarea id="fbe-response" rows="6" class="textarea-auto" style="font-family:var(--font-mono); font-size:var(--fs-sm);"></textarea>
+            </div>
+            <div class="stack-sm">
+              <label>feedback_content <span class="muted" style="font-size:var(--fs-sm);">— 자연어 피드백(선택). 수정 가능</span></label>
+              <textarea id="fbe-feedback-content" rows="2" class="textarea-auto"></textarea>
+            </div>
+            <div class="row end" style="gap:8px;">
+              <button class="btn btn-ghost" id="fbe-cancel">닫기</button>
+              <button class="btn btn-primary" id="fbe-save">저장</button>
+            </div>
+          </div>
+        </div>
+      `;
+      const respEl = backdrop.querySelector("#fbe-response");
+      respEl.value = row.response || "";
+      const fcEl = backdrop.querySelector("#fbe-feedback-content");
+      fcEl.value = row.feedback_content || "";
+
+      const close = () => { backdrop.remove(); document.removeEventListener("keydown", onKey); };
+      const onKey = (e) => { if (e.key === "Escape") close(); };
+      // 바깥 클릭으로는 닫지 않음 — 닫기는 X 버튼으로만 (실수 닫힘 방지)
+      backdrop.querySelector("#fbe-close").addEventListener("click", close);
+      backdrop.querySelector("#fbe-cancel").addEventListener("click", close);
+
+      const saveBtn = backdrop.querySelector("#fbe-save");
+      saveBtn.addEventListener("click", async () => {
+        const response = respEl.value.trim();
+        if (!response) { window.Toast.show("response 가 비어 있습니다", "warn"); return; }
+        const feedbackContent = fcEl.value.trim();
+        saveBtn.disabled = true;
+        const prev = saveBtn.innerHTML;
+        saveBtn.innerHTML = '<span class="spinner"></span> 저장 중...';
+        try {
+          await window.API.post(`/api/profiles/${encodeURIComponent(profile)}/feedback`,
+            { sql_text: sqlText, feedback_type: ft, response, feedback_content: feedbackContent, operation: "add" });
+          window.Toast.show("response 수정됨", "success");
+          close();
+          if (typeof onDone === "function") onDone();
+        } catch (e) {
+          // 실패 시 모달 유지 + 버튼 복구 (사용자가 오류 확인 후 재시도)
+          window.Toast.show(errMsg(e, "수정 실패"), "error");
+          saveBtn.disabled = false;
+          saveBtn.innerHTML = prev;
+        }
+      });
+
+      document.addEventListener("keydown", onKey);
+      document.body.appendChild(backdrop);
+    }
+
     // vectab 행의 "삭제" 버튼 — 스크립트 팝업을 띄우고 [반영] 클릭 시 FEEDBACK(operation=delete) 실행.
     //   - sql_id 가 있으면 sql_id 기반 삭제
     //   - sql_id 가 없으면 sql_text + feedback_type + response 기반 삭제
@@ -795,11 +1451,12 @@ END;
       if (!sqlText) { window.Toast.show("SQL Text 를 입력하세요", "warn"); return; }
       const type = document.getElementById("fb-direct-type").value;
       const response = document.getElementById("fb-response").value;
-      const sql = buildFeedbackByTextSql(profile, sqlText, type, response);
+      const feedbackContent = document.getElementById("fb-feedback-content").value.trim();
+      const sql = buildFeedbackByTextSql(profile, sqlText, type, response, feedbackContent);
       showFeedbackConfirmModal(`FEEDBACK (sql_text) — ${profile}`, sql, async () => {
         try {
           await window.API.post(`/api/profiles/${encodeURIComponent(profile)}/feedback`,
-            { sql_text: sqlText, feedback_type: type, response });
+            { sql_text: sqlText, feedback_type: type, response, feedback_content: feedbackContent });
           window.Toast.show("피드백 등록됨", "success");
           loadVectab();
         } catch (e) {
@@ -932,7 +1589,7 @@ END;
     `;
     const close = () => { backdrop.remove(); document.removeEventListener("keydown", onKey); };
     const onKey = (e) => { if (e.key === "Escape") close(); };
-    backdrop.addEventListener("click", (e) => { if (e.target === backdrop) close(); });
+    // 바깥 클릭으로는 닫지 않음 — 닫기는 X 버튼으로만 (실수 닫힘 방지)
     backdrop.querySelector("#mr-close").addEventListener("click", close);
     document.addEventListener("keydown", onKey);
     document.body.appendChild(backdrop);
@@ -952,7 +1609,7 @@ END;
         </div>
       </div>
     `;
-    backdrop.addEventListener("click", (e) => { if (e.target === backdrop) backdrop.remove(); });
+    // 바깥 클릭으로는 닫지 않음 — 닫기는 X 버튼으로만 (실수 닫힘 방지)
     backdrop.querySelector("#modal-close").addEventListener("click", () => backdrop.remove());
     document.body.appendChild(backdrop);
   }
@@ -1084,7 +1741,7 @@ END;
     `;
     const close = () => { backdrop.remove(); document.removeEventListener("keydown", onKey); };
     const onKey = (e) => { if (e.key === "Escape") close(); };
-    backdrop.addEventListener("click", (e) => { if (e.target === backdrop) close(); });
+    // 바깥 클릭으로는 닫지 않음 — 닫기는 X 버튼으로만 (실수 닫힘 방지)
     backdrop.querySelector("#pd-close").addEventListener("click", close);
     document.addEventListener("keydown", onKey);
     document.body.appendChild(backdrop);
@@ -1281,7 +1938,10 @@ END;`;
             <button class="btn btn-primary" id="ptm-run">▶ 실행</button>
           </div>
           <div class="stack-sm">
-            <label>결과 <span id="ptm-elapsed" class="muted" style="font-size:var(--fs-sm);"></span></label>
+            <div class="row" style="justify-content: space-between; align-items:center;">
+              <label>결과 <span id="ptm-elapsed" class="muted" style="font-size:var(--fs-sm);"></span></label>
+              <button class="btn btn-ghost" id="ptm-result-copy">복사</button>
+            </div>
             <textarea id="ptm-result" rows="10" readonly
               style="font-family:var(--font-mono); font-size:var(--fs-sm);"
               placeholder="[실행] 후 표시됩니다."></textarea>
@@ -1289,8 +1949,24 @@ END;`;
         </div>
       </div>
     `;
-    backdrop.addEventListener("click", (e) => { if (e.target === backdrop) backdrop.remove(); });
+    // 바깥 클릭으로는 닫지 않음 — 닫기는 X 버튼으로만 (실수 닫힘 방지)
     backdrop.querySelector("#pt-modal-close").addEventListener("click", () => backdrop.remove());
+
+    // 결과 복사 — 클립보드 API 우선, 실패 시 execCommand fallback (showSqlModal 과 동일 패턴)
+    backdrop.querySelector("#ptm-result-copy").addEventListener("click", async () => {
+      const text = backdrop.querySelector("#ptm-result").value;
+      if (!text) { window.Toast.show("복사할 결과가 없습니다", "warn"); return; }
+      try {
+        await navigator.clipboard.writeText(text);
+        window.Toast.show("클립보드에 복사됨", "success");
+      } catch (_) {
+        const ta = document.createElement("textarea");
+        ta.value = text; document.body.appendChild(ta); ta.select();
+        try { document.execCommand("copy"); window.Toast.show("클립보드에 복사됨", "success"); }
+        catch (e) { window.Toast.show("복사 실패", "error"); }
+        ta.remove();
+      }
+    });
 
     // --- 프롬프트 저장/불러오기 (localStorage, 세션 간 유지) ---
     const PROMPTS_KEY = "profileTest.savedPrompts";
@@ -1311,7 +1987,8 @@ END;`;
       ph.value = "";
       ph.textContent = list.length ? "저장된 프롬프트…" : "(저장된 프롬프트 없음)";
       savedSel.appendChild(ph);
-      list.forEach((p) => {
+      // 제목 기준 오름차순으로 표시 (저장 순서 자체는 보존)
+      [...list].sort((a, b) => a.title.localeCompare(b.title)).forEach((p) => {
         const o = document.createElement("option");
         o.value = p.title;
         o.textContent = p.title;
@@ -1395,6 +2072,7 @@ END;`;
     });
 
     document.body.appendChild(backdrop);
+    applyActionGate(backdrop.querySelector("#ptm-action"));
     setTimeout(() => backdrop.querySelector("#ptm-prompt").focus(), 50);
   }
 
@@ -1416,7 +2094,7 @@ END;`;
       </div>
     `;
     backdrop.querySelector("#sql-pre").textContent = sql;
-    backdrop.addEventListener("click", (e) => { if (e.target === backdrop) backdrop.remove(); });
+    // 바깥 클릭으로는 닫지 않음 — 닫기는 X 버튼으로만 (실수 닫힘 방지)
     backdrop.querySelector("#sql-close").addEventListener("click", () => backdrop.remove());
     backdrop.querySelector("#sql-copy").addEventListener("click", async () => {
       try {

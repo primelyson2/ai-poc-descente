@@ -22,6 +22,25 @@
     return Array.from(arr, (n) => chars[n % chars.length]).join("");
   }
 
+  // ── Select AI Action 노출 정책 (전역 localStorage 키 — DB 무관 도구 설정) ──
+  // profile_test.js 의 applyActionGate 가 같은 키를 읽어 runsql/narrate 옵션을 노출/숨김한다.
+  const ACTIONS_KEY = "oai.selectai.actions";
+  function loadActions() {
+    try { return JSON.parse(localStorage.getItem(ACTIONS_KEY) || "{}"); }
+    catch (_) { return {}; }
+  }
+  function bindActionToggle(id, name) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.checked = loadActions()[name] === true;
+    el.addEventListener("change", () => {
+      const obj = loadActions();
+      obj[name] = el.checked;
+      localStorage.setItem(ACTIONS_KEY, JSON.stringify(obj));
+      window.Toast.show(`Select AI Action '${name}' ${el.checked ? "노출" : "숨김"}`, "success");
+    });
+  }
+
   // 콤보에 등록된 DB 목록을 채운다(연결 불필요 — 클라이언트 데이터라 unavailable 포함).
   async function fillDbCombo() {
     const sel = document.getElementById("ls-db");
@@ -178,6 +197,48 @@
       </div>`;
     wrap.appendChild(formPanel);
 
+    // ── Select AI Action 관리 (Action 드롭다운 노출 제어) ──
+    const actionPanel = document.createElement("div");
+    actionPanel.className = "panel";
+    actionPanel.innerHTML = `
+      <div class="panel-header"><h2>Select AI Action 관리</h2></div>
+      <div class="panel-body">
+        <div class="row" style="gap:24px; align-items:center;">
+          <label class="row" style="gap:6px; align-items:center; cursor:pointer;">
+            <input type="checkbox" id="act-runsql" /> <strong>runsql</strong>
+          </label>
+          <label class="row" style="gap:6px; align-items:center; cursor:pointer;">
+            <input type="checkbox" id="act-narrate" /> <strong>narrate</strong>
+          </label>
+        </div>
+        <span class="field-hint">체크한 Action 만 <strong>AI Profile Test</strong> 화면·팝업의 Action 목록에 노출됩니다. <code>runsql</code>·<code>narrate</code> 는 실제 SQL 실행과 데이터 노출을 동반하므로 <strong>기본 비활성</strong>입니다. (이 설정은 이 브라우저에 저장됩니다.)</span>
+      </div>`;
+    wrap.appendChild(actionPanel);
+
+    // ── 메뉴 관리 (좌측 메뉴 노출 제어) ──
+    // 체크한 메뉴만 좌측 nav 에 노출. Database 관리·Tool관리 는 항상 노출(관리 진입점).
+    const menuPanel = document.createElement("div");
+    menuPanel.className = "panel";
+    const managed = (window.MenuConfig && window.MenuConfig.MANAGED) || [];
+    const hiddenMenus = (window.MenuConfig && window.MenuConfig.getHidden()) || [];
+    menuPanel.innerHTML = `
+      <div class="panel-header"><h2>메뉴 관리</h2></div>
+      <div class="panel-body">
+        <div class="stack" id="menu-toggles" style="gap:8px;">
+          ${managed
+            .map(
+              (m) => `
+          <label class="row" style="gap:8px; align-items:center; cursor:pointer;">
+            <input type="checkbox" data-menu-route="${m.route}" ${hiddenMenus.includes(m.route) ? "" : "checked"} />
+            <strong>${m.label}</strong>
+          </label>`
+            )
+            .join("")}
+        </div>
+        <span class="field-hint">체크한 메뉴만 좌측 메뉴에 노출됩니다. <strong>Database 관리·Tool관리</strong> 는 항상 노출됩니다. (이 설정은 이 브라우저에 저장됩니다.)</span>
+      </div>`;
+    wrap.appendChild(menuPanel);
+
     // ── 데이터 내보내기 / 가져오기 (localStorage) ──
     const dataPanel = document.createElement("div");
     dataPanel.className = "panel";
@@ -200,6 +261,18 @@
     });
     document.getElementById("ak-save").addEventListener("click", saveKey);
     document.getElementById("ak-email-save").addEventListener("click", saveEmail);
+
+    bindActionToggle("act-runsql", "runsql");
+    bindActionToggle("act-narrate", "narrate");
+
+    menuPanel.querySelectorAll("input[data-menu-route]").forEach((cb) => {
+      cb.addEventListener("change", () => {
+        const route = cb.dataset.menuRoute;
+        if (window.MenuConfig) window.MenuConfig.setHidden(route, !cb.checked);
+        const label = (managed.find((m) => m.route === route) || {}).label || route;
+        window.Toast.show(`메뉴 '${label}' ${cb.checked ? "노출" : "숨김"}`, "success");
+      });
+    });
 
     document.getElementById("ls-export").addEventListener("click", exportLocalStorage);
     const importFile = document.getElementById("ls-import-file");
