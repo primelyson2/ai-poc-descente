@@ -97,3 +97,13 @@ def test_all_prompt_modes_require_join_and_aggregation_grain_equivalence():
     # The contract must precede the A/B early-return branch so A, B, and C all receive it.
     assert prompt.index(contract) < prompt.index("IF l_mode IN ('A', 'B') THEN")
     assert "Pre-aggregate only at the original correlation or join-key grain." in prompt
+
+
+def test_all_prompt_modes_prevent_asta_awr_01_invalid_identifier_rewrites():
+    llm = read("db/adb/asta_llm_pkg.sql")
+    prompt = llm[llm.index("FUNCTION build_tuning_prompt("):llm.index("END build_tuning_prompt;")]
+    identifier_contract = "Identifier safety is mandatory: use only base-table column names present for that same source in the input SQL or supplied object metadata"
+    assert identifier_contract in prompt
+    assert prompt.index(identifier_contract) < prompt.index("IF l_mode IN ('A', 'B') THEN")
+    assert "never guess abbreviated column names" in prompt
+    assert "Every introduced CTE or inline view must project each column referenced downstream from a valid source expression." in prompt
