@@ -479,6 +479,7 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
     l_mode   VARCHAR2(1) := prompt_mode(p_tuning_context_json);
   BEGIN
     DBMS_LOB.CREATETEMPORARY(l_prompt, TRUE);
+    clob_app(l_prompt, 'Semantic equivalence is mandatory: preserve the output column order, aliases and datatypes; preserve row grain, duplicate multiplicity, outer-join null extension, GROUP BY keys, analytic PARTITION BY keys, and scalar-aggregate empty-input behavior. Pre-aggregate only at the original correlation or join-key grain.' || CHR(10));
     IF l_mode IN ('A', 'B') THEN
       clob_app(l_prompt, '다음 Oracle SQL을 더 효율적인 단일 SELECT/WITH SQL로 재작성하세요. SQL 의미를 유지하세요.' || CHR(10) || CHR(10));
       clob_app_clob(l_prompt, p_sql);

@@ -87,3 +87,13 @@ def test_vector_never_exposes_empty_array_literal_as_change_summary():
     llm = read("db/adb/asta_llm_pkg.sql")
     assert "Preserve columns, datatypes, order, NULL and COUNT(DISTINCT) semantics" in llm
     assert "No DDL, new hints, statistics changes" in llm
+
+
+def test_all_prompt_modes_require_join_and_aggregation_grain_equivalence():
+    llm = read("db/adb/asta_llm_pkg.sql")
+    prompt = llm[llm.index("FUNCTION build_tuning_prompt("):llm.index("END build_tuning_prompt;")]
+    contract = "preserve row grain, duplicate multiplicity, outer-join null extension, GROUP BY keys, analytic PARTITION BY keys, and scalar-aggregate empty-input behavior"
+    assert contract in prompt
+    # The contract must precede the A/B early-return branch so A, B, and C all receive it.
+    assert prompt.index(contract) < prompt.index("IF l_mode IN ('A', 'B') THEN")
+    assert "Pre-aggregate only at the original correlation or join-key grain." in prompt
