@@ -52,12 +52,6 @@
 
 Private CA 가 Vault 키로 서명하려면 **CA 리소스(리소스 주체)에게 키 사용 권한**을 줘야 한다. 여기서 흔히 막힌다.
 
-### ❌ 안 되는 방법
-```
-Allow service certmgmt to use keys in compartment <compartment name>
-```
-→ **"Service {certmgmt} does not exist"**. OCI Certificates/CA 는 `Allow service …` 로 쓸 수 있는 **서비스 주체 이름이 없다**. (`Allow service` 는 Oracle 이 미리 등록한 서비스 화이트리스트 — loadbalancer, faas 등 — 만 가능)
-
 ### ✅ 되는 방법 A — 동적 그룹 (권장)
 ```
 # 동적 그룹 매칭 규칙 — CA 리소스를 멤버로
