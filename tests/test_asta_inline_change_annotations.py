@@ -131,6 +131,19 @@ def test_all_prompt_modes_require_complete_and_resolvable_asta_awr_01_sql():
     assert "to a column projected by that exact CTE or inline-view alias" in prompt
 
 
+def test_long_asta_awr_01_prompt_limits_rewrite_to_one_query_block():
+    llm = read("db/adb/asta_llm_pkg.sql")
+    prompt = llm[llm.index("FUNCTION build_tuning_prompt("):llm.index("END build_tuning_prompt;")]
+    boundary = "Long-SQL rewrite boundary: make exactly one localized structural change in one existing query block"
+    assert "DBMS_LOB.GETLENGTH(p_sql), 0) >= 12000" in prompt
+    assert boundary in prompt
+    assert prompt.index(boundary) < prompt.index("IF l_mode IN ('A', 'B') THEN")
+    assert "copy every unaffected query block, CTE, UNION ALL branch, join, predicate, and select-list expression verbatim" in prompt
+    assert "Do not decompose or rebuild the full statement into a new CTE architecture." in prompt
+    assert "do not change any UNION ALL branch projection count" in prompt
+    assert "reference a grouping key after it has been removed by aggregation" in prompt
+
+
 def test_sql_only_candidate_preflights_asta_awr_01_semantic_contract():
     llm = read("db/adb/asta_llm_pkg.sql")
     sql_only = llm[llm.index("FUNCTION generate_sql_only_tuning("):llm.index("END generate_sql_only_tuning;")]
