@@ -161,7 +161,7 @@ oci certs-mgmt certificate get --certificate-id <CERT_OCID> --region us-ashburn-
 | 증상 | 원인 / 해결 |
 |---|---|
 | 키 생성은 됐는데 CA 가 `... is not backed by a hardware security module (HSM)` | 키가 SOFTWARE. **`--protection-mode HSM`** 로 다시 생성 |
-| 정책 저장 시 **"Service {certmgmt} does not exist"** | `Allow service certmgmt …` 는 불가. §4 방법 A(`any-user`+조건) 또는 B(동적 그룹) 사용 |
+| 정책 저장 시 **"Service {certmgmt} does not exist"** | `Allow service certmgmt …` 는 불가. §4 방법 A(동적 그룹) 또는 B(`any-user`+조건) 사용 |
 | CA 가 **FAILED**, `lifecycle-details` 에 `Authorization failed … Key Id …` | CA 가 키 쓸 권한 없음. §4 정책 넣고 **새 CA 재생성**(FAILED 는 복구 불가) |
 | 브라우저 인증서 경고 | Private CA 미신뢰 or 호스트명 불일치. §7 (CA 신뢰 추가 + 호스트명 접속) |
 
