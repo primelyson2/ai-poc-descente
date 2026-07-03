@@ -1,6 +1,6 @@
 # AI SQL Tuning Assistant(ASTA) 프로그램 명세서
 
-최종 업데이트: 2026-06-30
+최종 업데이트: 2026-07-03
 
 ## 목적과 경계
 
@@ -13,14 +13,14 @@ ASTA는 Source DB 실측 evidence를 바탕으로 안전한 SQL 구조 재작성
 3. `SQL_GUARD`
 4. `BEFORE_EVIDENCE`
 5. `SQL_TUNING_ADVISOR`
-6. `LLM_REWRITE` (**SQL-only**: 원본 SQL + 고정 구조 재작성 지시)
+6. `LLM_REWRITE` (원본 SQL + compact Source/Vector evidence + 사용자 목표)
 7. `AFTER_EVIDENCE` (후보가 있을 때만)
 8. `BEFORE_AFTER_COMPARE` (ADB PL/SQL **deterministic**)
-9. `VECTOR_KB` (검증 후 참고 검색)
+9. `VECTOR_KB` (LLM 호출 전 유사 사례 검색)
 10. `FINAL_REPORT`
 11. `VECTOR_SAVE`
 
-따라서 `LLM_REWRITE`가 `VECTOR_KB`보다 먼저다. LLM에는 XPLAN, metrics, Advisor, Vector, 기존 보고서를 전달하지 않는다. 과거 Vector-before-LLM/`LLM_FINAL_REVIEW` 방식은 deprecated이다.
+단계 번호는 API 호환을 위해 유지하되 실제 orchestration은 `BEFORE_EVIDENCE → SQL_TUNING_ADVISOR → VECTOR_KB → LLM_REWRITE → AFTER_EVIDENCE → BEFORE_AFTER_COMPARE` 순서다. LLM에는 full SQL과 compact XPLAN, runtime metrics, object/index metadata, Advisor 상태, Vector 유사 사례 및 사용자 목표를 전달한다. 빈 모델 응답은 `NO_REWRITE`가 아니라 명시적 `FAILED / EMPTY_RESPONSE`로 기록한다.
 
 ## 판정 계약
 

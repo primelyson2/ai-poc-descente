@@ -57,7 +57,7 @@ DECLARE
   l_result_json  CLOB;
   l_chunk        VARCHAR2(32767);
   l_offset       PLS_INTEGER := 1;
-  l_chunk_size   PLS_INTEGER := 32000;
+  l_chunk_size   PLS_INTEGER := 8000;
   l_status       VARCHAR2(30);
   l_contract     VARCHAR2(30);
 BEGIN

@@ -106,12 +106,27 @@ CREATE OR REPLACE PACKAGE BODY asta_report_pkg AS
     clob_app(p_out, '"');
   END clob_app_json_str;
 
-  PROCEDURE clob_app_json_or_null(p_out IN OUT NOCOPY CLOB, p_val IN CLOB) IS
+  PROCEDURE clob_app_json_or_null(
+    p_out IN OUT NOCOPY CLOB,
+    p_val IN CLOB,
+    p_artifact_name IN VARCHAR2 DEFAULT 'UNKNOWN'
+  ) IS
+    l_is_json PLS_INTEGER := 0;
   BEGIN
     IF p_val IS NULL OR NVL(DBMS_LOB.GETLENGTH(p_val), 0) = 0 THEN
       clob_app(p_out, 'null');
     ELSE
-      clob_app_clob(p_out, p_val);
+      BEGIN
+        SELECT CASE WHEN p_val IS JSON THEN 1 ELSE 0 END INTO l_is_json FROM dual;
+      EXCEPTION WHEN OTHERS THEN l_is_json := 0;
+      END;
+      IF l_is_json = 1 THEN
+        clob_app_clob(p_out, p_val);
+      ELSE
+        clob_app(p_out, '{"status":"FAILED","code":"INVALID_JSON_ARTIFACT","artifact":');
+        clob_app(p_out, json_str(p_artifact_name));
+        clob_app(p_out, '}');
+      END IF;
     END IF;
   END clob_app_json_or_null;
 
@@ -327,13 +342,83 @@ CREATE OR REPLACE PACKAGE BODY asta_report_pkg AS
     RETURN NVL(unescape_jsonish(l_val), p_default);
   END jsonish_field;
 
+  FUNCTION llm_array_text(p_json IN CLOB, p_key IN VARCHAR2) RETURN VARCHAR2 IS
+    l_out VARCHAR2(32767);
+
+    PROCEDURE append_item(p_value IN VARCHAR2) IS
+    BEGIN
+      IF p_value IS NULL OR LENGTH(TRIM(p_value)) = 0 THEN
+        RETURN;
+      END IF;
+      IF l_out IS NOT NULL THEN
+        l_out := l_out || '; ';
+      END IF;
+      l_out := SUBSTR(l_out || TRIM(p_value), 1, 32767);
+    END append_item;
+  BEGIN
+    IF p_json IS NULL THEN
+      RETURN NULL;
+    END IF;
+    IF p_key = 'change_summary' THEN
+      FOR r IN (
+        SELECT value
+          FROM JSON_TABLE(p_json, '$.change_summary[*]'
+            COLUMNS (ord FOR ORDINALITY, value VARCHAR2(4000) PATH '$'))
+         ORDER BY ord
+      ) LOOP
+        append_item(r.value);
+      END LOOP;
+    ELSIF p_key = 'semantic_risks' THEN
+      FOR r IN (
+        SELECT value
+          FROM JSON_TABLE(p_json, '$.semantic_risks[*]'
+            COLUMNS (ord FOR ORDINALITY, value VARCHAR2(4000) PATH '$'))
+         ORDER BY ord
+      ) LOOP
+        append_item(r.value);
+      END LOOP;
+    ELSIF p_key = 'rewrite_strategy' THEN
+      FOR r IN (
+        SELECT value
+          FROM JSON_TABLE(p_json, '$.rewrite_strategy[*]'
+            COLUMNS (ord FOR ORDINALITY, value VARCHAR2(4000) PATH '$'))
+         ORDER BY ord
+      ) LOOP
+        append_item(r.value);
+      END LOOP;
+    END IF;
+    RETURN l_out;
+  EXCEPTION
+    WHEN OTHERS THEN
+      RETURN NULL;
+  END llm_array_text;
+
   FUNCTION llm_field(p_json IN CLOB, p_key IN VARCHAR2, p_default IN VARCHAR2 DEFAULT '-') RETURN VARCHAR2 IS
     l_val VARCHAR2(32767);
     l_raw CLOB;
+    l_generation CLOB;
   BEGIN
     l_val := jsonish_field(p_json, p_key, NULL);
+    IF l_val IS NULL AND p_key IN ('change_summary', 'semantic_risks', 'rewrite_strategy') THEN
+      l_val := llm_array_text(p_json, p_key);
+    END IF;
     IF l_val IS NOT NULL THEN
       RETURN l_val;
+    END IF;
+    IF p_key <> 'candidate_sql' THEN
+      BEGIN
+        SELECT JSON_QUERY(p_json, '$.generation' RETURNING CLOB NULL ON ERROR)
+        INTO   l_generation
+        FROM   dual;
+      EXCEPTION WHEN OTHERS THEN l_generation := NULL;
+      END;
+      l_val := jsonish_field(l_generation, p_key, NULL);
+      IF l_val IS NULL AND p_key IN ('change_summary', 'semantic_risks', 'rewrite_strategy') THEN
+        l_val := llm_array_text(l_generation, p_key);
+      END IF;
+      IF l_val IS NOT NULL THEN
+        RETURN l_val;
+      END IF;
     END IF;
     BEGIN
       SELECT JSON_VALUE(p_json, '$.raw_response' RETURNING CLOB NULL ON ERROR)
@@ -1181,29 +1266,29 @@ CREATE OR REPLACE PACKAGE BODY asta_report_pkg AS
       clob_app_json_str(l_out, TO_CLOB(l_candidate_sql_vc));
     END IF;
     clob_app(l_out, ',"runtime_evidence":');
-    clob_app_json_or_null(l_out, p_source_evidence_json);
+    clob_app_json_or_null(l_out, p_source_evidence_json, 'runtime_evidence');
     clob_app(l_out, ',"after_evidence":');
-    clob_app_json_or_null(l_out, p_after_evidence_json);
+    clob_app_json_or_null(l_out, p_after_evidence_json, 'after_evidence');
     clob_app(l_out, ',"comparison":');
-    clob_app_json_or_null(l_out, p_comparison_json);
+    clob_app_json_or_null(l_out, p_comparison_json, 'comparison');
     clob_app(l_out, ',"vector_save":');
-    clob_app_json_or_null(l_out, p_vector_save_json);
+    clob_app_json_or_null(l_out, p_vector_save_json, 'vector_save');
     clob_app(l_out, ',"artifacts":{"source_evidence":');
-    clob_app_json_or_null(l_out, p_source_evidence_json);
+    clob_app_json_or_null(l_out, p_source_evidence_json, 'artifacts.source_evidence');
     clob_app(l_out, ',"after_evidence":');
-    clob_app_json_or_null(l_out, p_after_evidence_json);
+    clob_app_json_or_null(l_out, p_after_evidence_json, 'artifacts.after_evidence');
     clob_app(l_out, ',"comparison":');
-    clob_app_json_or_null(l_out, p_comparison_json);
+    clob_app_json_or_null(l_out, p_comparison_json, 'artifacts.comparison');
     clob_app(l_out, ',"vector":');
-    clob_app_json_or_null(l_out, p_vector_json);
+    clob_app_json_or_null(l_out, p_vector_json, 'artifacts.vector');
     clob_app(l_out, ',"vector_save":');
-    clob_app_json_or_null(l_out, p_vector_save_json);
+    clob_app_json_or_null(l_out, p_vector_save_json, 'artifacts.vector_save');
     clob_app(l_out, ',"llm":');
-    clob_app_json_or_null(l_out, p_llm_json);
+    clob_app_json_or_null(l_out, p_llm_json, 'artifacts.llm');
     clob_app(l_out, ',"final_review":');
-    clob_app_json_or_null(l_out, p_final_review_json);
+    clob_app_json_or_null(l_out, p_final_review_json, 'artifacts.final_review');
     clob_app(l_out, '},"migration_boundary":{"fastapi_role":"ORDS_PROXY_ONLY","asta_runtime":"ADB_ORDS_PLSQL","source_runtime":"SOURCE_BASEDB_DBLINK_ONLY","guard_policy":"SELECT_WITH_SINGLE_STATEMENT","response_contract":"CLOB_CHUNKED_JSON","python_local_asta":false},"error":');
-    clob_app_json_or_null(l_out, p_error_json);
+    clob_app_json_or_null(l_out, p_error_json, 'error');
     clob_app(l_out, ',"proxy":{"source":"ADB_ORDS","external_call":false}}');
     RETURN l_out;
   END build_response_json;

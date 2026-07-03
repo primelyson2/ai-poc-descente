@@ -8,24 +8,20 @@ def read(path: str) -> str:
     return (ROOT / path).read_text(encoding="utf-8")
 
 
-def test_sql_only_prompt_requires_detailed_numbered_leading_header_for_both_workloads():
+def test_evidence_prompt_requests_leading_header_and_server_can_supply_it():
     llm = read("db/adb/asta_llm_pkg.sql")
-    contract = "/* ASTA_TUNING_CHANGE_1: [기존 문제] -> [변경 방식] -> [기대 효과] */"
-    assert contract in llm
-    assert "첫 SQL token 이전" in llm
-    assert "본문 중간에는 ASTA_TUNING_CHANGE 주석을 넣지" in llm
-    assert "반복 횟수/스캔/서브쿼리/조인/집계 패턴" in llm
-    assert "elapsed/buffer/temp" in llm
-    assert "실제 측정값" in llm and "날조" in llm
-    assert "1부터 빈 번호 없이 순차" in llm
-    assert llm.index(contract) < llm.index("IF l_workload_type = 'BATCH' THEN")
+    assert "For a changed SQL, prepend: /* ASTA_TUNING_CHANGE_1:" in llm
+    assert "ASTA will add it if omitted" in llm
+    assert "prepend_generated_change_annotation" in llm
+    assert "expected buffer/elapsed effect" in llm
 
 
-def test_structural_candidate_requires_valid_header_and_comment_only_is_not_rewrite():
+def test_structural_candidate_gets_missing_header_and_comment_only_is_not_rewrite():
     llm = read("db/adb/asta_llm_pkg.sql")
     assert "FUNCTION leading_change_annotation_count" in llm
     assert "leading_change_annotation_count(l_candidate_sql) < 1" in llm
-    assert "NO_REWRITE: structural candidate missing required leading ASTA_TUNING_CHANGE_1 header" in llm
+    assert "prepend_generated_change_annotation(l_candidate_sql)" in llm
+    assert "ASTA added the required leading change annotation" in llm
     marker_check = llm.index("leading_change_annotation_count(l_candidate_sql) < 1")
     assert marker_check < llm.index("l_profile := l_try_profile", marker_check)
     assert "structural_sql_key(p_sql) = structural_sql_key(l_candidate_sql)" in llm
@@ -89,5 +85,5 @@ def test_vector_never_exposes_empty_array_literal_as_change_summary():
     vector = read("db/adb/asta_vector_pkg.sql")
     assert "CASE WHEN TRIM(change_summary) IN ('[]', 'null', '') THEN '-'" in vector
     llm = read("db/adb/asta_llm_pkg.sql")
-    assert "출력 컬럼의 datatype과 문자열 format" in llm
-    assert "NLS 의존 변환" in llm
+    assert "Preserve columns, datatypes, order, NULL and COUNT(DISTINCT) semantics" in llm
+    assert "No DDL, new hints, statistics changes" in llm

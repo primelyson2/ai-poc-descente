@@ -246,8 +246,8 @@ def test_report_and_main_carry_final_review_json_artifact():
     ]:
         assert fragment in main
 
-def test_main_comparison_uses_runtime_last_metrics_before_vector_search():
-    """ASTA 계약/회귀 조건을 검증한다: main comparison uses runtime last metrics before final review."""
+def test_vector_evidence_is_collected_before_llm_and_comparison_uses_runtime_metrics():
+    """Vector 사례는 LLM 입력이며 deterministic 비교는 후보 실행 뒤 수행한다."""
     src = _read("db/adb/asta_pkg.sql")
     assert "FUNCTION build_comparison_json(p_before_json IN CLOB, p_after_json IN CLOB," in src
     assert "JSON_VALUE(p_before_json, '$.last_cr_buffer_gets' RETURNING NUMBER NULL ON ERROR)" in src
@@ -261,7 +261,8 @@ def test_main_comparison_uses_runtime_last_metrics_before_vector_search():
     after_pos = src.index("l_after_json := asta_source_bridge_pkg.run_source_evidence")
     comparison_pos = src.index("l_comparison_json := build_comparison_json(l_source_json, l_after_json, l_workload_type)")
     vector_pos = src.index("l_vector_json := asta_vector_pkg.search_similar_cases")
-    assert after_pos < comparison_pos < vector_pos
+    llm_pos = src.index("l_llm_json := asta_llm_pkg.generate_sql_only_tuning")
+    assert vector_pos < llm_pos < after_pos < comparison_pos
     assert "asta_llm_pkg.final_review(" not in src
 
 
@@ -739,34 +740,35 @@ def test_source_docs_and_reports_pin_devdo_dblink_contract():
     assert "DB0903_LINK/ADMIN" not in deploy_tool
 
 
-def test_sql_only_workflow_order_and_no_production_final_review():
-    """검증/비교 뒤에만 Vector를 조회하고 production 2차 LLM은 호출하지 않는다."""
+def test_evidence_aware_workflow_order_and_no_production_final_review():
+    """Source/Vector evidence를 모은 뒤 LLM을 호출하며 production 2차 LLM은 호출하지 않는다."""
     src = _read("db/adb/asta_pkg.sql")
     analyze = src[src.index("FUNCTION analyze_sql(p_body_json IN CLOB) RETURN CLOB"):]
-    markers = ["'BEFORE_EVIDENCE'", "'SQL_TUNING_ADVISOR'", "'LLM_REWRITE'",
-               "'AFTER_EVIDENCE'", "'BEFORE_AFTER_COMPARE'", "'VECTOR_KB'",
+    markers = ["'BEFORE_EVIDENCE'", "'SQL_TUNING_ADVISOR'", "'VECTOR_KB'", "'LLM_REWRITE'",
+               "'AFTER_EVIDENCE'", "'BEFORE_AFTER_COMPARE'",
                "'FINAL_REPORT'", "'VECTOR_SAVE'"]
     positions = [analyze.index(marker) for marker in markers]
     assert positions == sorted(positions)
     assert "asta_llm_pkg.final_review(" not in analyze
-    assert analyze.index("build_comparison_json(") < analyze.index("asta_vector_pkg.search_similar_cases(")
+    assert analyze.index("asta_vector_pkg.search_similar_cases(") < analyze.index("asta_llm_pkg.generate_sql_only_tuning(")
 
 
-def test_canonical_rewrite_call_has_no_evidence_or_vector_arguments():
+def test_canonical_rewrite_call_receives_source_vector_and_user_context():
     src = _read("db/adb/asta_pkg.sql")
     pos = src.index("l_llm_json := asta_llm_pkg.generate_sql_only_tuning(")
     call = src[pos:src.index(");", pos)]
-    assert "p_source_evidence_json" not in call
-    assert "p_vector_json" not in call
+    assert "p_source_evidence_json => l_source_json" in call
+    assert "p_vector_json          => l_vector_json" in call
+    assert "p_tuning_context_json  => l_context_json" in call
 
 
 def test_no_candidate_skips_only_after_and_compare_then_continues():
     src = _read("db/adb/asta_pkg.sql")
+    vector = src.index("asta_vector_pkg.search_similar_cases(")
     no_candidate = src.index("'No structural rewrite candidate'")
-    vector = src.index("asta_vector_pkg.search_similar_cases(", no_candidate)
-    save = src.index("asta_vector_pkg.save_case(", vector)
+    save = src.index("asta_vector_pkg.save_case(", no_candidate)
     report = src.index("asta_report_pkg.build_report(", save)
-    assert no_candidate < vector < save < report
+    assert vector < no_candidate < save < report
     window = src[no_candidate - 700:no_candidate + 700]
     assert "'AFTER_EVIDENCE'" in window
     assert "'BEFORE_AFTER_COMPARE'" in window

@@ -20,10 +20,20 @@ CREATE OR REPLACE PACKAGE asta_llm_pkg AUTHID DEFINER AS
   ) RETURN CLOB;
 
   FUNCTION generate_sql_only_tuning(
-    p_sql           IN CLOB,
-    p_llm_profile   IN VARCHAR2,
-    p_workload_type IN VARCHAR2 DEFAULT 'OLTP',
-    p_use_llm       IN VARCHAR2 DEFAULT 'Y'
+    p_sql                  IN CLOB,
+    p_llm_profile          IN VARCHAR2,
+    p_workload_type        IN VARCHAR2 DEFAULT 'OLTP',
+    p_source_evidence_json IN CLOB DEFAULT NULL,
+    p_vector_json          IN CLOB DEFAULT NULL,
+    p_tuning_context_json  IN CLOB DEFAULT NULL,
+    p_use_llm              IN VARCHAR2 DEFAULT 'Y'
+  ) RETURN CLOB;
+
+  FUNCTION repair_sql_candidate(
+    p_original_sql       IN CLOB,
+    p_rejected_candidate IN CLOB,
+    p_error_message      IN VARCHAR2,
+    p_llm_profile        IN VARCHAR2
   ) RETURN CLOB;
 
   FUNCTION final_review(
@@ -141,6 +151,8 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
         SELECT JSON_VALUE(p_json, '$.last_elapsed_time_us' RETURNING VARCHAR2(32767) NULL ON ERROR) INTO l_val FROM dual;
       WHEN '$.advisor.status' THEN
         SELECT JSON_VALUE(p_json, '$.advisor.status' RETURNING VARCHAR2(32767) NULL ON ERROR) INTO l_val FROM dual;
+      WHEN '$.advisor.report' THEN
+        SELECT JSON_VALUE(p_json, '$.advisor.report' RETURNING VARCHAR2(32767) NULL ON ERROR) INTO l_val FROM dual;
       WHEN '$.search_strategy' THEN
         SELECT JSON_VALUE(p_json, '$.search_strategy' RETURNING VARCHAR2(32767) NULL ON ERROR) INTO l_val FROM dual;
       WHEN '$.xplan' THEN
@@ -187,6 +199,8 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
   BEGIN
     IF p_path = '$.object_info' THEN
       SELECT JSON_QUERY(p_json, '$.object_info' RETURNING CLOB NULL ON ERROR) INTO l_val FROM dual;
+    ELSIF p_path = '$.plan_text' THEN
+      SELECT JSON_VALUE(p_json, '$.plan_text' RETURNING CLOB NULL ON ERROR) INTO l_val FROM dual;
     ELSE
       l_val := NULL;
     END IF;
@@ -233,6 +247,72 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
     WHEN OTHERS THEN RETURN 0;
   END leading_change_annotation_count;
 
+  FUNCTION prepend_generated_change_annotation(p_sql IN CLOB) RETURN CLOB IS
+    l_out CLOB;
+  BEGIN
+    IF p_sql IS NULL THEN
+      RETURN NULL;
+    END IF;
+    DBMS_LOB.CREATETEMPORARY(l_out, TRUE);
+    clob_app(l_out, '/* ASTA_TUNING_CHANGE_1: 실행계획과 실행 통계에 근거한 구조 재작성 후보 -> 모델이 제안한 SQL 구조를 보존하고 ASTA가 설명 헤더를 보완 -> 후보 실행 및 Before/After 검증 예정 */' || CHR(10));
+    clob_app_clob(l_out, p_sql);
+    RETURN l_out;
+  END prepend_generated_change_annotation;
+
+  FUNCTION normalize_json_response(p_response IN CLOB) RETURN CLOB IS
+    l_out        CLOB;
+    l_fence_pos  PLS_INTEGER;
+    l_start_pos  PLS_INTEGER;
+    l_end_pos    PLS_INTEGER;
+    l_amount     PLS_INTEGER;
+  BEGIN
+    IF p_response IS NULL THEN RETURN NULL; END IF;
+    l_fence_pos := DBMS_LOB.INSTR(p_response, '```', 1, 1);
+    IF l_fence_pos < 1 OR l_fence_pos > 2000 THEN RETURN p_response; END IF;
+    l_start_pos := DBMS_LOB.INSTR(p_response, CHR(10), l_fence_pos, 1) + 1;
+    l_end_pos := DBMS_LOB.INSTR(p_response, '```', l_start_pos, 1);
+    IF l_start_pos <= 1 OR l_end_pos <= l_start_pos THEN RETURN p_response; END IF;
+    l_amount := l_end_pos - l_start_pos;
+    DBMS_LOB.CREATETEMPORARY(l_out, TRUE);
+    DBMS_LOB.COPY(l_out, p_response, l_amount, 1, l_start_pos);
+    RETURN l_out;
+  END normalize_json_response;
+
+  FUNCTION normalize_sql_response(p_response IN CLOB) RETURN CLOB IS
+    l_text       VARCHAR2(32767);
+    l_fence      PLS_INTEGER;
+    l_line_end   PLS_INTEGER;
+    l_close      PLS_INTEGER;
+    l_select_pos PLS_INTEGER;
+    l_with_pos   PLS_INTEGER;
+    l_start      PLS_INTEGER;
+  BEGIN
+    IF p_response IS NULL OR NVL(DBMS_LOB.GETLENGTH(p_response), 0) > 32767 THEN
+      RETURN p_response;
+    END IF;
+    l_text := TRIM(DBMS_LOB.SUBSTR(p_response, 32767, 1));
+    l_fence := INSTR(l_text, '```');
+    IF l_fence > 0 THEN
+      l_line_end := INSTR(l_text, CHR(10), l_fence);
+      l_close := INSTR(l_text, '```', GREATEST(l_line_end + 1, l_fence + 3));
+      IF l_line_end > 0 AND l_close > l_line_end THEN
+        l_text := TRIM(SUBSTR(l_text, l_line_end + 1, l_close - l_line_end - 1));
+      END IF;
+    END IF;
+    l_select_pos := REGEXP_INSTR(l_text, '(^|[[:space:]])SELECT[[:space:]]', 1, 1, 0, 'i');
+    l_with_pos := REGEXP_INSTR(l_text, '(^|[[:space:]])WITH[[:space:]]', 1, 1, 0, 'i');
+    IF l_with_pos > 0 AND (l_select_pos = 0 OR l_with_pos < l_select_pos) THEN
+      l_start := l_with_pos;
+    ELSE
+      l_start := l_select_pos;
+    END IF;
+    IF l_start > 1 THEN l_text := LTRIM(SUBSTR(l_text, l_start)); END IF;
+    IF SUBSTR(RTRIM(l_text), -1) = ';' THEN
+      l_text := RTRIM(SUBSTR(RTRIM(l_text), 1, LENGTH(RTRIM(l_text)) - 1));
+    END IF;
+    RETURN TO_CLOB(l_text);
+  END normalize_sql_response;
+
   PROCEDURE append_json_pair_vc(p_out IN OUT NOCOPY CLOB, p_key IN VARCHAR2, p_val IN VARCHAR2, p_first IN OUT BOOLEAN) IS
   BEGIN
     IF NOT p_first THEN
@@ -274,9 +354,9 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
     append_json_pair_num(l_out, 'last_disk_reads', json_vc(p_json, '$.last_disk_reads'), l_first);
     append_json_pair_num(l_out, 'last_elapsed_time_us', json_vc(p_json, '$.last_elapsed_time_us'), l_first);
     append_json_pair_vc(l_out, 'advisor_status', json_vc(p_json, '$.advisor.status'), l_first);
-    append_json_pair_vc(l_out, 'advisor_report_excerpt', DBMS_LOB.SUBSTR(p_json, 2000, GREATEST(DBMS_LOB.INSTR(p_json, 'SQLTUNE_ERROR', 1, 1), 1)), l_first);
-    append_json_pair_vc(l_out, 'xplan_excerpt', json_vc(p_json, '$.xplan', json_vc(p_json, '$.plan_text')), l_first);
-    append_json_pair_vc(l_out, 'object_info_excerpt', DBMS_LOB.SUBSTR(json_query_clob(p_json, '$.object_info'), 6000, 1), l_first);
+    append_json_pair_vc(l_out, 'advisor_report_excerpt', SUBSTR(json_vc(p_json, '$.advisor.report'), 1, 1500), l_first);
+    append_json_pair_vc(l_out, 'xplan_excerpt', DBMS_LOB.SUBSTR(json_query_clob(p_json, '$.plan_text'), 5000, 1), l_first);
+    append_json_pair_vc(l_out, 'object_info_excerpt', DBMS_LOB.SUBSTR(json_query_clob(p_json, '$.object_info'), 2500, 1), l_first);
     clob_app(l_out, '}');
     RETURN l_out;
   END compact_source_evidence;
@@ -318,12 +398,19 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
     l_out CLOB;
   BEGIN
     DBMS_LOB.CREATETEMPORARY(l_out, TRUE);
+    IF p_json IS NULL OR (
+         DBMS_LOB.INSTR(p_json, '"verdict":"IMPROVED"', 1, 1) = 0
+         AND DBMS_LOB.INSTR(p_json, '"verdict": "IMPROVED"', 1, 1) = 0
+       ) THEN
+      clob_app(l_out, '{"status":"SKIPPED","reason":"NO_POSITIVE_VECTOR_CASES"}');
+      RETURN l_out;
+    END IF;
     clob_app(l_out, '{"status":');
     clob_app(l_out, json_str(json_vc(p_json, '$.status')));
     clob_app(l_out, ',"search_strategy":');
     clob_app(l_out, json_str(json_vc(p_json, '$.search_strategy')));
     clob_app(l_out, ',"top_k_excerpt":');
-    clob_app_json_str(l_out, p_json);
+    clob_app_json_str(l_out, TO_CLOB(DBMS_LOB.SUBSTR(p_json, 3000, 1)));
     clob_app(l_out, '}');
     RETURN l_out;
   END compact_vector_evidence;
@@ -544,24 +631,34 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
   END generate_tuning;
 
   FUNCTION generate_sql_only_tuning(
-    p_sql           IN CLOB,
-    p_llm_profile   IN VARCHAR2,
-    p_workload_type IN VARCHAR2 DEFAULT 'OLTP',
-    p_use_llm       IN VARCHAR2 DEFAULT 'Y'
+    p_sql                  IN CLOB,
+    p_llm_profile          IN VARCHAR2,
+    p_workload_type        IN VARCHAR2 DEFAULT 'OLTP',
+    p_source_evidence_json IN CLOB DEFAULT NULL,
+    p_vector_json          IN CLOB DEFAULT NULL,
+    p_tuning_context_json  IN CLOB DEFAULT NULL,
+    p_use_llm              IN VARCHAR2 DEFAULT 'Y'
   ) RETURN CLOB IS
-    l_prompt          CLOB;
-    l_response        CLOB;
-    l_result          CLOB;
-    l_candidate_sql   CLOB;
-    l_change_summary  CLOB;
-    l_semantic_risks  CLOB;
-    l_candidate_error VARCHAR2(4000);
-    l_profile         VARCHAR2(128);
-    l_try_profile     VARCHAR2(128);
-    l_profile_errors  CLOB;
-    l_error_count     PLS_INTEGER := 0;
-    l_call_succeeded  VARCHAR2(1) := 'N';
-    l_workload_type   VARCHAR2(10) := CASE WHEN UPPER(TRIM(p_workload_type)) = 'BATCH' THEN 'BATCH' ELSE 'OLTP' END;
+    l_diagnosis_prompt   CLOB;
+    l_candidate_prompt   CLOB;
+    l_diagnosis_response CLOB;
+    l_candidate_response CLOB;
+    l_result             CLOB;
+    l_candidate_sql      CLOB;
+    l_plan_text          CLOB;
+    l_change_summary     CLOB;
+    l_semantic_risks     CLOB;
+    l_candidate_error    VARCHAR2(4000);
+    l_profile            VARCHAR2(128);
+    l_try_profile        VARCHAR2(128);
+    l_diagnosis_profile  VARCHAR2(128);
+    l_profile_errors     CLOB;
+    l_error_count        PLS_INTEGER := 0;
+    l_diagnosis_ok       VARCHAR2(1) := 'N';
+    l_candidate_ok       VARCHAR2(1) := 'N';
+    l_response_is_json   PLS_INTEGER := 0;
+    l_annotation_added   VARCHAR2(1) := 'N';
+    l_workload_type      VARCHAR2(10) := CASE WHEN UPPER(TRIM(p_workload_type)) = 'BATCH' THEN 'BATCH' ELSE 'OLTP' END;
     l_optimization_goal VARCHAR2(40);
     l_annotation_count PLS_INTEGER := 0;
   BEGIN
@@ -574,109 +671,143 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
 
     l_profile := validated_profile_name(p_llm_profile);
     asta_sql_guard_pkg.assert_safe_select(p_sql);
-    DBMS_LOB.CREATETEMPORARY(l_prompt, TRUE);
-    clob_app(l_prompt, 'Oracle Database 기준으로 SQL 튜닝을 요청합니다.' || CHR(10));
-    clob_app(l_prompt, '아래 SQL만 보고 Oracle 옵티마이저 관점에서 구조적 SQL rewrite 후보를 제안하세요.' || CHR(10));
-    clob_app(l_prompt, '입력은 원본 SQL과 이 고정 구조 재작성 지시뿐입니다. 반복 상관 서브쿼리, 반복 집계/조인/UNION ALL 스캔을 의미 보존 가능한 경우에만 축소하세요.' || CHR(10));
-    clob_app(l_prompt, '원본 출력 컬럼의 datatype과 문자열 format 의미를 보존하세요. TO_CHAR 등 NLS 의존 변환을 새로 도입하지 말고, 불가피하면 semantic_risks에 구체적으로 기록하세요.' || CHR(10));
-    clob_app(l_prompt, '인덱스, 옵티마이저 힌트, DDL, 통계, SQL Profile/Plan Baseline 제안은 금지합니다.' || CHR(10));
-    clob_app(l_prompt, 'Do not add hints or index DDL.' || CHR(10));
-    clob_app(l_prompt, '구조를 변경한 candidate_sql 맨 앞, 첫 SQL token 이전에 연속된 Oracle block comment 헤더를 넣으세요: /* ASTA_TUNING_CHANGE_1: [기존 문제] -> [변경 방식] -> [기대 효과] */' || CHR(10));
-    clob_app(l_prompt, '모든 변경을 헤더에 모으고 본문 중간에는 ASTA_TUNING_CHANGE 주석을 넣지 마세요. 번호는 1부터 빈 번호 없이 순차 증가시킵니다.' || CHR(10));
-    clob_app(l_prompt, '각 항목은 원래 반복 횟수/스캔/서브쿼리/조인/집계 패턴, 변경한 구조, 기대되는 elapsed/buffer/temp 개선을 한국어로 구체적으로 설명하세요.' || CHR(10));
-    clob_app(l_prompt, '예: /* ASTA_TUNING_CHANGE_1: 행마다 반복되던 상관 서브쿼리 집계 -> 1회 조건부 집계 CTE와 JOIN으로 통합 -> 반복 접근 감소에 따른 buffer 및 elapsed 개선 기대 */' || CHR(10));
-    clob_app(l_prompt, '첫 LLM에는 실행 측정 결과가 없으므로 수치나 실제 측정값을 날조하지 말고 반드시 기대 효과로 표현하세요. 막연한 "성능 개선" 설명은 금지합니다.' || CHR(10));
-    clob_app(l_prompt, '주석 내용에는 중첩 comment delimiter를 넣지 마세요. 원문과 구조가 같은 no-rewrite이면 marker를 넣지 말고 candidate_sql을 null로 반환하세요.' || CHR(10));
-    IF l_workload_type = 'BATCH' THEN
-      clob_app(l_prompt, 'BATCH objective: minimize elapsed time / wall-clock duration. Reduce large repeated scans/aggregations and temp-heavy work; buffer gets is a supporting metric.' || CHR(10));
-    ELSE
-      clob_app(l_prompt, 'OLTP objective: minimize logical buffer reads / last_cr_buffer_gets per execution, repeated access, and random table lookups; elapsed is secondary.' || CHR(10));
-    END IF;
-    clob_app(l_prompt, 'Return JSON with status, rewrite_available(boolean), candidate_sql, change_summary(array), semantic_risks(array).' || CHR(10));
-    clob_app(l_prompt, 'All explanatory text fields must be written in Korean. Keep only SQL identifiers, Oracle keywords, object names, and metric field names in their original form.' || CHR(10));
-    clob_app(l_prompt, 'Return JSON only; do not wrap the response in Markdown fences.' || CHR(10));
-    clob_app(l_prompt, 'candidate_sql must be a single safe Oracle SELECT or WITH statement; do not return DML, DDL, PL/SQL, or statement terminators.' || CHR(10));
-    clob_app(l_prompt, 'candidate_sql must not include a semicolon or standalone SQL*Plus slash terminator.' || CHR(10));
-    clob_app(l_prompt, 'Preserve output columns, ordering semantics, NULL behavior, COUNT(DISTINCT ...) semantics, and aggregate results. If no safe rewrite is possible, return candidate_sql as null and explain why.' || CHR(10));
-    clob_app(l_prompt, 'Input SQL:' || CHR(10));
-    clob_app_clob(l_prompt, p_sql);
+    l_plan_text := json_query_clob(p_source_evidence_json, '$.plan_text');
     DBMS_LOB.CREATETEMPORARY(l_profile_errors, TRUE);
     clob_app(l_profile_errors, '[');
 
-    FOR i IN 1..4 LOOP
+    -- Stage 1: SQL + focused XPLAN only. Produce a compact diagnosis JSON,
+    -- never a long candidate SQL embedded inside JSON.
+    DBMS_LOB.CREATETEMPORARY(l_diagnosis_prompt, TRUE);
+    clob_app(l_diagnosis_prompt, 'Tune this Oracle SQL using the supplied runtime evidence: analyze it using only SQL and DBMS_XPLAN.' || CHR(10));
+    clob_app(l_diagnosis_prompt, 'Return JSON only; do not wrap the response in Markdown fences.' || CHR(10));
+    clob_app(l_diagnosis_prompt, 'Return JSON only with rewrite_strategy(array), change_summary(array), semantic_risks(array), target_operations(array). Do not return candidate_sql.' || CHR(10));
+    clob_app(l_diagnosis_prompt, 'Identify the safest structural rewrite for repeated scans, correlated MIN/SUM, UNION ALL, nested loops and temp transformations. ASTA will execute and compare the candidate later. Explanations must be Korean.' || CHR(10));
+    clob_app(l_diagnosis_prompt, 'SQL:' || CHR(10));
+    clob_app_clob(l_diagnosis_prompt, p_sql);
+    clob_app(l_diagnosis_prompt, CHR(10) || 'DBMS_XPLAN (focused excerpt):' || CHR(10));
+    clob_app_limited(l_diagnosis_prompt, l_plan_text, 10000);
+
+    FOR i IN 1..2 LOOP
       l_try_profile := CASE i
         WHEN 1 THEN l_profile
-        WHEN 2 THEN 'ASTA_GROK_REASONING_PROFILE'
-        WHEN 3 THEN 'ASTA_GROK_GENAI_PROFILE'
-        ELSE 'ASTA_DB_GENAI_TEST'
+        ELSE 'ASTA_GROK_GENAI_PROFILE'
       END;
       IF i > 1 AND l_try_profile = l_profile THEN
         CONTINUE;
       END IF;
-
-      l_response := NULL;
-      l_candidate_sql := NULL;
       BEGIN
-        EXECUTE IMMEDIATE q'[
-          BEGIN
-            :out_response := DBMS_CLOUD_AI.GENERATE(
-              :in_prompt,
-              profile_name => :in_profile,
-              action       => 'chat'
-            );
-          END;
-        ]'
-        USING OUT l_response, IN l_prompt, IN l_try_profile;
-        l_call_succeeded := 'Y';
+        EXECUTE IMMEDIATE
+          'SELECT DBMS_CLOUD_AI.GENERATE(prompt => :in_prompt, profile_name => :in_profile, action => ''chat'') FROM dual'
+          INTO l_diagnosis_response
+          USING IN l_diagnosis_prompt, IN l_try_profile;
       EXCEPTION
         WHEN OTHERS THEN
-          -- Preserve a non-sensitive per-profile diagnostic and continue.
+          -- Preserve a non-sensitive profile/stage diagnostic without raw exception text
+          -- because provider errors can contain request or endpoint details.
           IF l_error_count > 0 THEN clob_app(l_profile_errors, ','); END IF;
           clob_app(l_profile_errors, '{"profile":' || json_str(l_try_profile) ||
-            ',"error_code":' || TO_CHAR(SQLCODE) || ',"message":"profile invocation failed"}');
+            ',"stage":"DIAGNOSIS","error_code":' || TO_CHAR(SQLCODE) || ',"message":"profile invocation failed"}');
           l_error_count := l_error_count + 1;
           CONTINUE;
       END;
-
-      IF l_response IS NULL OR NVL(DBMS_LOB.GETLENGTH(l_response), 0) = 0 THEN
+      l_diagnosis_response := normalize_json_response(l_diagnosis_response);
+      SELECT CASE WHEN l_diagnosis_response IS JSON THEN 1 ELSE 0 END INTO l_response_is_json FROM dual;
+      IF l_response_is_json = 0 THEN
+        IF l_error_count > 0 THEN clob_app(l_profile_errors, ','); END IF;
+        clob_app(l_profile_errors, '{"profile":' || json_str(l_try_profile) ||
+          ',"stage":"DIAGNOSIS","error_code":null,"message":"malformed diagnosis JSON"}');
+        l_error_count := l_error_count + 1;
         CONTINUE;
       END IF;
+      l_diagnosis_ok := 'Y';
+      l_diagnosis_profile := l_try_profile;
+      EXIT;
+    END LOOP;
 
+    -- Stage 2: request SQL text only. This avoids JSON escaping/truncation for
+    -- 10K+ character candidates and lets ASTA own the response metadata.
+    DBMS_LOB.CREATETEMPORARY(l_candidate_prompt, TRUE);
+    clob_app(l_candidate_prompt, 'Return only one complete executable Oracle SELECT or WITH statement. No JSON, Markdown, prose, DDL, DML, PL/SQL, new hints, semicolon, or slash.' || CHR(10));
+    clob_app(l_candidate_prompt, 'Use the diagnosis and XPLAN to produce the safest testable structural rewrite. Preserve columns, datatypes, order, NULL and COUNT(DISTINCT) semantics, including aggregate behavior. ASTA will execute and compare results, so put uncertainty in the diagnosis rather than refusing.' || CHR(10));
+    clob_app(l_candidate_prompt, 'No DDL, new hints, statistics changes, indexes, optimizer hints, SQL Profile, or Plan Baseline proposals. 인덱스, 옵티마이저 힌트, DDL, 통계, SQL Profile 제안은 금지합니다.' || CHR(10));
+    clob_app(l_candidate_prompt, 'For a changed SQL, prepend: /* ASTA_TUNING_CHANGE_1: existing issue -> structural rewrite -> expected buffer/elapsed effect */. Keep all numbered change comments in the leading header; ASTA will add it if omitted.' || CHR(10));
+    clob_app(l_candidate_prompt, 'If absolutely no candidate can be written, return exactly NO_REWRITE.' || CHR(10));
+    clob_app(l_candidate_prompt, 'DIAGNOSIS:' || CHR(10));
+    IF l_diagnosis_ok = 'Y' THEN clob_app_clob(l_candidate_prompt, l_diagnosis_response); ELSE clob_app(l_candidate_prompt, '{}'); END IF;
+    clob_app(l_candidate_prompt, CHR(10) || 'SQL:' || CHR(10));
+    clob_app_clob(l_candidate_prompt, p_sql);
+    clob_app(l_candidate_prompt, CHR(10) || 'DBMS_XPLAN (focused excerpt):' || CHR(10));
+    clob_app_limited(l_candidate_prompt, l_plan_text, 9000);
+
+    FOR i IN 1..4 LOOP
+      l_try_profile := CASE i
+        WHEN 1 THEN NVL(l_diagnosis_profile, l_profile)
+        WHEN 2 THEN 'ASTA_GROK_GENAI_PROFILE'
+        WHEN 3 THEN 'ASTA_GEMINI_PROFILE'
+        ELSE 'ASTA_DB_GENAI_TEST'
+      END;
+      IF i > 1 AND l_try_profile = NVL(l_diagnosis_profile, l_profile) THEN CONTINUE; END IF;
+      l_candidate_response := NULL;
       BEGIN
-        l_candidate_sql := asta_sql_guard_pkg.extract_candidate_sql(l_response);
-        l_candidate_error := NULL;
+        EXECUTE IMMEDIATE
+          'SELECT DBMS_CLOUD_AI.GENERATE(prompt => :in_prompt, profile_name => :in_profile, action => ''chat'') FROM dual'
+          INTO l_candidate_response
+          USING IN l_candidate_prompt, IN l_try_profile;
       EXCEPTION
         WHEN OTHERS THEN
-          l_candidate_error := SUBSTR(SQLERRM, 1, 4000);
+          -- Preserve a non-sensitive profile/stage diagnostic without raw exception text
+          -- because provider errors can contain request or endpoint details.
+          IF l_error_count > 0 THEN clob_app(l_profile_errors, ','); END IF;
+          clob_app(l_profile_errors, '{"profile":' || json_str(l_try_profile) ||
+            ',"stage":"CANDIDATE_SQL","error_code":' || TO_CHAR(SQLCODE) || ',"message":"profile invocation failed"}');
+          l_error_count := l_error_count + 1;
+          CONTINUE;
+      END;
+      IF l_candidate_response IS NULL OR NVL(DBMS_LOB.GETLENGTH(l_candidate_response), 0) = 0 THEN
+        IF l_error_count > 0 THEN clob_app(l_profile_errors, ','); END IF;
+        clob_app(l_profile_errors, '{"profile":' || json_str(l_try_profile) ||
+          ',"stage":"CANDIDATE_SQL","error_code":null,"message":"empty response"}');
+        l_error_count := l_error_count + 1;
+        CONTINUE;
+      END IF;
+      IF UPPER(TRIM(DBMS_LOB.SUBSTR(l_candidate_response, 100, 1))) = 'NO_REWRITE' THEN CONTINUE; END IF;
+      l_candidate_sql := normalize_sql_response(l_candidate_response);
+      IF structural_sql_key(p_sql) = structural_sql_key(l_candidate_sql) THEN
+        l_candidate_error := 'NO_REWRITE: identical, comment-only, or hint-only candidate';
+        l_candidate_sql := NULL;
+        CONTINUE;
+      END IF;
+      BEGIN
+        asta_sql_guard_pkg.assert_safe_select(l_candidate_sql);
+        IF leading_change_annotation_count(l_candidate_sql) < 1 THEN
+          l_candidate_sql := prepend_generated_change_annotation(l_candidate_sql);
+          l_annotation_added := 'Y';
+        END IF;
+        asta_sql_guard_pkg.assert_safe_select(l_candidate_sql);
+        l_candidate_ok := 'Y';
+        l_candidate_error := NULL;
+        l_profile := l_try_profile;
+        EXIT;
+      EXCEPTION
+        WHEN OTHERS THEN
+          l_candidate_error := 'NO_REWRITE: candidate failed structural safety validation: ' || SUBSTR(SQLERRM, 1, 1000);
           l_candidate_sql := NULL;
       END;
-
-      IF l_candidate_sql IS NOT NULL AND structural_sql_key(p_sql) <> structural_sql_key(l_candidate_sql) THEN
-        IF leading_change_annotation_count(l_candidate_sql) < 1
-           OR DBMS_LOB.INSTR(l_candidate_sql, '/* ASTA_TUNING_CHANGE_1:', 1, 1) = 0 THEN
-          l_candidate_error := 'NO_REWRITE: structural candidate missing required leading ASTA_TUNING_CHANGE_1 header';
-          l_candidate_sql := NULL;
-          CONTINUE;
-        END IF;
-        BEGIN
-          asta_sql_guard_pkg.assert_safe_select(l_candidate_sql);
-          l_profile := l_try_profile;
-          EXIT;
-        EXCEPTION
-          WHEN OTHERS THEN
-            l_candidate_error := 'NO_REWRITE: candidate failed structural safety validation';
-            l_candidate_sql := NULL;
-            CONTINUE;
-        END;
-      END IF;
     END LOOP;
     clob_app(l_profile_errors, ']');
 
     DBMS_LOB.CREATETEMPORARY(l_result, TRUE);
-    clob_app(l_result, '{"status":' || json_str(CASE WHEN l_call_succeeded = 'N' THEN 'FAILED' ELSE 'COMPLETED' END) || ',"code":"SQL_ONLY_REWRITE","contract_version":"asta.v1","execution_boundary":"ADB_DBMS_CLOUD_AI","response_contract":"JSON_ONLY","candidate_guard_policy":"SELECT_WITH_SINGLE_STATEMENT"');
+    clob_app(l_result, '{"status":' || json_str(CASE WHEN l_diagnosis_ok = 'Y' OR l_candidate_ok = 'Y' THEN 'COMPLETED' ELSE 'FAILED' END) || ',"code":"SQL_ONLY_REWRITE","contract_version":"asta.v1","execution_boundary":"ADB_DBMS_CLOUD_AI","response_contract":"TWO_STAGE_DIAGNOSIS_JSON_AND_SQL_CLOB","candidate_guard_policy":"SELECT_WITH_SINGLE_STATEMENT"');
     clob_app(l_result, ',"llm_profile":' || json_str(l_profile));
+    clob_app(l_result, ',"diagnosis_profile":' || json_str(l_diagnosis_profile));
     clob_app(l_result, ',"workload_type":' || json_str(l_workload_type));
     clob_app(l_result, ',"optimization_goal":' || json_str(l_optimization_goal));
+    clob_app(l_result, ',"prompt_mode":"SQL_XPLAN_TWO_STAGE"');
+    clob_app(l_result, ',"diagnosis_prompt_chars":' || TO_CHAR(NVL(DBMS_LOB.GETLENGTH(l_diagnosis_prompt), 0)));
+    clob_app(l_result, ',"prompt_chars":' || TO_CHAR(NVL(DBMS_LOB.GETLENGTH(l_candidate_prompt), 0)));
+    clob_app(l_result, ',"xplan_excerpt_chars":' || TO_CHAR(LEAST(NVL(DBMS_LOB.GETLENGTH(l_plan_text), 0), 10000)));
+    clob_app(l_result, ',"source_evidence_included":' || CASE WHEN p_source_evidence_json IS NULL THEN 'false' ELSE 'true' END);
+    clob_app(l_result, ',"vector_evidence_included":false');
     IF l_candidate_sql IS NOT NULL AND structural_sql_key(p_sql) = structural_sql_key(l_candidate_sql) THEN
       l_candidate_sql := NULL;
       l_candidate_error := 'NO_REWRITE: identical, comment-only, or hint-only candidate';
@@ -685,22 +816,29 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
     clob_app(l_result, ',"rewrite_available":' || CASE WHEN l_candidate_sql IS NULL THEN 'false' ELSE 'true' END);
     clob_app(l_result, ',"leading_change_annotations_present":' || CASE WHEN l_annotation_count > 0 THEN 'true' ELSE 'false' END);
     clob_app(l_result, ',"leading_change_annotation_count":' || TO_CHAR(l_annotation_count));
+    clob_app(l_result, ',"annotation_note":' || json_str(CASE WHEN l_annotation_added = 'Y' THEN 'ASTA added the required leading change annotation' END));
     clob_app(l_result, ',"candidate_sql":');
     clob_app_json_str(l_result, l_candidate_sql);
-    -- Preserve model arrays as arrays; malformed/missing fields become [].
-    SELECT JSON_QUERY(l_response, '$.change_summary' RETURNING CLOB NULL ON ERROR),
-           JSON_QUERY(l_response, '$.semantic_risks' RETURNING CLOB NULL ON ERROR)
+    -- Stage-1 diagnosis owns explanatory arrays; candidate SQL is plain CLOB.
+    SELECT JSON_QUERY(l_diagnosis_response, '$.change_summary' RETURNING CLOB NULL ON ERROR),
+           JSON_QUERY(l_diagnosis_response, '$.semantic_risks' RETURNING CLOB NULL ON ERROR)
     INTO l_change_summary, l_semantic_risks FROM dual;
     clob_app(l_result, ',"change_summary":');
     clob_app_clob(l_result, NVL(l_change_summary, TO_CLOB('[]')));
     clob_app(l_result, ',"semantic_risks":');
     clob_app_clob(l_result, NVL(l_semantic_risks, TO_CLOB('[]')));
+    clob_app(l_result, ',"diagnosis":');
+    IF l_diagnosis_ok = 'Y' THEN clob_app_clob(l_result, l_diagnosis_response); ELSE clob_app(l_result, 'null'); END IF;
     clob_app(l_result, ',"candidate_error":');
-    clob_app(l_result, json_str(CASE WHEN l_call_succeeded = 'N' THEN 'NO_REWRITE: all configured profiles failed' ELSE l_candidate_error END));
+    clob_app(l_result, json_str(CASE
+      WHEN l_candidate_ok = 'Y' THEN l_candidate_error
+      WHEN l_diagnosis_ok = 'N' THEN 'INVALID_RESPONSE: diagnosis profiles failed or returned malformed JSON'
+      ELSE NVL(l_candidate_error, 'NO_REWRITE: two-stage candidate generation returned no safe SQL')
+    END));
     clob_app(l_result, ',"profile_errors":');
     clob_app_clob(l_result, l_profile_errors);
     clob_app(l_result, ',"raw_response":');
-    clob_app_json_str(l_result, l_response);
+    clob_app_json_str(l_result, l_candidate_response);
     clob_app(l_result, '}');
     RETURN l_result;
   EXCEPTION
@@ -710,6 +848,60 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
         json_str(SUBSTR(SQLERRM, 1, 4000)) || ',"candidate_sql":null}'
       );
   END generate_sql_only_tuning;
+
+  FUNCTION repair_sql_candidate(
+    p_original_sql       IN CLOB,
+    p_rejected_candidate IN CLOB,
+    p_error_message      IN VARCHAR2,
+    p_llm_profile        IN VARCHAR2
+  ) RETURN CLOB IS
+    l_prompt       CLOB;
+    l_response     CLOB;
+    l_candidate    CLOB;
+    l_profile      VARCHAR2(128);
+    l_try_profile  VARCHAR2(128);
+  BEGIN
+    IF p_rejected_candidate IS NULL THEN
+      RETURN NULL;
+    END IF;
+    l_profile := validated_profile_name(p_llm_profile);
+    asta_sql_guard_pkg.assert_safe_select(p_original_sql);
+    DBMS_LOB.CREATETEMPORARY(l_prompt, TRUE);
+    clob_app(l_prompt, 'Repair the Oracle SQL syntax error below. Return only one complete executable Oracle SELECT or WITH statement.' || CHR(10));
+    clob_app(l_prompt, 'Make the smallest syntax-only correction. Preserve the candidate structure, output columns, datatypes, ordering, NULL behavior, aggregates and COUNT(DISTINCT) semantics.' || CHR(10));
+    clob_app(l_prompt, 'No JSON, Markdown, prose, DDL, DML, PL/SQL, new hints, semicolon, or slash. Keep the leading ASTA_TUNING_CHANGE comments.' || CHR(10));
+    clob_app(l_prompt, 'Oracle parse error: ' || SUBSTR(p_error_message, 1, 2000) || CHR(10));
+    clob_app(l_prompt, 'Rejected candidate:' || CHR(10));
+    clob_app_clob(l_prompt, p_rejected_candidate);
+
+    FOR i IN 1..2 LOOP
+      l_try_profile := CASE i WHEN 1 THEN l_profile ELSE 'ASTA_GROK_GENAI_PROFILE' END;
+      IF i > 1 AND l_try_profile = l_profile THEN CONTINUE; END IF;
+      BEGIN
+        EXECUTE IMMEDIATE
+          'SELECT DBMS_CLOUD_AI.GENERATE(prompt => :in_prompt, profile_name => :in_profile, action => ''chat'') FROM dual'
+          INTO l_response
+          USING IN l_prompt, IN l_try_profile;
+        l_candidate := normalize_sql_response(l_response);
+        IF l_candidate IS NULL
+           OR UPPER(TRIM(DBMS_LOB.SUBSTR(l_candidate, 100, 1))) = 'NO_REWRITE'
+           OR structural_sql_key(p_original_sql) = structural_sql_key(l_candidate) THEN
+          CONTINUE;
+        END IF;
+        asta_sql_guard_pkg.assert_safe_select(l_candidate);
+        IF leading_change_annotation_count(l_candidate) < 1 THEN
+          l_candidate := prepend_generated_change_annotation(l_candidate);
+        END IF;
+        asta_sql_guard_pkg.assert_safe_select(l_candidate);
+        RETURN l_candidate;
+      EXCEPTION WHEN OTHERS THEN
+        l_candidate := NULL;
+      END;
+    END LOOP;
+    RETURN NULL;
+  EXCEPTION WHEN OTHERS THEN
+    RETURN NULL;
+  END repair_sql_candidate;
 
   FUNCTION final_review(
     p_before_after_json IN CLOB,

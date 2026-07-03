@@ -111,9 +111,8 @@ ADB_PACKAGE_FILES = {
         "FUNCTION validated_profile_name",
         "FUNCTION final_review",
         "FUNCTION generate_sql_only_tuning",
-        "Oracle Database 기준으로 SQL 튜닝을 요청합니다",
+        "Tune this Oracle SQL using the supplied runtime evidence",
         "SQL_ONLY_REWRITE",
-        "ASTA_GROK_REASONING_PROFILE",
         "ASTA_GROK_GENAI_PROFILE",
         "ASTA_DB_GENAI_TEST",
         "candidate_sql must be a single safe Oracle SELECT or WITH statement",
@@ -477,8 +476,8 @@ def test_adb_public_run_lookup_contracts_are_validated_and_boundary_tagged():
     src = _read("db/adb/asta_pkg.sql")
     assert "FUNCTION normalize_run_id(p_run_id IN VARCHAR2) RETURN VARCHAR2" in src
     assert "ASTA_PKG: invalid run_id" in src
-    # 조회 3개와 Scheduler 실행 진입점 1개가 동일한 run_id 검증을 사용한다.
-    assert src.count("l_run_id := normalize_run_id(p_run_id)") == 4
+    # 조회 3개, Scheduler 실행, candidate-timeout watchdog 진입점이 동일한 검증을 사용한다.
+    assert src.count("l_run_id := normalize_run_id(p_run_id)") == 5
     assert "FUNCTION migration_boundary_json RETURN VARCHAR2" in src
     assert '"contract_version":"asta.v1"' in src
     assert '"architecture":"ADB_ORDS_PLSQL"' in src
@@ -519,7 +518,8 @@ def test_adb_main_builds_canonical_before_after_comparison_in_plsql():
     after_pos = src.index("l_after_json := asta_source_bridge_pkg.run_source_evidence")
     comparison_pos = src.index("l_comparison_json := build_comparison_json(l_source_json, l_after_json, l_workload_type)")
     vector_pos = src.index("l_vector_json := asta_vector_pkg.search_similar_cases")
-    assert after_pos < comparison_pos < vector_pos
+    llm_pos = src.index("l_llm_json := asta_llm_pkg.generate_sql_only_tuning")
+    assert vector_pos < llm_pos < after_pos < comparison_pos
 
     assert "p_after_evidence_json  => l_after_json" in src
     assert "p_comparison_json      => l_comparison_json" in src

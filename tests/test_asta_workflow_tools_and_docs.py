@@ -105,15 +105,15 @@ def test_10sql_summary_and_verdict_aggregation_are_deterministic():
     assert runner.aggregate_verdicts(summaries) == Counter({"IMPROVED": 2, "NOT_IMPROVED": 1, "NO_REWRITE": 1})
 
 
-def test_current_docs_describe_canonical_sql_only_workflow_and_links():
+def test_current_docs_describe_evidence_aware_workflow_and_links():
     docs = ["OADT2_ASTA_ARCHITECTURE.md", "AI_SQL_TUNING_ASSISTANT_PROGRAM_SPEC.md",
             "AI_SQL_TUNING_ASSISTANT_MANUAL.md", "README.md"]
     texts = [(ROOT / "docs" / name).read_text(encoding="utf-8") for name in docs]
     for text in texts:
-        assert "2026-06-30" in text
-        assert "SQL-only" in text
+        assert "2026-07-03" in text
+        assert "Vector" in text or "VECTOR_KB" in text
         assert "BEFORE_AFTER_COMPARE" in text
-        assert text.index("LLM_REWRITE") < text.index("VECTOR_KB")
+        assert "XPLAN" in text
         assert "deterministic" in text
         assert "/api/asta/runs/{run_id}/report" in text
         assert "DB Link" in text and "thin proxy" in text

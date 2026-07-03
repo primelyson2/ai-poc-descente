@@ -119,7 +119,7 @@ def write_summary(outdir: pathlib.Path, rows: list[dict], started_at: str) -> No
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--samples", default="asta-ui-01,asta-ui-02,asta-ui-08")
+    parser.add_argument("--samples", default="asta-awr-01,asta-awr-02,asta-awr-03")
     parser.add_argument("--modes", default="A,B,C")
     parser.add_argument("--profile", default="ASTA_GPT5_PROFILE")
     parser.add_argument("--timeout", type=int, default=2100)
@@ -155,6 +155,8 @@ def main() -> int:
                 "tuning_context": {
                     "prompt_mode": mode,
                     "source": "ASTA_PROMPT_ABC_EXPERIMENT",
+                    "workload_type": sample.get("workload") or "OLTP",
+                    "optimization_goal": "MINIMIZE_ELAPSED_TIME" if sample.get("workload") == "BATCH" else "MINIMIZE_BUFFER_READS",
                     "user_notes": "SQL 의미와 결과를 유지하면서 반복 fact-table 접근과 불필요한 재계산을 줄이세요.",
                 },
             }

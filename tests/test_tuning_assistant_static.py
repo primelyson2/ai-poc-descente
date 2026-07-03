@@ -29,10 +29,16 @@ def test_tuning_assistant_view_has_asta_integration_placeholder():
 
 
 def test_tuning_assistant_uses_large_sql_editor_and_formats_before_report():
+    index = (ROOT / "static/index.html").read_text(encoding="utf-8")
     view = (ROOT / "static/js/extensions/tuning_assistant.js").read_text(encoding="utf-8")
 
+    assert "/static/vendor/sql-formatter/15.6.9/sql-formatter.min.js" in index
     assert "tuning-line-numbers" in view
     assert "formatSql(sql)" in view
+    assert 'window.sqlFormatter.format(source' in view
+    assert 'language: "plsql"' in view
+    assert 'logicalOperatorNewline: "before"' in view
+    assert "preserving the original SQL" in view
     assert "id=\"asta-sql\"" in view
     assert "SQL Formatting" in view
     assert "height: clamp(520px" in view
@@ -125,9 +131,9 @@ def test_tuning_assistant_profiles_are_loaded_dynamically():
     view = (ROOT / "static/js/extensions/tuning_assistant.js").read_text(encoding="utf-8")
 
     assert "fetchJson(\"/api/asta/profiles\")" in view
-    assert "ASTA_GPT5_PROFILE" in view
+    assert "ASTA_GEMINI_PROFILE" in view
     assert "toUpperCase().startsWith(\"ASTA\")" in view
-    assert "const DEFAULT_AI_PROFILE = \"ASTA_GPT5_PROFILE\"" in view
+    assert "const DEFAULT_AI_PROFILE = \"ASTA_GROK_REASONING_PROFILE\"" in view
     assert "const preferredProfile = astaProfiles.find((profile) => profile.name === DEFAULT_AI_PROFILE)" in view
     assert "profile.name === preferredProfile.name" in view
     assert "profile.isDefault || profile.name === DEFAULT_AI_PROFILE" not in view
@@ -158,11 +164,11 @@ def test_tuning_assistant_sample_sqls_include_complex_cases():
     view = (ROOT / "static/js/extensions/tuning_assistant.js").read_text(encoding="utf-8")
 
     assert "ASTA_SAMPLE_SQLS" in view
-    assert "ASTA_UI_MALICIOUS_01" in view
-    assert "ASTA_UI_MALICIOUS_10" in view
-    assert "악성:" in view
-    assert "DEVDO.SALES s" in view
-    assert "ASKORACLE.TIMES" not in view
+    assert view.count('id: "asta-awr-') == 10
+    assert "7rcw6d3us86r7" in view
+    assert "SESL0640.selectList" in view
+    assert 'id: "asta-ui-' not in view
+    assert 'id: "asta-batch-' not in view
 
 
 
@@ -181,7 +187,22 @@ def test_tuning_assistant_result_report_has_large_scroll_container():
 def test_tuning_assistant_sample_sqls_are_intentionally_inefficient():
     view = (ROOT / "static/js/extensions/tuning_assistant.js").read_text(encoding="utf-8")
 
-    assert view.count("id: \"asta-ui-") == 10
+    assert view.count('id: "asta-awr-') == 10
+    assert "SESL0640.selectList" in view
+    assert view.count("ASTA intentionally inefficient sample") == 9
+    assert "repeated correlated aggregates" in view
+    assert "DISTINCT over analytic aggregation" in view
+    assert "UNION sort over the same table" in view
+    assert "composite correlated IN" in view
+
+
+def test_tuning_assistant_removes_only_a_trailing_sql_terminator_before_submit():
+    view = (ROOT / "static/js/extensions/tuning_assistant.js").read_text(encoding="utf-8")
+
+    helper = view[view.index("function stripTrailingSqlTerminator"):view.index("function formatDuration")]
+    assert 'text.endsWith(";")' in helper
+    assert "text.slice(0, -1).trimEnd()" in helper
+    assert view.count("const sql = stripTrailingSqlTerminator(sqlInput.value);") == 2
 
 
 def test_vector_case_markup_is_interactive_without_trusting_report_html():
@@ -205,18 +226,14 @@ def test_vector_case_markup_is_interactive_without_trusting_report_html():
 def test_tuning_assistant_sample_sql_details_are_preserved():
     view = (ROOT / "static/js/extensions/tuning_assistant.js").read_text(encoding="utf-8")
 
-    assert view.count("id: \"asta-ui-") == 10
-    assert "ASTA_UI_MALICIOUS_01_repeat_sales_8_scans" in view
-    assert "ASTA_UI_MALICIOUS_03_bad_index_hint_function_predicate" in view
-    assert "ASTA_UI_MALICIOUS_10_forced_nested_loops_bad_index" in view
-    assert "/*+ index(s SALES_PROMO_BIX)" in view
-    assert "/*+ ordered use_nl(s) use_nl(k) index(s SALES_PROMO_BIX)" in view
-    assert "join DEVDO.SALES s2" in view
-    assert "join DEVDO.SALES s3" in view
-    assert "join DEVDO.SALES s4" in view
-    assert "select /*+ materialize */" in view
-    assert "to_char(t.calendar_year)" in view
-    assert "nvl(s.channel_id,-1)" in view
+    expected_sql_ids = ["7rcw6d3us86r7"]
+    assert view.count('id: "asta-awr-') == 10
+    for sql_id in expected_sql_ids:
+        assert sql_id in view
+    assert ":v_" not in view
+    assert "FOR UPDATE NOWAIT" not in view.upper()
+    assert "FROM DSNT.TGP_STYLE_M A" in view
+    assert "CONF_CSM_AMT * 0.6 AS CONF_CSM_AMT" in view
 
 def test_asta_error_toast_stays_visible_longer():
     view = (ROOT / "static/js/extensions/tuning_assistant.js").read_text(encoding="utf-8")

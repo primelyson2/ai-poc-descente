@@ -1,6 +1,6 @@
 # OADT2 ASTA 내부 아키텍처 및 수행 순서
 
-최종 업데이트: 2026-06-30
+최종 업데이트: 2026-07-03
 
 ## Canonical 경계
 
@@ -13,14 +13,14 @@
 3. `SQL_GUARD`
 4. `BEFORE_EVIDENCE`
 5. `SQL_TUNING_ADVISOR`
-6. `LLM_REWRITE` — 원본 SQL과 고정 구조 재작성 지시만 넣는 **SQL-only** 호출
+6. `LLM_REWRITE` — 원본 SQL과 compact Source/Vector evidence를 넣는 evidence-aware 호출
 7. `AFTER_EVIDENCE` — 후보가 있을 때만 실행
 8. `BEFORE_AFTER_COMPARE` — PL/SQL **deterministic** 판정
-9. `VECTOR_KB` — 비교가 끝난 결과의 참고 사례 조회
+9. `VECTOR_KB` — LLM 호출 전 유사 사례 조회
 10. `FINAL_REPORT`
 11. `VECTOR_SAVE`
 
-`LLM_REWRITE` 뒤에 `VECTOR_KB`가 위치한다. 과거 Vector-before-LLM 및 `LLM_FINAL_REVIEW` canonical 흐름은 deprecated이며 신규 run에 쓰지 않는다. 호환용 artifact의 final review는 `SKIPPED / DETERMINISTIC_COMPARISON`이다.
+단계 번호는 저장/API 호환을 위해 그대로지만 실행 순서는 `BEFORE_EVIDENCE → SQL_TUNING_ADVISOR → VECTOR_KB → LLM_REWRITE`다. LLM은 SQL, XPLAN, runtime metrics, 객체/인덱스 메타데이터, Advisor 상태, 유사 사례와 사용자 목표를 함께 분석한다. 호환용 artifact의 final review는 `SKIPPED / DETERMINISTIC_COMPARISON`이다.
 
 ## 판정과 보고서
 

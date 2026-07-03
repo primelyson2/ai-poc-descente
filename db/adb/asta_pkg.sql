@@ -4,6 +4,7 @@
 CREATE OR REPLACE PACKAGE asta_pkg AUTHID DEFINER AS
   FUNCTION submit_run(p_body_json IN CLOB) RETURN CLOB;
   PROCEDURE execute_run(p_run_id IN VARCHAR2);
+  PROCEDURE enforce_candidate_timeout(p_run_id IN VARCHAR2);
   FUNCTION analyze_sql(p_body_json IN CLOB) RETURN CLOB;
   FUNCTION list_profiles RETURN CLOB;
   FUNCTION get_run(p_run_id IN VARCHAR2) RETURN CLOB;
@@ -13,7 +14,7 @@ END asta_pkg;
 /
 
 CREATE OR REPLACE PACKAGE BODY asta_pkg AS
-  C_DEFAULT_LLM_PROFILE CONSTANT VARCHAR2(128) := 'ASTA_GPT5_PROFILE';
+  C_DEFAULT_LLM_PROFILE CONSTANT VARCHAR2(128) := 'ASTA_GROK_REASONING_PROFILE';
   C_DEFAULT_SOURCE_DB_ID CONSTANT VARCHAR2(64) := 'DB0903_TESTDB';
 
   FUNCTION json_str(p_val IN VARCHAR2) RETURN VARCHAR2 IS
@@ -574,22 +575,94 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
     RETURN TO_CLOB('{"verdict":"INSUFFICIENT_EVIDENCE","verdict_reason":"metadata assembly failed"}');
   END build_vector_metadata;
 
-  FUNCTION llm_original_fallback_json(p_sql IN CLOB, p_reason IN VARCHAR2) RETURN CLOB IS
+  FUNCTION llm_original_fallback_json(
+    p_candidate_sql      IN CLOB,
+    p_reason             IN VARCHAR2,
+    p_rejected_candidate IN CLOB,
+    p_generation_json    IN CLOB,
+    p_repair_status      IN VARCHAR2
+  ) RETURN CLOB IS
     l_out CLOB;
   BEGIN
     DBMS_LOB.CREATETEMPORARY(l_out, TRUE);
-    clob_app(l_out, '{"status":"COMPLETED","code":"LLM_TUNE","contract_version":"asta.v1","execution_boundary":"ADB_DBMS_CLOUD_AI"');
-    clob_app(l_out, ',"response_contract":"JSON_ONLY","candidate_guard_policy":"SELECT_WITH_SINGLE_STATEMENT"');
+    clob_app(l_out, '{"status":"COMPLETED","code":"SQL_ONLY_REWRITE","contract_version":"asta.v1","execution_boundary":"ADB_DBMS_CLOUD_AI"');
+    clob_app(l_out, ',"response_contract":"TWO_STAGE_DIAGNOSIS_JSON_AND_SQL_CLOB","candidate_guard_policy":"SELECT_WITH_SINGLE_STATEMENT"');
     clob_app(l_out, ',"candidate_sql":');
-    clob_app_json_str(l_out, p_sql);
-    clob_app(l_out, ',"change_reason":"LLM candidate failed executable validation"');
-    clob_app(l_out, ',"change_summary":"원본 SQL 유지"');
-    clob_app(l_out, ',"change_location":"변경 없음"');
+    clob_app_json_str(l_out, p_candidate_sql);
+    clob_app(l_out, ',"rewrite_available":' || CASE WHEN p_candidate_sql IS NULL THEN 'false' ELSE 'true' END);
+    clob_app(l_out, ',"repair_status":' || json_str(p_repair_status));
     clob_app(l_out, ',"candidate_error":');
     clob_app(l_out, json_str(SUBSTR(p_reason, 1, 4000)));
-    clob_app(l_out, ',"raw_response":null}');
+    clob_app(l_out, ',"rejected_candidate_sql":');
+    clob_app_json_str(l_out, p_rejected_candidate);
+    clob_app(l_out, ',"generation":');
+    clob_app_clob(l_out, NVL(p_generation_json, TO_CLOB('null')));
+    clob_app(l_out, '}');
     RETURN l_out;
   END llm_original_fallback_json;
+
+  FUNCTION candidate_timeout_seconds(p_source_json IN CLOB) RETURN PLS_INTEGER IS
+    l_elapsed_us NUMBER;
+  BEGIN
+    SELECT JSON_VALUE(p_source_json, '$.last_elapsed_time_us' RETURNING NUMBER NULL ON ERROR)
+      INTO l_elapsed_us FROM dual;
+    RETURN GREATEST(60, LEAST(900, CEIL(NVL(l_elapsed_us, 10000000) / 1000000 * 3 + 30)));
+  EXCEPTION WHEN OTHERS THEN
+    RETURN 300;
+  END candidate_timeout_seconds;
+
+  PROCEDURE arm_candidate_watchdog(
+    p_run_id IN VARCHAR2,
+    p_timeout_seconds IN PLS_INTEGER,
+    p_watchdog_job OUT VARCHAR2
+  ) IS
+  BEGIN
+    p_watchdog_job := 'ASTA_WD_' || SUBSTR(UPPER(RAWTOHEX(SYS_GUID())), 1, 20);
+    DBMS_SCHEDULER.CREATE_JOB(
+      job_name            => p_watchdog_job,
+      job_type            => 'STORED_PROCEDURE',
+      job_action          => 'ASTA_PKG.ENFORCE_CANDIDATE_TIMEOUT',
+      number_of_arguments => 1,
+      start_date          => SYSTIMESTAMP + NUMTODSINTERVAL(p_timeout_seconds, 'SECOND'),
+      enabled             => FALSE,
+      auto_drop           => TRUE
+    );
+    DBMS_SCHEDULER.SET_JOB_ARGUMENT_VALUE(p_watchdog_job, 1, p_run_id);
+    DBMS_SCHEDULER.ENABLE(p_watchdog_job);
+  END arm_candidate_watchdog;
+
+  PROCEDURE disarm_candidate_watchdog(p_watchdog_job IN OUT VARCHAR2) IS
+  BEGIN
+    IF p_watchdog_job IS NOT NULL THEN
+      DBMS_SCHEDULER.DROP_JOB(p_watchdog_job, force => TRUE);
+      p_watchdog_job := NULL;
+    END IF;
+  EXCEPTION WHEN OTHERS THEN
+    p_watchdog_job := NULL;
+  END disarm_candidate_watchdog;
+
+  PROCEDURE enforce_candidate_timeout(p_run_id IN VARCHAR2) IS
+    l_run_id VARCHAR2(64);
+    l_parent_job VARCHAR2(128);
+    l_detail VARCHAR2(4000) := 'Candidate execution exceeded the adaptive runtime limit; original SQL retained';
+  BEGIN
+    l_run_id := normalize_run_id(p_run_id);
+    SELECT job_name INTO l_parent_job
+      FROM asta_runs
+     WHERE run_id = l_run_id AND status = 'RUNNING';
+    UPDATE asta_run_progress
+       SET status='FAILED', detail=l_detail, completed_at=SYSTIMESTAMP
+     WHERE run_id=l_run_id AND seq=7 AND status='RUNNING';
+    UPDATE asta_runs
+       SET status='FAILED', completed_at=SYSTIMESTAMP,
+           error_code='CANDIDATE_RUNTIME_LIMIT', error_message=l_detail
+     WHERE run_id=l_run_id AND status='RUNNING';
+    COMMIT;
+    DBMS_SCHEDULER.STOP_JOB(l_parent_job, force => TRUE);
+  EXCEPTION
+    WHEN NO_DATA_FOUND THEN NULL;
+    WHEN OTHERS THEN ROLLBACK;
+  END enforce_candidate_timeout;
 
   FUNCTION sql_compare_key(p_sql IN CLOB) RETURN VARCHAR2 IS
     l_v VARCHAR2(32767);
@@ -656,6 +729,7 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
     l_tuned_sql           CLOB;
     l_llm_profile         VARCHAR2(128);
     l_source_db_id        VARCHAR2(64);
+    l_source_sql_id       VARCHAR2(13);
     l_source_schema       VARCHAR2(128);
     l_source_db_link      VARCHAR2(128);
     l_source_connection_json CLOB;
@@ -676,7 +750,12 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
     l_comparison_json     CLOB;
     l_vector_json         CLOB;
     l_llm_json            CLOB;
+    l_generation_json     CLOB;
+    l_rejected_candidate  CLOB;
+    l_repaired_candidate  CLOB;
     l_candidate_failed    VARCHAR2(1) := 'N';
+    l_candidate_timeout   PLS_INTEGER;
+    l_candidate_watchdog  VARCHAR2(128);
     l_final_review_json   CLOB;
     l_vector_save_json    CLOB;
     l_vector_metadata_json CLOB;
@@ -745,6 +824,9 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
     FROM   dual;
 
     l_sql := TO_CLOB(l_sql_vc);
+    l_source_sql_id := LOWER(TRIM(
+      JSON_VALUE(p_body_json, '$.source_sql_id' RETURNING VARCHAR2(13) NULL ON ERROR)
+    ));
     l_source_db_id := normalize_source_db_id(l_source_db_id);
     l_fetch_rows := normalized_fetch_rows(l_fetch_rows);
     l_vector_top_k := normalized_vector_top_k(l_vector_top_k);
@@ -824,7 +906,8 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
       p_fetch_rows       => l_fetch_rows,
       p_repeat_policy    => 'AUTO',
       p_run_advisor      => l_run_advisor,
-      p_sqltune_time_sec => l_sqltune_time_limit
+      p_sqltune_time_sec => l_sqltune_time_limit,
+      p_source_sql_id    => l_source_sql_id
     );
     l_source_error := source_response_error_message(l_source_json);
     IF l_source_error IS NOT NULL THEN
@@ -841,14 +924,21 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
       advisor_progress_detail(l_source_json, l_run_advisor)
     );
 
-    record_progress(l_run_id, 6, 'LLM_REWRITE', 'SQL-only structural rewrite', 'RUNNING');
+    record_progress(l_run_id, 9, 'VECTOR_KB', 'ADB Vector KB search for LLM evidence', 'RUNNING');
+    l_vector_json := asta_vector_pkg.search_similar_cases(l_sql, l_vector_top_k);
+    record_progress(l_run_id, 9, 'VECTOR_KB', 'ADB Vector KB search for LLM evidence', progress_status_from_json(l_vector_json));
+
+    record_progress(l_run_id, 6, 'LLM_REWRITE', 'Evidence-aware structural rewrite', 'RUNNING');
     l_llm_json := asta_llm_pkg.generate_sql_only_tuning(
-      p_sql         => l_sql,
-      p_llm_profile => l_llm_profile,
-      p_workload_type => l_workload_type,
-      p_use_llm     => l_use_llm
+      p_sql                  => l_sql,
+      p_llm_profile          => l_llm_profile,
+      p_workload_type        => l_workload_type,
+      p_source_evidence_json => l_source_json,
+      p_vector_json          => l_vector_json,
+      p_tuning_context_json  => l_context_json,
+      p_use_llm              => l_use_llm
     );
-    record_progress(l_run_id, 6, 'LLM_REWRITE', 'SQL-only structural rewrite', progress_status_from_json(l_llm_json));
+    record_progress(l_run_id, 6, 'LLM_REWRITE', 'Evidence-aware structural rewrite', progress_status_from_json(l_llm_json));
 
     BEGIN
       SELECT JSON_VALUE(l_llm_json, '$.candidate_sql' RETURNING VARCHAR2(32767) NULL ON ERROR)
@@ -866,6 +956,10 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
 
     IF l_tuned_sql IS NOT NULL THEN
       record_progress(l_run_id, 7, 'AFTER_EVIDENCE', 'Tuned SQL evidence', 'RUNNING');
+      l_candidate_timeout := candidate_timeout_seconds(l_source_json);
+      arm_candidate_watchdog(l_run_id, l_candidate_timeout, l_candidate_watchdog);
+      record_progress(l_run_id, 7, 'AFTER_EVIDENCE', 'Tuned SQL evidence', 'RUNNING',
+        'Adaptive candidate runtime limit: ' || TO_CHAR(l_candidate_timeout) || ' seconds');
       l_after_json := asta_source_bridge_pkg.run_source_evidence(
         p_source_db_id     => l_source_db_id,
         p_sql              => l_tuned_sql,
@@ -873,10 +967,45 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
         p_fetch_rows       => l_fetch_rows,
         p_repeat_policy    => 'AUTO',
         p_run_advisor      => 'N',
-        p_sqltune_time_sec => l_sqltune_time_limit
+        p_sqltune_time_sec => l_sqltune_time_limit,
+        p_source_sql_id    => l_source_sql_id
       );
+      disarm_candidate_watchdog(l_candidate_watchdog);
 
       l_source_error := source_response_error_message(l_after_json);
+      IF l_source_error IS NOT NULL THEN
+        l_generation_json := l_llm_json;
+        l_rejected_candidate := l_tuned_sql;
+        l_repaired_candidate := asta_llm_pkg.repair_sql_candidate(
+          p_original_sql       => l_sql,
+          p_rejected_candidate => l_rejected_candidate,
+          p_error_message      => l_source_error,
+          p_llm_profile        => l_llm_profile
+        );
+        IF l_repaired_candidate IS NOT NULL THEN
+          arm_candidate_watchdog(l_run_id, l_candidate_timeout, l_candidate_watchdog);
+          l_after_json := asta_source_bridge_pkg.run_source_evidence(
+            p_source_db_id     => l_source_db_id,
+            p_sql              => l_repaired_candidate,
+            p_run_id           => l_run_id || '-REPAIRED',
+            p_fetch_rows       => l_fetch_rows,
+            p_repeat_policy    => 'AUTO',
+            p_run_advisor      => 'N',
+            p_sqltune_time_sec => l_sqltune_time_limit,
+            p_source_sql_id    => l_source_sql_id
+          );
+          disarm_candidate_watchdog(l_candidate_watchdog);
+          l_source_error := source_response_error_message(l_after_json);
+          IF l_source_error IS NULL THEN
+            l_tuned_sql := l_repaired_candidate;
+            l_llm_json := llm_original_fallback_json(
+              l_repaired_candidate, NULL, l_rejected_candidate,
+              l_generation_json, 'SUCCESS'
+            );
+          END IF;
+        END IF;
+      END IF;
+
       IF l_source_error IS NOT NULL THEN
         -- The LLM can return syntactically invalid Oracle SQL for complex inputs
         -- even after passing the lightweight SELECT/WITH guard. Do not leave the
@@ -891,9 +1020,18 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
           ',"equivalence_status":"UNKNOWN","retain_original_sql":true' ||
           ',"workload_type":' || json_str(l_workload_type) ||
           ',"primary_metric":' || json_str(CASE WHEN l_workload_type = 'BATCH' THEN 'ELAPSED_TIME' ELSE 'BUFFER_READS' END) ||
-          ',"optimization_goal":' || json_str(CASE WHEN l_workload_type = 'BATCH' THEN 'MINIMIZE_ELAPSED_TIME' ELSE 'MINIMIZE_BUFFER_READS' END) || '}'
+          ',"optimization_goal":' || json_str(CASE WHEN l_workload_type = 'BATCH' THEN 'MINIMIZE_ELAPSED_TIME' ELSE 'MINIMIZE_BUFFER_READS' END) ||
+          ',"before_buffer_gets":' || COALESCE(JSON_VALUE(l_source_json, '$.last_cr_buffer_gets' RETURNING VARCHAR2(100) NULL ON ERROR), 'null') ||
+          ',"after_buffer_gets":null' ||
+          ',"before_disk_reads":' || COALESCE(JSON_VALUE(l_source_json, '$.last_disk_reads' RETURNING VARCHAR2(100) NULL ON ERROR), 'null') ||
+          ',"after_disk_reads":null' ||
+          ',"before_elapsed_time_us":' || COALESCE(JSON_VALUE(l_source_json, '$.last_elapsed_time_us' RETURNING VARCHAR2(100) NULL ON ERROR), 'null') ||
+          ',"after_elapsed_time_us":null}'
         );
-        l_llm_json := llm_original_fallback_json(l_sql, 'Invalid LLM candidate: ' || l_source_error);
+        l_llm_json := llm_original_fallback_json(
+          NULL, 'Invalid LLM candidate after automatic syntax repair: ' || l_source_error,
+          COALESCE(l_repaired_candidate, l_rejected_candidate), l_generation_json, 'FAILED'
+        );
         l_tuned_sql := l_sql;
         l_after_json := asta_source_bridge_pkg.run_source_evidence(
           p_source_db_id     => l_source_db_id,
@@ -902,7 +1040,8 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
           p_fetch_rows       => l_fetch_rows,
           p_repeat_policy    => 'AUTO',
           p_run_advisor      => 'N',
-          p_sqltune_time_sec => l_sqltune_time_limit
+          p_sqltune_time_sec => l_sqltune_time_limit,
+          p_source_sql_id    => l_source_sql_id
         );
         l_source_error := source_response_error_message(l_after_json);
       END IF;
@@ -932,7 +1071,8 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
 
       l_final_review_json := TO_CLOB('{"status":"SKIPPED","reason":"DETERMINISTIC_COMPARISON"}');
       record_progress(l_run_id, 8, 'BEFORE_AFTER_COMPARE', 'Deterministic Before/After comparison',
-        CASE WHEN l_candidate_failed = 'Y' THEN 'FAILED' ELSE progress_status_from_json(l_comparison_json) END);
+        CASE WHEN l_candidate_failed = 'Y' THEN 'FAILED' ELSE progress_status_from_json(l_comparison_json) END,
+        SUBSTR(JSON_VALUE(l_comparison_json, '$.message' RETURNING VARCHAR2(1000) NULL ON ERROR), 1, 1000));
     ELSE
       record_progress(l_run_id, 7, 'AFTER_EVIDENCE', 'Tuned SQL evidence', 'SKIPPED', 'No structural rewrite candidate');
       l_comparison_json := TO_CLOB(
@@ -940,15 +1080,17 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
         '"verdict_reason":"No structural rewrite candidate","equivalence_status":"NOT_APPLICABLE","retain_original_sql":true' ||
         ',"workload_type":' || json_str(l_workload_type) ||
         ',"primary_metric":' || json_str(CASE WHEN l_workload_type = 'BATCH' THEN 'ELAPSED_TIME' ELSE 'BUFFER_READS' END) ||
-        ',"optimization_goal":' || json_str(CASE WHEN l_workload_type = 'BATCH' THEN 'MINIMIZE_ELAPSED_TIME' ELSE 'MINIMIZE_BUFFER_READS' END) || '}'
+        ',"optimization_goal":' || json_str(CASE WHEN l_workload_type = 'BATCH' THEN 'MINIMIZE_ELAPSED_TIME' ELSE 'MINIMIZE_BUFFER_READS' END) ||
+        ',"before_buffer_gets":' || COALESCE(JSON_VALUE(l_source_json, '$.last_cr_buffer_gets' RETURNING VARCHAR2(100) NULL ON ERROR), 'null') ||
+        ',"after_buffer_gets":null' ||
+        ',"before_disk_reads":' || COALESCE(JSON_VALUE(l_source_json, '$.last_disk_reads' RETURNING VARCHAR2(100) NULL ON ERROR), 'null') ||
+        ',"after_disk_reads":null' ||
+        ',"before_elapsed_time_us":' || COALESCE(JSON_VALUE(l_source_json, '$.last_elapsed_time_us' RETURNING VARCHAR2(100) NULL ON ERROR), 'null') ||
+        ',"after_elapsed_time_us":null}'
       );
       record_progress(l_run_id, 8, 'BEFORE_AFTER_COMPARE', 'Deterministic Before/After comparison', 'SKIPPED', 'No structural rewrite candidate');
       l_final_review_json := TO_CLOB('{"status":"SKIPPED","reason":"DETERMINISTIC_COMPARISON"}');
     END IF;
-
-    record_progress(l_run_id, 9, 'VECTOR_KB', 'ADB Vector KB search after comparison', 'RUNNING');
-    l_vector_json := asta_vector_pkg.search_similar_cases(l_sql, l_vector_top_k);
-    record_progress(l_run_id, 9, 'VECTOR_KB', 'ADB Vector KB search after comparison', progress_status_from_json(l_vector_json));
 
     record_progress(l_run_id, 10, 'FINAL_REPORT', 'Final report synthesis', 'RUNNING');
     record_progress(l_run_id, 11, 'VECTOR_SAVE', 'ADB Vector KB save', 'RUNNING');
@@ -1319,4 +1461,3 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
   END get_report;
 END asta_pkg;
 /
-

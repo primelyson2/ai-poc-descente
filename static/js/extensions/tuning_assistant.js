@@ -13,332 +13,787 @@
   const DEFAULT_ORDS_BASE_URL = "/api/asta";
   const DEFAULT_ENDPOINT = `${DEFAULT_ORDS_BASE_URL}/analyze`;
   const DEFAULT_SOURCE_ID = "DB0903_TESTDB";
-  const DEFAULT_AI_PROFILE = "ASTA_GPT5_PROFILE";
+  const DEFAULT_AI_PROFILE = "ASTA_GROK_REASONING_PROFILE";
   const ASTA_SAMPLE_SQLS = [
     {
-      id: "asta-ui-01",
-      label: "01. 악성: SALES 8회 반복 스캔 UNION ALL",
-      sql: `select /* ASTA_UI_MALICIOUS_01_repeat_sales_8_scans */ bucket, cnt, amt
-from (
-  select 'year_1998' bucket, count(*) cnt, sum(s.amount_sold) amt from DEVDO.SALES s join DEVDO.TIMES t on t.time_id=s.time_id where t.calendar_year=1998
-  union all
-  select 'year_1999' bucket, count(*) cnt, sum(s.amount_sold) amt from DEVDO.SALES s join DEVDO.TIMES t on t.time_id=s.time_id where t.calendar_year=1999
-  union all
-  select 'year_2000' bucket, count(*) cnt, sum(s.amount_sold) amt from DEVDO.SALES s join DEVDO.TIMES t on t.time_id=s.time_id where t.calendar_year=2000
-  union all
-  select 'year_2001' bucket, count(*) cnt, sum(s.amount_sold) amt from DEVDO.SALES s join DEVDO.TIMES t on t.time_id=s.time_id where t.calendar_year=2001
-  union all
-  select 'channel_2' bucket, count(*) cnt, sum(s.amount_sold) amt from DEVDO.SALES s where s.channel_id=2
-  union all
-  select 'channel_3' bucket, count(*) cnt, sum(s.amount_sold) amt from DEVDO.SALES s where s.channel_id=3
-  union all
-  select 'promo_exists' bucket, count(*) cnt, sum(s.amount_sold) amt from DEVDO.SALES s where exists (select 1 from DEVDO.PROMOTIONS p where p.promo_id=s.promo_id)
-  union all
-  select 'cost_exists' bucket, count(*) cnt, sum(s.amount_sold) amt from DEVDO.SALES s where exists (select 1 from DEVDO.COSTS k where k.prod_id=s.prod_id and k.time_id=s.time_id and k.channel_id=s.channel_id)
-)
-order by bucket`,
-    },
-    {
-      id: "asta-ui-02",
-      label: "02. 악성: PRODUCTS별 SALES 상관 서브쿼리 7개",
-      sql: `select /* ASTA_UI_MALICIOUS_02_many_product_scalar_subqueries */
-       p.prod_id,
-       p.prod_name,
-       p.prod_category,
-       (select count(*) from DEVDO.SALES s where s.prod_id=p.prod_id) sales_cnt,
-       (select sum(s.amount_sold) from DEVDO.SALES s where s.prod_id=p.prod_id) amount_sum,
-       (select sum(s.quantity_sold) from DEVDO.SALES s where s.prod_id=p.prod_id) qty_sum,
-       (select count(distinct s.cust_id) from DEVDO.SALES s where s.prod_id=p.prod_id) buyer_cnt,
-       (select count(*) from DEVDO.SALES s join DEVDO.TIMES t on t.time_id=s.time_id where s.prod_id=p.prod_id and t.calendar_year=1998) y1998_cnt,
-       (select count(*) from DEVDO.SALES s join DEVDO.TIMES t on t.time_id=s.time_id where s.prod_id=p.prod_id and t.calendar_year=1999) y1999_cnt,
-       (select avg(k.unit_cost) from DEVDO.COSTS k where k.prod_id=p.prod_id) avg_cost
-from DEVDO.PRODUCTS p
-where p.prod_category is not null
-order by amount_sum desc nulls last`,
-    },
-    {
-      id: "asta-ui-03",
-      label: "03. 악성: 잘못된 INDEX 힌트 + 함수 predicate",
-      sql: `select /*+ index(s SALES_PROMO_BIX) index(t TIMES_PK) leading(t s p) use_nl(s p) */ /* ASTA_UI_MALICIOUS_03_bad_index_hint_function_predicate */
-       to_char(t.calendar_year) yy,
-       substr(upper(p.prod_category),1,20) category,
-       count(*) cnt,
-       sum(s.amount_sold) amt
-from DEVDO.TIMES t
-join DEVDO.SALES s on s.time_id=t.time_id
-join DEVDO.PRODUCTS p on p.prod_id=s.prod_id
-where to_char(t.calendar_year) in ('1998','1999','2000','2001')
-  and substr(upper(nvl(p.prod_category,'UNKNOWN')),1,1) between 'A' and 'Z'
-  and nvl(s.amount_sold,0) + nvl(s.quantity_sold,0) > 0
-group by to_char(t.calendar_year), substr(upper(p.prod_category),1,20)
-order by amt desc`,
-    },
-    {
-      id: "asta-ui-04",
-      label: "04. 악성: SALES self join 4회로 row 폭증",
-      sql: `select /*+ leading(s1 s2 s3 s4) use_hash(s2) use_hash(s3) use_hash(s4) */ /* ASTA_UI_MALICIOUS_04_sales_self_join_explosion */
-       s1.prod_id,
-       s1.channel_id,
-       count(*) join_rows,
-       sum(s1.amount_sold) amt1,
-       sum(s2.amount_sold) amt2,
-       sum(s3.amount_sold) amt3,
-       sum(s4.amount_sold) amt4
-from DEVDO.SALES s1
-join DEVDO.SALES s2 on s2.prod_id=s1.prod_id and s2.channel_id=s1.channel_id and s2.time_id=s1.time_id
-join DEVDO.SALES s3 on s3.cust_id=s1.cust_id and s3.time_id=s1.time_id
-join DEVDO.SALES s4 on s4.prod_id=s1.prod_id and s4.time_id=s1.time_id
-join DEVDO.TIMES t on t.time_id=s1.time_id
-where t.calendar_year=1999
-  and s1.amount_sold > 0
-  and s2.amount_sold > 0
-  and s3.amount_sold > 0
-  and s4.amount_sold > 0
-group by s1.prod_id, s1.channel_id
-having count(*) > 50
-order by join_rows desc`,
-    },
-    {
-      id: "asta-ui-05",
-      label: "05. 악성: 같은 SALES/COSTS 집계를 CTE 5개로 중복 계산",
-      sql: `with q1998 as (
-  select /*+ materialize */ /* ASTA_UI_MALICIOUS_05_duplicate_cte_scans */ s.prod_id, s.channel_id, sum(s.amount_sold - s.quantity_sold*nvl(k.unit_cost,0)) margin
-  from DEVDO.SALES s left join DEVDO.COSTS k on k.prod_id=s.prod_id and k.time_id=s.time_id and k.channel_id=s.channel_id
-  join DEVDO.TIMES t on t.time_id=s.time_id where t.calendar_year=1998 group by s.prod_id, s.channel_id
-), q1999 as (
-  select /*+ materialize */ s.prod_id, s.channel_id, sum(s.amount_sold - s.quantity_sold*nvl(k.unit_cost,0)) margin
-  from DEVDO.SALES s left join DEVDO.COSTS k on k.prod_id=s.prod_id and k.time_id=s.time_id and k.channel_id=s.channel_id
-  join DEVDO.TIMES t on t.time_id=s.time_id where t.calendar_year=1999 group by s.prod_id, s.channel_id
-), q2000 as (
-  select /*+ materialize */ s.prod_id, s.channel_id, sum(s.amount_sold - s.quantity_sold*nvl(k.unit_cost,0)) margin
-  from DEVDO.SALES s left join DEVDO.COSTS k on k.prod_id=s.prod_id and k.time_id=s.time_id and k.channel_id=s.channel_id
-  join DEVDO.TIMES t on t.time_id=s.time_id where t.calendar_year=2000 group by s.prod_id, s.channel_id
-), q2001 as (
-  select /*+ materialize */ s.prod_id, s.channel_id, sum(s.amount_sold - s.quantity_sold*nvl(k.unit_cost,0)) margin
-  from DEVDO.SALES s left join DEVDO.COSTS k on k.prod_id=s.prod_id and k.time_id=s.time_id and k.channel_id=s.channel_id
-  join DEVDO.TIMES t on t.time_id=s.time_id where t.calendar_year=2001 group by s.prod_id, s.channel_id
-), qall as (
-  select /*+ materialize */ s.prod_id, s.channel_id, sum(s.amount_sold - s.quantity_sold*nvl(k.unit_cost,0)) margin
-  from DEVDO.SALES s left join DEVDO.COSTS k on k.prod_id=s.prod_id and k.time_id=s.time_id and k.channel_id=s.channel_id group by s.prod_id, s.channel_id
-)
-select qall.prod_id, qall.channel_id,
-       nvl(q1998.margin,0)+nvl(q1999.margin,0)+nvl(q2000.margin,0)+nvl(q2001.margin,0)+nvl(qall.margin,0) total_margin
-from qall
-left join q1998 on q1998.prod_id=qall.prod_id and q1998.channel_id=qall.channel_id
-left join q1999 on q1999.prod_id=qall.prod_id and q1999.channel_id=qall.channel_id
-left join q2000 on q2000.prod_id=qall.prod_id and q2000.channel_id=qall.channel_id
-left join q2001 on q2001.prod_id=qall.prod_id and q2001.channel_id=qall.channel_id
-order by total_margin desc`,
-    },
-    {
-      id: "asta-ui-06",
-      label: "06. 악성: OR 조건 남발 + NVL/TO_CHAR로 인덱스 방해",
-      sql: `select /* ASTA_UI_MALICIOUS_06_or_nvl_to_char_predicates */
-       p.prod_category,
-       ch.channel_desc,
-       count(*) cnt,
-       sum(s.amount_sold) amt
-from DEVDO.SALES s
-join DEVDO.TIMES t on t.time_id=s.time_id
-join DEVDO.PRODUCTS p on p.prod_id=s.prod_id
-join DEVDO.CHANNELS ch on ch.channel_id=s.channel_id
-where (to_char(t.calendar_year)='1998' or to_char(t.calendar_year)='1999' or to_char(t.calendar_year)='2000' or to_char(t.calendar_year)='2001')
-  and (nvl(s.channel_id,-1)=2 or nvl(s.channel_id,-1)=3 or nvl(s.channel_id,-1)=4 or nvl(s.channel_id,-1)=9)
-  and (upper(p.prod_category) like '%E%' or upper(p.prod_category) like '%A%' or upper(p.prod_category) like '%O%')
-group by p.prod_category, ch.channel_desc
-order by amt desc`,
-    },
-    {
-      id: "asta-ui-07",
-      label: "07. 악성: 고객별 EXISTS/NOT EXISTS로 SALES 재조회 반복",
-      sql: `select /* ASTA_UI_MALICIOUS_07_nested_exists_rechecks */
-       c.cust_id,
-       c.cust_first_name,
-       c.cust_last_name,
-       co.country_region,
-       count(s.prod_id) cnt,
-       sum(s.amount_sold) amt
-from DEVDO.CUSTOMERS c
-join DEVDO.COUNTRIES co on co.country_id=c.country_id
-join DEVDO.SALES s on s.cust_id=c.cust_id
-join DEVDO.TIMES t on t.time_id=s.time_id
-where t.calendar_year between 1998 and 2001
-  and exists (select 1 from DEVDO.SALES sx where sx.cust_id=c.cust_id and sx.amount_sold > s.amount_sold/2)
-  and exists (select 1 from DEVDO.SALES sp where sp.prod_id=s.prod_id and sp.channel_id=s.channel_id and sp.amount_sold > 0)
-  and not exists (
-    select 1 from DEVDO.SALES sy join DEVDO.TIMES ty on ty.time_id=sy.time_id
-    where sy.cust_id=c.cust_id and sy.prod_id=s.prod_id and ty.calendar_year < t.calendar_year
-  )
-group by c.cust_id, c.cust_first_name, c.cust_last_name, co.country_region
-having sum(s.amount_sold) > 100
-order by amt desc`,
-    },
-    {
-      id: "asta-ui-08",
-      label: "08. 악성: 동일 fact 집계를 inline view 6개로 재계산",
-      sql: `select /* ASTA_UI_MALICIOUS_08_six_duplicate_inline_views */
-       a.prod_id,
-       a.amt y1998_amt,
-       b.amt y1999_amt,
-       c.amt y2000_amt,
-       d.amt y2001_amt,
-       e.amt all_amt,
-       f.buyers all_buyers
-from (select s.prod_id, sum(s.amount_sold) amt from DEVDO.SALES s join DEVDO.TIMES t on t.time_id=s.time_id where t.calendar_year=1998 group by s.prod_id) a
-join (select s.prod_id, sum(s.amount_sold) amt from DEVDO.SALES s join DEVDO.TIMES t on t.time_id=s.time_id where t.calendar_year=1999 group by s.prod_id) b on b.prod_id=a.prod_id
-join (select s.prod_id, sum(s.amount_sold) amt from DEVDO.SALES s join DEVDO.TIMES t on t.time_id=s.time_id where t.calendar_year=2000 group by s.prod_id) c on c.prod_id=a.prod_id
-join (select s.prod_id, sum(s.amount_sold) amt from DEVDO.SALES s join DEVDO.TIMES t on t.time_id=s.time_id where t.calendar_year=2001 group by s.prod_id) d on d.prod_id=a.prod_id
-join (select s.prod_id, sum(s.amount_sold) amt from DEVDO.SALES s group by s.prod_id) e on e.prod_id=a.prod_id
-join (select s.prod_id, count(distinct s.cust_id) buyers from DEVDO.SALES s group by s.prod_id) f on f.prod_id=a.prod_id
-where nvl(a.amt,0)+nvl(b.amt,0)+nvl(c.amt,0)+nvl(d.amt,0)+nvl(e.amt,0) > 1000
-order by e.amt desc`,
-    },
-    {
-      id: "asta-ui-09",
-      label: "09. 악성: DISTINCT + analytic + 상관 재조회 혼합",
-      sql: `with base as (
-  select /* ASTA_UI_MALICIOUS_09_distinct_analytic_scalar_mix */
-         s.prod_id, s.cust_id, s.channel_id, s.time_id, s.amount_sold, s.quantity_sold,
-         t.calendar_year, p.prod_category, ch.channel_desc
-  from DEVDO.SALES s
-  join DEVDO.TIMES t on t.time_id=s.time_id
-  join DEVDO.PRODUCTS p on p.prod_id=s.prod_id
-  join DEVDO.CHANNELS ch on ch.channel_id=s.channel_id
-  where t.calendar_year between 1998 and 2001
-), ranked as (
-  select distinct b.*,
-         dense_rank() over(partition by b.cust_id order by b.amount_sold desc nulls last) cust_sale_rank,
-         sum(b.amount_sold) over(partition by b.prod_id, b.calendar_year) prod_year_amt,
-         (select count(*) from DEVDO.SALES sx where sx.cust_id=b.cust_id and sx.prod_id=b.prod_id) repeat_buy_cnt,
-         (select max(sy.amount_sold) from DEVDO.SALES sy where sy.channel_id=b.channel_id and sy.time_id=b.time_id) channel_day_max
-  from base b
-)
-select prod_category, channel_desc, calendar_year,
-       count(distinct cust_id) buyers,
-       sum(amount_sold) amt,
-       avg(repeat_buy_cnt) avg_repeat_buy,
-       max(channel_day_max) max_channel_day
-from ranked
-where cust_sale_rank <= 20
-group by prod_category, channel_desc, calendar_year
-order by amt desc`,
-    },
-    {
-      id: "asta-ui-10",
-      label: "10. 악성: ORDERED/USE_NL 힌트로 큰 테이블 반복 NL 유도",
-      sql: `select /*+ ordered use_nl(s) use_nl(k) index(s SALES_PROMO_BIX) */ /* ASTA_UI_MALICIOUS_10_forced_nested_loops_bad_index */
-       co.country_region,
-       co.country_name,
-       p.prod_category,
-       p.prod_subcategory,
-       ch.channel_desc,
-       t.calendar_year,
-       count(*) total_rows,
-       sum(s.amount_sold) amount_sum,
-       sum(s.quantity_sold) qty_sum,
-       sum(s.quantity_sold * nvl(k.unit_cost,0)) cost_sum,
-       (select count(*) from DEVDO.SALES sx where sx.prod_id=s.prod_id and sx.channel_id=s.channel_id) same_prod_channel_sales,
-       (select avg(kx.unit_cost) from DEVDO.COSTS kx where kx.prod_id=s.prod_id and kx.channel_id=s.channel_id) avg_prod_channel_cost
-from DEVDO.COUNTRIES co
-join DEVDO.CUSTOMERS c on c.country_id=co.country_id
-join DEVDO.SALES s on s.cust_id=c.cust_id
-join DEVDO.TIMES t on t.time_id=s.time_id
-join DEVDO.PRODUCTS p on p.prod_id=s.prod_id
-join DEVDO.CHANNELS ch on ch.channel_id=s.channel_id
-left join DEVDO.COSTS k on k.prod_id=s.prod_id and k.time_id=s.time_id and k.channel_id=s.channel_id
-where t.calendar_year between 1998 and 2001
-  and co.country_region is not null
-  and p.prod_category is not null
-group by co.country_region, co.country_name, p.prod_category, p.prod_subcategory, ch.channel_desc, t.calendar_year, s.prod_id, s.channel_id
-having sum(s.amount_sold) > 100
-order by amount_sum desc`,
-    },
-    {
-      id: "asta-batch-01",
-      label: "배치 01. 연도별 SALES 반복 스캔 / UNION ALL",
+      id: "asta-awr-01",
+      sqlId: "7rcw6d3us86r7",
+      label: "SESL0640.selectList",
       workload: "BATCH",
-      sql: `select /* ASTA_BATCH_01_REPEATED_YEAR_UNION_SCANS */ period_name, sale_count, sale_amount
-from (
-  select '1998' period_name, count(*) sale_count, sum(s.amount_sold) sale_amount
-  from DEVDO.SALES s join DEVDO.TIMES t on t.time_id = s.time_id where t.calendar_year = 1998
-  union all
-  select '1999' period_name, count(*) sale_count, sum(s.amount_sold) sale_amount
-  from DEVDO.SALES s join DEVDO.TIMES t on t.time_id = s.time_id where t.calendar_year = 1999
-  union all
-  select '2000' period_name, count(*) sale_count, sum(s.amount_sold) sale_amount
-  from DEVDO.SALES s join DEVDO.TIMES t on t.time_id = s.time_id where t.calendar_year = 2000
-  union all
-  select '2001' period_name, count(*) sale_count, sum(s.amount_sold) sale_amount
-  from DEVDO.SALES s join DEVDO.TIMES t on t.time_id = s.time_id where t.calendar_year = 2001
-)
-order by period_name`,
+      sql: `/*  SESL0640.selectList  */
+
+WITH STYLE
+     AS (SELECT COMP_CD
+               ,STYLE_CD
+               ,STYLE_NM
+               ,CLASS_CD
+               ,GENDER_CD
+               ,LINE_CD
+               ,ITEM_CD
+               ,YEAR_CD
+               ,SEASON_CD
+               ,CATEGORY_CD
+               ,CONF_CSM_AMT * 0.6 AS CONF_CSM_AMT
+           FROM DSNT.TGP_STYLE_M A
+          WHERE A.COMP_CD = '01'
+            AND A.BRAND_CD = 'M'
+            AND A.NOR_CLS_CD = '1'
+            AND NOT EXISTS
+                    (SELECT /*+ INDEX(VWS TGP_STYDE_L_IE2) */
+                           1
+                       FROM DSNT.VIF_WHOLESALE_S VWS
+                      WHERE VWS.COMP_CD = A.COMP_CD
+                        AND VWS.COMP_CD = '01'
+                        AND VWS.STYLE_CD = A.STYLE_CD) /*홀세일 STYLE 제외*/
+            AND A.YEAR_CD IN ('P', 'Q', 'R')
+            AND EXISTS
+                    (SELECT /*+ NO_CPU_COSTING */
+                           1
+                       FROM DSNT.V_STYGRP_D SD
+                      WHERE SD.COMP_CD = '01'
+                        AND SD.BRAND_CD = A.BRAND_CD
+                        AND SD.STYLE_CD = A.STYLE_CD
+                        AND SD.UPCTG_CD1 = '000000269'
+                        AND SD.UPCTG_CD2 = '000269001'
+                        AND SD.UPCTG_CD3 >= '269001016'
+                        AND SD.UPCTG_CD3 <= '269001016'))
+  SELECT /* SESL0640.selectList */
+        SRC.COMP_CD
+        ,SRC.BRAND_CD
+        ,SRC.CONF_CSM_AMT
+        ,SRC.CONF_CSM_AMT * 0.6 AS DC_AMT
+        ,SRC.ITEM_CD
+        ,DSNT.FN_GP_ITEM_NM2( SRC.COMP_CD, SRC.BRAND_CD, SRC.ITEM_CD) AS ITEM_NM
+        ,SRC.SALE_DE
+        ,MAX(SRC.SALE_DE) AS SALE_DE_DD
+        ,SRC.FIRS_OUT_DE
+        ,SRC.FIRS_IN_DE
+        ,TO_DATE( '20260615', 'YYYYMMDD') - TO_DATE( SRC.FIRS_OUT_DE, 'YYYYMMDD') + 1 AS OUT_DAY_CNT /*경과일*/
+        ,SRC.ONOFF_ORD_QTY
+        ,SRC.ORD_QTY
+        ,SRC.FIRS_ORD_QTY
+        ,SRC.OTHER_ORD_QTY
+        ,SRC.TOT_RECP_QTY
+        ,SRC.RECP_QTY
+        ,SRC.WH_MOV_QTY
+        ,SRC.SHOP_MOV_QTY
+        ,SRC.ISSU_QTY
+        ,SRC.ETC_ISSU_QTY
+        ,SRC.TOT_SALE_QTY
+        ,NVL(SRC.PROD_SALE_QTY, 0) AS PROD_SALE_QTY
+        ,NVL(SRC.PROD_SALE_AMT, 0) AS PROD_SALE_AMT
+        ,NVL(SRC.PROD_CSM_AMT, 0) AS PROD_CSM_AMT
+        ,NVL(SUM(SRC.P_SALE_QTY), 0) AS SALE_QTY
+        ,NVL(SUM(SRC.P_SALE_AMT), 0) AS SALE_AMT
+        ,NVL(SUM(SRC.P_CSM_AMT), 0) AS CSM_AMT
+        ,DECODE(ORD_QTY, 0, 0, ROUND( (RECP_QTY / ORD_QTY) * 100, 1)) AS RECP_RATE /*발주입고/발주 입고율*/
+        ,DECODE(RECP_QTY, 0, 0, ROUND( (ISSU_QTY / RECP_QTY) * 100, 1)) AS ISSU_RATE /*출고/발주입고 출고율*/
+        ,DECODE(RECP_QTY, 0, 0, ROUND( (TOT_SALE_QTY / RECP_QTY) * 100, 1)) AS R_SALE_RATE /*총판매/발주입고 판매율*/
+        ,DECODE(RW_SALE_QTY, 0, 0, ROUND( (TOT_SALE_QTY / RW_SALE_QTY) * 100, 1)) AS RW_SALE_RATE /*총판매/(발주+이관)판매율*/
+        ,DECODE(TOT_RECP_QTY, 0, 0, ROUND( (TOT_SALE_QTY / TOT_RECP_QTY) * 100, 1)) AS TOT_SALE_RATE /*총판매/총입고 판매율*/
+        ,DECODE(TO_DATE( '20260615', 'YYYYMMDD') - TO_DATE( SRC.FIRS_OUT_DE, 'YYYYMMDD') + 1, 0, 0, ROUND( SRC.TOT_SALE_QTY / TO_NUMBER(TO_DATE( '20260615', 'YYYYMMDD') - TO_DATE( SRC.FIRS_OUT_DE, 'YYYYMMDD') + 1), 2)) AS OUT_DAY_SALE_QTY /*평균판매수량*/
+        ,DECODE(ORD_QTY, 0, 0, ROUND( (TOT_SALE_QTY / ORD_QTY) * 100, 1)) AS SALE_RATE /*판매율*/
+        ,DECODE(ONOFF_SALE_QTY, 0, 0, ROUND( (TOT_SALE_QTY / ONOFF_SALE_QTY) * 100, 1)) AS ON_SALE_RATE /*ON판매율*/
+        ,SRC.TOT_RECP_QTY - SRC.TOT_SALE_QTY AS STOC_QTY /*재고수량*/
+    FROM (SELECT XX.COMP_CD
+                ,XX.BRAND_CD
+                ,XX.CONF_CSM_AMT
+                ,XX.CLASS_CD
+                ,XX.GENDER_CD
+                ,XX.LINE_CD
+                ,XX.ITEM_CD
+                ,XX.STYLE_CD
+                ,XX.STYLE_NM
+                ,XX.COLOR_CD
+                ,XX.SIZE_CD
+                ,XX.YEAR_CD
+                ,XX.SEASON_CD
+                ,XX.CATEGORY_CD
+                ,SALE_DE
+                ,XX.ONOFF_ORD_QTY
+                ,XX.ORD_QTY
+                ,XX.FIRS_ORD_QTY
+                ,XX.OTHER_ORD_QTY
+                ,XX.RECP_QTY
+                ,XX.RECP_QTY + XX.WH_MOV_QTY AS RW_SALE_QTY
+                ,XX.RECP_QTY + XX.WH_MOV_QTY + XX.SHOP_MOV_QTY AS TOT_RECP_QTY
+                ,XX.ISSU_QTY
+                ,XX.ETC_ISSU_QTY
+                ,XX.WH_MOV_QTY
+                ,XX.SHOP_MOV_QTY
+                ,XX.SALE_QTY AS TOT_SALE_QTY
+                ,XX.ONOFF_SALE_QTY
+                ,(SELECT MIN(WH_IS_DE)
+                    FROM DSNT.TSE_DIV_L Z
+                   WHERE XX.COMP_CD = Z.COMP_CD
+                     AND XX.STYLE_CD = Z.STYLE_CD
+                     AND XX.BRAND_CD = Z.BRAND_CD
+                     AND DECODE(XX.COLOR_CD, '-', Z.COLOR_CD, XX.COLOR_CD) = Z.COLOR_CD
+                     AND DECODE(XX.SIZE_CD, '-', Z.SIZE_CD, XX.SIZE_CD) = Z.SIZE_CD
+                     AND Z.COMP_CD = '01'
+                     AND Z.SALE_STD_CD = '3'
+                     AND Z.DEL_YN = 'N')
+                     AS FIRS_OUT_DE
+                ,(SELECT MIN(Z.FIRS_IN_DE)
+                    FROM DSNT.TGP_STYDE_L Z
+                   WHERE XX.COMP_CD = Z.COMP_CD
+                     AND Z.COMP_CD = '01'
+                     AND XX.STYLE_CD = Z.STYLE_CD
+                     AND DECODE(XX.COLOR_CD, '-', Z.COLOR_CD, XX.COLOR_CD) = Z.COLOR_CD
+                     AND DECODE(XX.SIZE_CD, '-', Z.SIZE_CD, XX.SIZE_CD) = Z.SIZE_CD
+                     AND Z.FIRS_IN_DE IS NOT NULL
+                     AND Z.USE_YN = 'Y')
+                     AS FIRS_IN_DE
+                ,YY.P_SALE_QTY
+                ,YY.P_SALE_AMT
+                ,YY.P_CSM_AMT
+                ,YY.PROD_SALE_QTY
+                ,YY.PROD_SALE_AMT
+                ,YY.PROD_CSM_AMT
+            FROM ( /* 발주 입고 출고 판매 */
+                  SELECT   X.COMP_CD
+                          ,X.BRAND_CD /*, SALE_DE*/
+                          ,B.ITEM_CD
+                          ,'-' AS CLASS_CD
+                          ,'-' AS GENDER_CD
+                          ,'-' AS LINE_CD
+                          ,'-' AS STYLE_CD
+                          ,'-' AS STYLE_NM
+                          ,0 AS CONF_CSM_AMT
+                          ,'-' AS COLOR_CD
+                          ,'-' AS SIZE_CD
+                          ,'-' AS YEAR_CD
+                          ,'-' AS SEASON_CD
+                          ,'-' AS CATEGORY_CD
+                          ,NVL(SUM(ONOFF_ORD_QTY), 0) AS ONOFF_ORD_QTY
+                          ,NVL(SUM(ORD_QTY), 0) AS ORD_QTY
+                          ,NVL(SUM(FIRS_ORD_QTY), 0) AS FIRS_ORD_QTY
+                          ,NVL(SUM(OTHER_ORD_QTY), 0) AS OTHER_ORD_QTY
+                          ,NVL(SUM(RECP_QTY), 0) AS RECP_QTY
+                          ,NVL(SUM(ISSU_QTY), 0) AS ISSU_QTY
+                          ,NVL(SUM(ETC_ISSU_QTY), 0) AS ETC_ISSU_QTY
+                          ,NVL(SUM(WH_MOV_QTY), 0) AS WH_MOV_QTY
+                          ,NVL(SUM(SHOP_MOV_QTY), 0) AS SHOP_MOV_QTY
+                          ,NVL(SUM(SALE_QTY), 0) AS SALE_QTY
+                          ,NVL(SUM(ONOFF_SALE_QTY), 0) AS ONOFF_SALE_QTY
+                      FROM ( /* 발주  */
+                            SELECT   A.COMP_CD
+                                    ,A.BRAND_CD
+                                    ,A.STYLE_CD
+                                    ,A.COLOR_CD
+                                    ,A.SIZE_CD
+                                    ,'I' AS ITEM_GB
+                                    ,NVL(SUM(A.ORD_QTY), 0) AS ONOFF_ORD_QTY
+                                    ,NVL(SUM(DECODE(A.BSALE_CLS_CD,  '2', A.ORD_QTY,  '3', A.ORD_QTY,  0)), 0) AS ORD_QTY
+                                    ,NVL(SUM(DECODE(A.BSALE_CLS_CD,  '2', DECODE(A.RE_ORDR, 1, A.ORD_QTY, 0),  '3', DECODE(A.RE_ORDR, 1, A.ORD_QTY, 0),  0)), 0) AS FIRS_ORD_QTY
+                                    ,NVL(SUM(DECODE(A.BSALE_CLS_CD,  '2', DECODE(A.RE_ORDR, 1, 0, A.ORD_QTY),  '3', DECODE(A.RE_ORDR, 1, 0, A.ORD_QTY),  0)), 0) AS OTHER_ORD_QTY
+                                    ,0 AS RECP_QTY
+                                    ,0 AS ISSU_QTY
+                                    ,0 AS ETC_ISSU_QTY
+                                    ,0 AS WH_MOV_QTY
+                                    ,0 AS SHOP_MOV_QTY
+                                    ,0 AS SALE_QTY
+                                    ,0 AS ONOFF_SALE_QTY
+                                FROM DSNT.TSE_ORDER_S A
+                               WHERE 1 = 1
+                                 AND A.COMP_CD = '01'
+                                 AND A.BRAND_CD = 'M'
+                                 AND A.STYLE_CD BETWEEN 'MP111MET21' AND 'MR222LTS52'
+                                 /* AND    A.BSALE_CLS_CD IN ('3', '2')    영업구분 : Online */
+
+                                 AND A.SALE_KIND_CD = '1'
+                            GROUP BY A.COMP_CD
+                                    ,A.BRAND_CD
+                                    ,A.STYLE_CD
+                                    ,A.COLOR_CD
+                                    ,A.SIZE_CD
+                            UNION ALL
+                              SELECT A.COMP_CD
+                                    ,A.BRAND_CD
+                                    ,A.STYLE_CD
+                                    ,A.COLOR_CD
+                                    ,A.SIZE_CD
+                                    ,'I' AS ITEM_GB
+                                    ,0 AS ONOFF_ORD_QTY
+                                    ,0 AS ORD_QTY
+                                    ,0 AS FIRS_ORD_QTY
+                                    ,0 AS OTHER_ORD_QTY
+                                    ,NVL(SUM(A.RECP_QTY), 0) AS RECP_QTY
+                                    ,NVL(SUM(A.ISSU_QTY), 0) AS ISSU_QTY
+                                    ,0 AS ETC_ISSU_QTY
+                                    /*, NVL (SUM (CASE WHEN A.ETC_YN = 'N' THEN A.ISSU_QTY END), 0) AS ISSU_QTY
+                                    , NVL (SUM (CASE WHEN A.ETC_YN = 'Y' THEN A.ISSU_QTY END), 0) AS ETC_ISSU_QTY*/
+                                    ,0 AS WH_MOV_QTY
+                                    ,0 AS SHOP_MOV_QTY
+                                    ,0 AS SALE_QTY
+                                    ,0 AS ONOFF_SALE_QTY
+                                FROM DSNT.TSE_INOUT_S A /*  입출고 집계  */
+                               WHERE 1 = 1
+                                 AND A.COMP_CD = '01'
+                                 AND A.BRAND_CD = 'M'
+                                 AND A.STYLE_CD BETWEEN 'MP111MET21' AND 'MR222LTS52'
+                                 AND A.SALE_STD_CD = '3'
+                                 AND A.BSAL_CLS_CD IN ('3', '2') /* 영업구분 */
+                                 AND A.SALE_KIND_CD = '1'
+                                 AND A.ETC_YN = 'N'
+                            GROUP BY A.COMP_CD
+                                    ,A.BRAND_CD
+                                    ,A.STYLE_CD
+                                    ,A.COLOR_CD
+                                    ,A.SIZE_CD
+                            UNION ALL
+                              SELECT A.COMP_CD
+                                    ,A.BRAND_CD
+                                    ,A.STYLE_CD
+                                    ,A.COLOR_CD
+                                    ,A.SIZE_CD
+                                    ,'I' AS ITEM_GB
+                                    ,0 AS ONOFF_ORD_QTY
+                                    ,0 AS ORD_QTY
+                                    ,0 AS FIRS_ORD_QTY
+                                    ,0 AS OTHER_ORD_QTY
+                                    ,0 AS RECP_QTY
+                                    ,0 AS ISSU_QTY
+                                    ,0 AS ETC_ISSU_QTY
+                                    ,0 AS WH_MOV_QTY
+                                    ,0 AS SHOP_MOV_QTY
+                                    ,NVL(SUM(A.SALE_QTY), 0) AS SALE_QTY
+                                    ,0 AS ONOFF_SALE_QTY
+                                FROM DSNT.TSE_SALE_MON_S A
+                               WHERE 1 = 1
+                                 AND A.COMP_CD = '01'
+                                 AND A.BRAND_CD = 'M'
+                                 AND A.STYLE_CD BETWEEN 'MP111MET21' AND 'MR222LTS52'
+                                 AND A.SALE_STD_CD = '3'
+                                 AND A.BSAL_CLS_CD IN ('3', '2') /* 영업구분 */
+                                 AND A.SALE_KIND_CD = '1'
+                            GROUP BY A.COMP_CD
+                                    ,A.BRAND_CD
+                                    ,A.STYLE_CD
+                                    ,A.COLOR_CD
+                                    ,A.SIZE_CD
+                            UNION ALL
+                              /* 창고 이동 */
+                              SELECT /*+ NO_ADAPTIVE_PLAN NO_MERGE INDEX(A TSE_ISSU_PK) */
+                                    A.COMP_CD
+                                    ,A.BRAND_CD
+                                    ,A.STYLE_CD
+                                    ,A.COLOR_CD
+                                    ,A.SIZE_CD
+                                    ,'I' AS ITEM_GB
+                                    ,0 AS ONOFF_ORD_QTY
+                                    ,0 AS ORD_QTY
+                                    ,0 AS FIRS_ORD_QTY
+                                    ,0 AS OTHER_ORD_QTY
+                                    ,0 AS RECP_QTY
+                                    ,0 AS ISSU_QTY
+                                    ,0 AS ETC_ISSU_QTY
+                                    ,SUM(ISSU_QTY) * -1 AS WH_MOV_QTY
+                                    ,0 AS SHOP_MOV_QTY
+                                    ,0 AS SALE_QTY
+                                    ,0 AS ONOFF_SALE_QTY
+                                FROM DSNT.TSE_ISSU_D A
+                               WHERE 1 = 1
+                                 AND A.COMP_CD = '01'
+                                 AND A.BRAND_CD = 'M'
+                                 AND A.ISSU_TYPE_CD = '6'
+                                 AND A.SHOP_CD = 'M' || '9999'
+                                 AND A.WH_CD = 'A12111' /* 온라인 창고 */
+                                 AND A.STYLE_CD BETWEEN 'MP111MET21' AND 'MR222LTS52'
+                                 AND (A.COMP_CD, A.BRAND_CD, A.ISSU_DE, A.SHOP_CD, A.ISSU_SLIP_NO, A.ISSU_SLIP_SN, A.ISSU_SLIP_SEQ) IN (SELECT /*+ INDEX(A TSE_ISSU_11) */
+                                                                                                                                              A.COMP_CD
+                                                                                                                                              ,A.BRAND_CD
+                                                                                                                                              ,A.TRGT_ISSU_DE
+                                                                                                                                              ,A.TRGT_SHOP_CD
+                                                                                                                                              ,A.TRGT_SLIP_NO
+                                                                                                                                              ,A.TRGT_SLIP_SN
+                                                                                                                                              ,A.TRGT_SLIP_SEQ
+                                                                                                                                          FROM DSNT.TSE_ISSU_D A
+                                                                                                                                              ,STYLE B
+                                                                                                                                         WHERE 1 = 1
+                                                                                                                                           AND A.COMP_CD = B.COMP_CD
+                                                                                                                                           AND A.STYLE_CD = B.STYLE_CD
+                                                                                                                                           AND A.COMP_CD = '01'
+                                                                                                                                           AND A.BRAND_CD = 'M'
+                                                                                                                                           AND A.SHOP_CD = 'M' || '9999'
+                                                                                                                                           AND A.ISSU_TYPE_CD = '6'
+                                                                                                                                           AND A.WH_CD IN ('A11111', 'B1ZZ32') /*OFF 정상, E비즈임시*/
+                                                                                                                                           AND A.STYLE_CD BETWEEN 'MP111MET21' AND 'MR222LTS52')
+                            GROUP BY A.COMP_CD
+                                    ,A.BRAND_CD
+                                    ,A.STYLE_CD
+                                    ,A.COLOR_CD
+                                    ,A.SIZE_CD
+                            UNION ALL
+                              /* 매장연동 Data */
+                              SELECT /*+ NO_ADAPTIVE_PLAN  INDEX( A TSE_ISSU_D_IE11) */
+                                    A.COMP_CD
+                                    ,A.BRAND_CD
+                                    ,A.STYLE_CD
+                                    ,A.COLOR_CD
+                                    ,A.SIZE_CD
+                                    ,'I' AS ITEM_GB
+                                    ,0 AS ONOFF_ORD_QTY
+                                    ,0 AS ORD_QTY
+                                    ,0 AS FIRS_ORD_QTY
+                                    ,0 AS OTHER_ORD_QTY
+                                    ,0 AS RECP_QTY
+                                    ,0 AS ISSU_QTY
+                                    ,0 AS ETC_ISSU_QTY
+                                    ,0 AS WH_MOV_QTY
+                                    ,SUM(ISSU_QTY) AS SHOP_MOV_QTY
+                                    ,0 AS SALE_QTY
+                                    ,0 AS ONOFF_SALE_QTY
+                                FROM DSNT.TSE_ISSU_D A
+                               WHERE 1 = 1
+                                 AND A.DEL_YN = 'N'
+                                 AND A.COMP_CD = '01'
+                                 AND A.BRAND_CD = 'M'
+                                 AND A.ISSU_TYPE_CD = '2'
+                                 AND A.ISSU_CLS_CD = '24'
+                                 AND A.WH_CD IN ('B1ZZ11')
+                                 AND A.STYLE_CD BETWEEN 'MP111MET21' AND 'MR222LTS52'
+                                 AND A.SHOP_CD IN (SELECT /*+ UNNEST */
+                                                         SHOP_CD
+                                                     FROM DSNT.TSE_SHOP_M
+                                                    WHERE COMP_CD = '01'
+                                                      AND BRAND_CD = 'M'
+                                                      AND CHL_CFG_CD = '6')
+                            GROUP BY A.COMP_CD
+                                    ,A.BRAND_CD
+                                    ,A.STYLE_CD
+                                    ,A.COLOR_CD
+                                    ,A.SIZE_CD
+                            UNION ALL
+                              SELECT A.COMP_CD
+                                    ,A.BRAND_CD
+                                    ,A.STYLE_CD
+                                    ,A.COLOR_CD
+                                    ,A.SIZE_CD
+                                    ,'I' AS ITEM_GB
+                                    ,0 AS ONOFF_ORD_QTY
+                                    ,0 AS ORD_QTY
+                                    ,0 AS FIRS_ORD_QTY
+                                    ,0 AS OTHER_ORD_QTY
+                                    ,0 AS RECP_QTY
+                                    ,0 AS ISSU_QTY
+                                    ,0 AS ETC_ISSU_QTY
+                                    ,0 AS WH_MOV_QTY
+                                    ,0 AS SHOP_MOV_QTY
+                                    ,0 AS SALE_QTY
+                                    ,NVL(SUM(A.SALE_QTY), 0) AS ONOFF_SALE_QTY
+                                FROM DSNT.TSE_SALE_MON_S A
+                               WHERE 1 = 1
+                                 AND A.COMP_CD = '01'
+                                 AND A.BRAND_CD = 'M'
+                                 AND A.STYLE_CD BETWEEN 'MP111MET21' AND 'MR222LTS52'
+                                 AND A.SALE_STD_CD = '3'
+                                 AND A.SALE_KIND_CD = '1'
+                            GROUP BY A.COMP_CD
+                                    ,A.BRAND_CD
+                                    ,A.STYLE_CD
+                                    ,A.COLOR_CD
+                                    ,A.SIZE_CD) X
+                          ,STYLE B
+                     WHERE 1 = 1
+                       AND X.COMP_CD = B.COMP_CD
+                       AND X.STYLE_CD = B.STYLE_CD
+                  GROUP BY X.COMP_CD, X.BRAND_CD /*, SALE_DE*/
+                                                , B.ITEM_CD) XX
+                ,( /* 기간판매 */
+                  SELECT COMP_CD
+                        ,BRAND_CD
+                        ,SALE_DE
+                        ,CLASS_CD
+                        ,GENDER_CD
+                        ,LINE_CD
+                        ,ITEM_CD
+                        ,STYLE_CD
+                        ,STYLE_NM
+                        ,COLOR_CD
+                        ,SIZE_CD
+                        ,YEAR_CD
+                        ,SEASON_CD
+                        ,CATEGORY_CD
+                        ,P_SALE_QTY
+                        ,P_SALE_AMT
+                        ,P_CSM_AMT
+                        ,SUM(P_SALE_QTY) OVER (PARTITION BY COMP_CD, BRAND_CD, ITEM_CD) AS PROD_SALE_QTY
+                        ,SUM(P_SALE_AMT) OVER (PARTITION BY COMP_CD, BRAND_CD, ITEM_CD) AS PROD_SALE_AMT
+                        ,SUM(P_CSM_AMT) OVER (PARTITION BY COMP_CD, BRAND_CD, ITEM_CD) AS PROD_CSM_AMT
+                    FROM (  SELECT A.COMP_CD
+                                  ,A.BRAND_CD
+                                  ,A.SALE_DE
+                                  ,B.ITEM_CD
+                                  ,'-' AS CLASS_CD
+                                  ,'-' AS GENDER_CD
+                                  ,'-' AS LINE_CD
+                                  ,'-' AS STYLE_CD
+                                  ,'-' AS STYLE_NM
+                                  ,0 AS CONF_CSM_AMT
+                                  ,'-' AS COLOR_CD
+                                  ,'-' AS SIZE_CD
+                                  ,'-' AS YEAR_CD
+                                  ,'-' AS SEASON_CD
+                                  ,'-' AS CATEGORY_CD
+                                  ,NVL(SUM(A.SALE_QTY), 0) AS P_SALE_QTY
+                                  ,NVL(SUM(A.REAL_SALE_AMT), 0) AS P_SALE_AMT
+                                  ,NVL(SUM(A.SALE_AMT), 0) AS P_CSM_AMT
+                              /*
+                              , SUM(A.SALE_QTY) AS P_SALE_QTY
+                              , SUM(A.SALE_AMT) AS P_SALE_AMT
+                              , SUM(A.CSM_AMT)  AS P_CSM_AMT
+                              */
+                              FROM DSNT.TSE_SALE_DAY_S A
+                                  ,STYLE B
+                             WHERE 1 = 1
+                               AND A.COMP_CD = B.COMP_CD
+                               AND A.STYLE_CD = B.STYLE_CD
+                               AND A.COMP_CD = '01'
+                               AND A.BRAND_CD = 'M'
+                               AND A.SALE_STD_CD = '3'
+                               AND A.BSAL_CLS_CD IN ('2', '3')
+                               AND A.SALE_KIND_CD = '1'
+                               AND A.STYLE_CD BETWEEN 'MP111MET21' AND 'MR222LTS52'
+                               AND A.SALE_DE BETWEEN '20260604' AND '20260615'
+                          GROUP BY A.COMP_CD
+                                  ,A.BRAND_CD
+                                  ,A.SALE_DE
+                                  ,B.ITEM_CD)) YY
+           WHERE 1 = 1
+             AND XX.COMP_CD = YY.COMP_CD(+)
+             AND XX.BRAND_CD = YY.BRAND_CD(+)
+             AND XX.CLASS_CD = YY.CLASS_CD(+)
+             AND XX.GENDER_CD = YY.GENDER_CD(+)
+             AND XX.LINE_CD = YY.LINE_CD(+)
+             AND XX.ITEM_CD = YY.ITEM_CD(+)
+             AND XX.STYLE_CD = YY.STYLE_CD(+)
+             AND XX.STYLE_NM = YY.STYLE_NM(+)
+             AND XX.COLOR_CD = YY.COLOR_CD(+)
+             AND XX.SIZE_CD = YY.SIZE_CD(+)
+             AND XX.YEAR_CD = YY.YEAR_CD(+)
+             AND XX.SEASON_CD = YY.SEASON_CD(+)
+             AND XX.CATEGORY_CD = YY.CATEGORY_CD(+)) SRC
+   WHERE 1 = 1
+     AND NOT (SRC.ONOFF_ORD_QTY > 0
+          AND SRC.ORD_QTY = 0
+          AND SRC.TOT_RECP_QTY = 0)
+GROUP BY SRC.COMP_CD
+        ,SRC.BRAND_CD
+        ,SRC.CONF_CSM_AMT
+        ,SRC.ITEM_CD
+        ,SRC.SALE_DE
+        ,SRC.FIRS_OUT_DE
+        ,SRC.FIRS_IN_DE
+        ,SRC.ONOFF_ORD_QTY
+        ,SRC.ORD_QTY
+        ,SRC.FIRS_ORD_QTY
+        ,SRC.OTHER_ORD_QTY
+        ,SRC.RECP_QTY
+        ,SRC.ISSU_QTY
+        ,SRC.ETC_ISSU_QTY
+        ,SRC.WH_MOV_QTY
+        ,SRC.SHOP_MOV_QTY
+        ,SRC.RW_SALE_QTY
+        ,SRC.TOT_RECP_QTY
+        ,SRC.TOT_SALE_QTY
+        ,SRC.PROD_SALE_QTY
+        ,SRC.PROD_SALE_AMT
+        ,SRC.PROD_CSM_AMT
+        ,SRC.ONOFF_SALE_QTY
+ORDER BY SRC.COMP_CD, SRC.BRAND_CD, SRC.ITEM_CD`,
     },
     {
-      id: "asta-batch-02",
-      label: "배치 02. 상품별 상관 집계 서브쿼리 반복",
+      id: "asta-awr-02",
+      label: "SESL0640 스타일별 반복 집계",
       workload: "BATCH",
-      sql: `select /* ASTA_BATCH_02_CORRELATED_AGGREGATES */
-       p.prod_id, p.prod_name,
-       (select sum(s.amount_sold) from DEVDO.SALES s where s.prod_id = p.prod_id) total_amount,
-       (select sum(s.quantity_sold) from DEVDO.SALES s where s.prod_id = p.prod_id) total_quantity,
-       (select count(distinct s.cust_id) from DEVDO.SALES s where s.prod_id = p.prod_id) buyer_count,
-       (select avg(s.amount_sold) from DEVDO.SALES s where s.prod_id = p.prod_id) average_sale
-from DEVDO.PRODUCTS p
-where p.prod_status is not null
-order by total_amount desc nulls last`,
+      sql: `/* ASTA intentionally inefficient sample 02: repeated correlated aggregates */
+SELECT S.COMP_CD,
+       S.BRAND_CD,
+       S.STYLE_CD,
+       S.ITEM_CD,
+       S.STYLE_NM,
+       (SELECT NVL(SUM(O.ORD_QTY), 0)
+          FROM DSNT.TSE_ORDER_S O
+         WHERE O.COMP_CD = S.COMP_CD
+           AND O.BRAND_CD = S.BRAND_CD
+           AND SUBSTR(O.STYLE_CD, 1, LENGTH(S.STYLE_CD)) = S.STYLE_CD
+           AND O.SALE_KIND_CD = '1') AS ORD_QTY,
+       (SELECT NVL(SUM(I.RECP_QTY), 0)
+          FROM DSNT.TSE_INOUT_S I
+         WHERE I.COMP_CD = S.COMP_CD
+           AND I.BRAND_CD = S.BRAND_CD
+           AND SUBSTR(I.STYLE_CD, 1, LENGTH(S.STYLE_CD)) = S.STYLE_CD
+           AND I.SALE_STD_CD = '3') AS RECP_QTY,
+       (SELECT NVL(SUM(M.SALE_QTY), 0)
+          FROM DSNT.TSE_SALE_MON_S M
+         WHERE M.COMP_CD = S.COMP_CD
+           AND M.BRAND_CD = S.BRAND_CD
+           AND SUBSTR(M.STYLE_CD, 1, LENGTH(S.STYLE_CD)) = S.STYLE_CD
+           AND M.SALE_STD_CD = '3') AS SALE_QTY
+  FROM DSNT.TGP_STYLE_M S
+ WHERE NVL(S.COMP_CD, '-') = '01'
+   AND NVL(S.BRAND_CD, '-') = 'M'
+   AND S.STYLE_CD BETWEEN 'MP111MET21' AND 'MR222LTS52'
+   AND S.NOR_CLS_CD = '1'
+   AND S.YEAR_CD IN ('P', 'Q', 'R')`,
     },
     {
-      id: "asta-batch-03",
-      label: "배치 03. 동일 fact 중복 CTE 집계",
+      id: "asta-awr-03",
+      label: "SESL0640 발주 상관 서브쿼리",
       workload: "BATCH",
-      sql: `with amount_by_product as (
-  select /* ASTA_BATCH_03_DUPLICATE_CTE_SCANS */ s.prod_id, sum(s.amount_sold) amount_sold
-  from DEVDO.SALES s group by s.prod_id
-), quantity_by_product as (
-  select s.prod_id, sum(s.quantity_sold) quantity_sold from DEVDO.SALES s group by s.prod_id
-), buyers_by_product as (
-  select s.prod_id, count(distinct s.cust_id) buyer_count from DEVDO.SALES s group by s.prod_id
-)
-select p.prod_id, p.prod_name, a.amount_sold, q.quantity_sold, b.buyer_count
-from DEVDO.PRODUCTS p
-join amount_by_product a on a.prod_id = p.prod_id
-join quantity_by_product q on q.prod_id = p.prod_id
-join buyers_by_product b on b.prod_id = p.prod_id
-order by a.amount_sold desc`,
+      sql: `/* ASTA intentionally inefficient sample 03: correlated HAVING and ORDER BY */
+SELECT O.COMP_CD,
+       O.BRAND_CD,
+       O.STYLE_CD,
+       O.COLOR_CD,
+       O.SIZE_CD,
+       SUM(O.ORD_QTY) AS ORD_QTY,
+       SUM(DECODE(O.RE_ORDR, 1, O.ORD_QTY, 0)) AS FIRS_ORD_QTY
+  FROM DSNT.TSE_ORDER_S O
+ WHERE O.COMP_CD || '' = '01'
+   AND UPPER(O.BRAND_CD) = 'M'
+   AND O.STYLE_CD BETWEEN 'MP111MET21' AND 'MR222LTS52'
+   AND O.SALE_KIND_CD = '1'
+ GROUP BY O.COMP_CD, O.BRAND_CD, O.STYLE_CD, O.COLOR_CD, O.SIZE_CD
+HAVING (SELECT COUNT(*)
+          FROM DSNT.TGP_STYLE_M S
+         WHERE S.COMP_CD = O.COMP_CD
+           AND S.BRAND_CD = O.BRAND_CD
+           AND TRIM(S.STYLE_CD) = TRIM(O.STYLE_CD)
+           AND S.NOR_CLS_CD = '1') > 0
+ ORDER BY (SELECT MAX(S.STYLE_NM)
+             FROM DSNT.TGP_STYLE_M S
+            WHERE S.COMP_CD = O.COMP_CD
+              AND S.BRAND_CD = O.BRAND_CD
+              AND TRIM(S.STYLE_CD) = TRIM(O.STYLE_CD))`,
     },
     {
-      id: "asta-batch-04",
-      label: "배치 04. 함수 기반 조인/필터와 대규모 window sort",
+      id: "asta-awr-04",
+      label: "SESL0640 입출고 DISTINCT 분석함수",
       workload: "BATCH",
-      sql: `with ranked_sales as (
-  select /* ASTA_BATCH_04_FUNCTION_JOIN_WINDOW_SORT */
-         s.prod_id, s.cust_id, t.calendar_year, s.amount_sold,
-         row_number() over (partition by t.calendar_year, s.prod_id order by nvl(s.amount_sold, 0) desc, s.cust_id) sale_rank,
-         sum(s.amount_sold) over (partition by t.calendar_year, s.prod_id) product_year_amount
-  from DEVDO.SALES s
-  join DEVDO.TIMES t on to_char(t.time_id, 'YYYYMMDD') = to_char(s.time_id, 'YYYYMMDD')
-  where to_char(t.calendar_year) between '1998' and '2001'
-)
-select calendar_year, prod_id, count(*) top_sale_count,
-       sum(amount_sold) top_sale_amount, max(product_year_amount) product_year_amount
-from ranked_sales
-where sale_rank <= 25
-group by calendar_year, prod_id
-order by product_year_amount desc`,
+      sql: `/* ASTA intentionally inefficient sample 04: DISTINCT over analytic aggregation */
+SELECT DISTINCT
+       I.COMP_CD,
+       I.BRAND_CD,
+       I.STYLE_CD,
+       S.ITEM_CD,
+       I.COLOR_CD,
+       I.SIZE_CD,
+       SUM(I.RECP_QTY) OVER (PARTITION BY I.COMP_CD, I.BRAND_CD, I.STYLE_CD) AS RECP_QTY,
+       SUM(I.ISSU_QTY) OVER (PARTITION BY I.COMP_CD, I.BRAND_CD, I.STYLE_CD) AS ISSU_QTY
+  FROM DSNT.TSE_INOUT_S I,
+       DSNT.TGP_STYLE_M S
+ WHERE NVL(I.COMP_CD, '-') = NVL(S.COMP_CD, '-')
+   AND NVL(I.BRAND_CD, '-') = NVL(S.BRAND_CD, '-')
+   AND TRIM(I.STYLE_CD) = TRIM(S.STYLE_CD)
+   AND I.COMP_CD = '01'
+   AND I.BRAND_CD = 'M'
+   AND I.STYLE_CD BETWEEN 'MP111MET21' AND 'MR222LTS52'
+   AND I.SALE_STD_CD = '3'
+   AND I.BSAL_CLS_CD IN ('2', '3')
+   AND I.SALE_KIND_CD = '1'
+   AND I.ETC_YN = 'N'
+ ORDER BY I.COMP_CD, I.BRAND_CD, I.STYLE_CD, I.COLOR_CD, I.SIZE_CD`,
     },
     {
-      id: "asta-batch-05",
-      label: "배치 05. 여러 fact 집계 결과 재조인",
+      id: "asta-awr-05",
+      label: "SESL0640 월판매 UNION 중복 제거",
       workload: "BATCH",
-      sql: `select /* ASTA_BATCH_05_FACT_AGGREGATE_REJOINS */
-       p.prod_id, p.prod_name, a.sale_amount, q.sale_quantity, b.buyer_count, d.active_days
-from DEVDO.PRODUCTS p
-join (select s.prod_id, sum(s.amount_sold) sale_amount from DEVDO.SALES s group by s.prod_id) a on a.prod_id = p.prod_id
-join (select s.prod_id, sum(s.quantity_sold) sale_quantity from DEVDO.SALES s group by s.prod_id) q on q.prod_id = p.prod_id
-join (select s.prod_id, count(distinct s.cust_id) buyer_count from DEVDO.SALES s group by s.prod_id) b on b.prod_id = p.prod_id
-join (select s.prod_id, count(distinct s.time_id) active_days from DEVDO.SALES s group by s.prod_id) d on d.prod_id = p.prod_id
-where a.sale_amount > 0
-order by a.sale_amount desc`,
+      sql: `/* ASTA intentionally inefficient sample 05: UNION sort over the same table */
+SELECT X.COMP_CD,
+       X.BRAND_CD,
+       X.STYLE_CD,
+       X.COLOR_CD,
+       X.SIZE_CD,
+       SUM(X.SALE_QTY) AS SALE_QTY
+  FROM (SELECT M.COMP_CD, M.BRAND_CD, M.STYLE_CD, M.COLOR_CD, M.SIZE_CD, M.SALE_QTY
+          FROM DSNT.TSE_SALE_MON_S M
+         WHERE M.COMP_CD = '01'
+           AND M.BRAND_CD = 'M'
+           AND M.STYLE_CD BETWEEN 'MP111MET21' AND 'MR222LTS52'
+           AND M.SALE_STD_CD = '3'
+           AND M.BSAL_CLS_CD = '2'
+        UNION
+        SELECT M.COMP_CD, M.BRAND_CD, M.STYLE_CD, M.COLOR_CD, M.SIZE_CD, M.SALE_QTY
+          FROM DSNT.TSE_SALE_MON_S M
+         WHERE M.COMP_CD = '01'
+           AND M.BRAND_CD = 'M'
+           AND M.STYLE_CD BETWEEN 'MP111MET21' AND 'MR222LTS52'
+           AND M.SALE_STD_CD = '3'
+           AND M.BSAL_CLS_CD = '3') X
+ WHERE EXISTS (SELECT 1
+                 FROM DSNT.TGP_STYLE_M S
+                WHERE S.COMP_CD = X.COMP_CD
+                  AND S.BRAND_CD = X.BRAND_CD
+                  AND UPPER(S.STYLE_CD) = UPPER(X.STYLE_CD))
+ GROUP BY X.COMP_CD, X.BRAND_CD, X.STYLE_CD, X.COLOR_CD, X.SIZE_CD
+ ORDER BY X.STYLE_CD, X.COLOR_CD, X.SIZE_CD`,
+    },
+    {
+      id: "asta-awr-06",
+      label: "SESL0640 출고 복합 IN 재조회",
+      workload: "BATCH",
+      sql: `/* ASTA intentionally inefficient sample 06: composite correlated IN */
+SELECT A.COMP_CD,
+       A.BRAND_CD,
+       A.STYLE_CD,
+       A.COLOR_CD,
+       A.SIZE_CD,
+       SUM(A.ISSU_QTY) * -1 AS WH_MOV_QTY
+  FROM DSNT.TSE_ISSU_D A
+ WHERE A.COMP_CD = '01'
+   AND A.BRAND_CD = 'M'
+   AND A.ISSU_TYPE_CD = '6'
+   AND A.SHOP_CD = 'M9999'
+   AND A.WH_CD = 'A12111'
+   AND A.STYLE_CD BETWEEN 'MP111MET21' AND 'MR222LTS52'
+   AND (A.COMP_CD, A.BRAND_CD, A.ISSU_DE, A.SHOP_CD,
+        A.ISSU_SLIP_NO, A.ISSU_SLIP_SN, A.ISSU_SLIP_SEQ) IN
+       (SELECT B.COMP_CD, B.BRAND_CD, B.TRGT_ISSU_DE, B.TRGT_SHOP_CD,
+               B.TRGT_SLIP_NO, B.TRGT_SLIP_SN, B.TRGT_SLIP_SEQ
+          FROM DSNT.TSE_ISSU_D B
+         WHERE B.COMP_CD = A.COMP_CD
+           AND B.BRAND_CD = A.BRAND_CD
+           AND B.SHOP_CD = 'M9999'
+           AND B.ISSU_TYPE_CD = '6'
+           AND B.WH_CD IN ('A11111', 'B1ZZ32')
+           AND EXISTS (SELECT 1
+                         FROM DSNT.TGP_STYLE_M S
+                        WHERE S.COMP_CD = B.COMP_CD
+                          AND S.BRAND_CD = B.BRAND_CD
+                          AND TRIM(S.STYLE_CD) = TRIM(B.STYLE_CD)))
+ GROUP BY A.COMP_CD, A.BRAND_CD, A.STYLE_CD, A.COLOR_CD, A.SIZE_CD`,
+    },
+    {
+      id: "asta-awr-07",
+      label: "SESL0640 일판매 분석함수 중복",
+      workload: "BATCH",
+      sql: `/* ASTA intentionally inefficient sample 07: function joins plus DISTINCT analytics */
+SELECT DISTINCT
+       D.COMP_CD,
+       D.BRAND_CD,
+       D.SALE_DE,
+       S.ITEM_CD,
+       SUM(D.SALE_QTY) OVER (PARTITION BY D.COMP_CD, D.BRAND_CD, S.ITEM_CD) AS PROD_SALE_QTY,
+       SUM(D.REAL_SALE_AMT) OVER (PARTITION BY D.COMP_CD, D.BRAND_CD, S.ITEM_CD) AS PROD_SALE_AMT,
+       SUM(D.SALE_AMT) OVER (PARTITION BY D.COMP_CD, D.BRAND_CD, S.ITEM_CD) AS PROD_CSM_AMT
+  FROM DSNT.TSE_SALE_DAY_S D,
+       DSNT.TGP_STYLE_M S
+ WHERE D.COMP_CD = S.COMP_CD
+   AND D.BRAND_CD = S.BRAND_CD
+   AND SUBSTR(D.STYLE_CD, 1, LENGTH(S.STYLE_CD)) = S.STYLE_CD
+   AND D.COMP_CD = '01'
+   AND D.BRAND_CD = 'M'
+   AND D.SALE_STD_CD = '3'
+   AND D.BSAL_CLS_CD IN ('2', '3')
+   AND D.SALE_KIND_CD = '1'
+   AND D.STYLE_CD BETWEEN 'MP111MET21' AND 'MR222LTS52'
+   AND TO_DATE(D.SALE_DE, 'YYYYMMDD') BETWEEN TO_DATE('20260604', 'YYYYMMDD')
+                                               AND TO_DATE('20260615', 'YYYYMMDD')
+   AND EXISTS (SELECT 1
+                 FROM DSNT.TSE_SALE_MON_S M
+                WHERE M.COMP_CD = D.COMP_CD
+                  AND M.BRAND_CD = D.BRAND_CD
+                  AND UPPER(M.STYLE_CD) = UPPER(D.STYLE_CD))
+ ORDER BY D.COMP_CD, D.BRAND_CD, S.ITEM_CD, D.SALE_DE`,
+    },
+    {
+      id: "asta-awr-08",
+      label: "SESL0640 최초입출고 반복 조회",
+      workload: "BATCH",
+      sql: `/* ASTA intentionally inefficient sample 08: scalar subquery per division row */
+SELECT D.COMP_CD,
+       D.BRAND_CD,
+       D.STYLE_CD,
+       D.COLOR_CD,
+       D.SIZE_CD,
+       MIN(D.WH_IS_DE) AS FIRS_OUT_DE,
+       (SELECT MIN(L.FIRS_IN_DE)
+          FROM DSNT.TGP_STYDE_L L
+         WHERE L.COMP_CD = D.COMP_CD
+           AND L.STYLE_CD = D.STYLE_CD
+           AND DECODE(D.COLOR_CD, '-', L.COLOR_CD, D.COLOR_CD) = L.COLOR_CD
+           AND DECODE(D.SIZE_CD, '-', L.SIZE_CD, D.SIZE_CD) = L.SIZE_CD
+           AND L.FIRS_IN_DE IS NOT NULL
+           AND L.USE_YN = 'Y') AS FIRS_IN_DE
+  FROM DSNT.TSE_DIV_L D
+ WHERE D.COMP_CD = '01'
+   AND D.BRAND_CD = 'M'
+   AND D.STYLE_CD BETWEEN 'MP111MET21' AND 'MR222LTS52'
+   AND D.SALE_STD_CD = '3'
+   AND D.DEL_YN = 'N'
+   AND EXISTS (SELECT 1
+                 FROM DSNT.TGP_STYLE_M S
+                WHERE NVL(S.COMP_CD, '-') = NVL(D.COMP_CD, '-')
+                  AND NVL(S.BRAND_CD, '-') = NVL(D.BRAND_CD, '-')
+                  AND TRIM(S.STYLE_CD) = TRIM(D.STYLE_CD))
+ GROUP BY D.COMP_CD, D.BRAND_CD, D.STYLE_CD, D.COLOR_CD, D.SIZE_CD`,
+    },
+    {
+      id: "asta-awr-09",
+      label: "SESL0640 스타일상세 상관 집계",
+      workload: "BATCH",
+      sql: `/* ASTA intentionally inefficient sample 09: repeated issue lookup by style detail */
+SELECT L.COMP_CD,
+       L.STYLE_CD,
+       L.COLOR_CD,
+       L.SIZE_CD,
+       MIN(L.FIRS_IN_DE) AS FIRS_IN_DE,
+       (SELECT NVL(SUM(I.ISSU_QTY), 0)
+          FROM DSNT.TSE_ISSU_D I
+         WHERE I.COMP_CD = L.COMP_CD
+           AND UPPER(I.STYLE_CD) = UPPER(L.STYLE_CD)
+           AND DECODE(L.COLOR_CD, '-', I.COLOR_CD, L.COLOR_CD) = I.COLOR_CD
+           AND DECODE(L.SIZE_CD, '-', I.SIZE_CD, L.SIZE_CD) = I.SIZE_CD
+           AND I.DEL_YN = 'N') AS ISSU_QTY
+  FROM DSNT.TGP_STYDE_L L
+ WHERE L.COMP_CD = '01'
+   AND L.STYLE_CD BETWEEN 'MP111MET21' AND 'MR222LTS52'
+   AND L.FIRS_IN_DE IS NOT NULL
+   AND L.USE_YN = 'Y'
+   AND EXISTS (SELECT 1
+                 FROM DSNT.TGP_STYLE_M S
+                WHERE S.COMP_CD = L.COMP_CD
+                  AND TRIM(S.STYLE_CD) = TRIM(L.STYLE_CD)
+                  AND S.BRAND_CD = 'M')
+ GROUP BY L.COMP_CD, L.STYLE_CD, L.COLOR_CD, L.SIZE_CD`,
+    },
+    {
+      id: "asta-awr-10",
+      label: "SESL0640 매장별 반복 판매집계",
+      workload: "BATCH",
+      sql: `/* ASTA intentionally inefficient sample 10: repeated broad aggregates per shop */
+SELECT H.COMP_CD,
+       H.BRAND_CD,
+       H.SHOP_CD,
+       (SELECT NVL(SUM(I.ISSU_QTY), 0)
+          FROM DSNT.TSE_ISSU_D I
+         WHERE I.COMP_CD = H.COMP_CD
+           AND I.BRAND_CD = H.BRAND_CD
+           AND I.SHOP_CD = H.SHOP_CD
+           AND I.ISSU_TYPE_CD = '2'
+           AND I.ISSU_CLS_CD = '24'
+           AND I.DEL_YN = 'N') AS SHOP_MOV_QTY,
+       (SELECT NVL(SUM(M.SALE_QTY), 0)
+          FROM DSNT.TSE_SALE_MON_S M
+         WHERE M.COMP_CD = H.COMP_CD
+           AND M.BRAND_CD = H.BRAND_CD
+           AND M.STYLE_CD BETWEEN 'MP111MET21' AND 'MR222LTS52'
+           AND M.SALE_STD_CD = '3'
+           AND M.SALE_KIND_CD = '1') AS BRAND_SALE_QTY,
+       (SELECT COUNT(*)
+          FROM DSNT.TGP_STYLE_M S
+         WHERE S.COMP_CD = H.COMP_CD
+           AND S.BRAND_CD = H.BRAND_CD
+           AND S.STYLE_CD BETWEEN 'MP111MET21' AND 'MR222LTS52'
+           AND S.NOR_CLS_CD = '1'
+           AND S.YEAR_CD IN ('P', 'Q', 'R')) AS STYLE_CNT
+  FROM DSNT.TSE_SHOP_M H
+ WHERE H.COMP_CD = '01'
+   AND H.BRAND_CD = 'M'
+   AND H.CHL_CFG_CD = '6'
+ ORDER BY H.COMP_CD, H.BRAND_CD, H.SHOP_CD`,
     },
   ];
   const DEFAULT_STEPS = [
@@ -368,27 +823,36 @@ order by a.sale_amount desc`,
   }
 
   /**
-   * SQL 원문을 화면 표시용으로 줄바꿈/공백 정리한다.
+   * Oracle SQL을 sql-formatter의 PL/SQL dialect로 정리한다.
+   * 라이브러리를 불러오지 못하거나 지원하지 않는 구문이면 원문을 보존한다.
    */
   function formatSql(sql) {
-    const keywords = [
-      "select", "from", "where", "group by", "order by", "having", "union all", "union",
-      "inner join", "left join", "right join", "full join", "join", "on", "and", "or",
-      "fetch first", "offset", "with"
-    ];
-    let formatted = String(sql || "").trim().replace(/\s+/g, " ");
-    for (const keyword of keywords) {
-      const pattern = new RegExp(`\\s+(${keyword.replace(/ /g, "\\\\s+")})\\s+`, "ig");
-      formatted = formatted.replace(pattern, (_match, found) => `\n${found.toUpperCase()} `);
+    const source = String(sql || "").trim();
+    if (!source || typeof window.sqlFormatter?.format !== "function") return source;
+
+    try {
+      return window.sqlFormatter.format(source, {
+        language: "plsql",
+        keywordCase: "upper",
+        tabWidth: 2,
+        useTabs: false,
+        linesBetweenQueries: 1,
+        logicalOperatorNewline: "before",
+        expressionWidth: 80,
+      });
+    } catch (error) {
+      console.warn("ASTA SQL formatting failed; preserving the original SQL.", error);
+      return source;
     }
-    formatted = formatted
-      .replace(/^\n+/, "")
-      .replace(/,\s*/g, ",\n  ")
-      .replace(/\n(AND|OR)\s+/g, "\n  $1 ")
-      .replace(/\n(ON)\s+/g, "\n  $1 ")
-      .replace(/\n+/g, "\n")
-      .trim();
-    return formatted;
+  }
+
+  /**
+   * SQL 도구에서 복사할 때 붙는 맨 끝 세미콜론 하나만 제거한다.
+   * 본문 안의 세미콜론은 서버 Guard가 계속 차단한다.
+   */
+  function stripTrailingSqlTerminator(sql) {
+    const text = String(sql || "").trim();
+    return text.endsWith(";") ? text.slice(0, -1).trimEnd() : text;
   }
 
   /**
@@ -1157,8 +1621,9 @@ order by a.sale_amount desc`,
             <label class="tuning-field">
               <span>AI Profile</span>
               <select class="tuning-input" id="asta-ai-profile">
-                <option value="ASTA_GPT5_PROFILE" selected>ASTA_GPT5_PROFILE</option>
+                <option value="ASTA_GROK_REASONING_PROFILE" selected>ASTA_GROK_REASONING_PROFILE</option>
                 <option value="ASTA_GROK_GENAI_PROFILE">ASTA_GROK_GENAI_PROFILE</option>
+                <option value="ASTA_GEMINI_PROFILE">ASTA_GEMINI_PROFILE</option>
                 <option value="ASTA_DB_GENAI_TEST">ASTA_DB_GENAI_TEST</option>
               </select>
             </label>
@@ -1323,7 +1788,7 @@ order by a.sale_amount desc`,
     });
 
     document.getElementById("asta-sql-only-llm").addEventListener("click", async () => {
-      const sql = sqlInput.value.trim();
+      const sql = stripTrailingSqlTerminator(sqlInput.value);
       if (!sql) {
         window.Toast?.show?.("SQL을 입력하세요.", "error");
         return;
@@ -1380,9 +1845,10 @@ order by a.sale_amount desc`,
       const runButton = document.getElementById("asta-run");
       const baseUrl = buildBaseUrl(DEFAULT_ENDPOINT);
       const url = buildAnalyzeUrl(DEFAULT_ENDPOINT);
-      const sql = sqlInput.value.trim();
+      const sql = stripTrailingSqlTerminator(sqlInput.value);
       const userNotes = (notesInput?.value || "").trim();
       const formattedSql = formatSql(sql);
+      const matchedSample = ASTA_SAMPLE_SQLS.find((sample) => formatSql(sample.sql) === formattedSql);
       if (!sql) {
         window.Toast?.show?.("SQL을 입력하세요.", "error");
         return;
@@ -1428,6 +1894,7 @@ order by a.sale_amount desc`,
           body: JSON.stringify({
             sql_text: formattedSql,
             sql: formattedSql,
+            source_sql_id: matchedSample?.sqlId || null,
             source_db_id: sourceId,
             ai_profile: profileInput.value || DEFAULT_AI_PROFILE,
             llm_profile: profileInput.value || DEFAULT_AI_PROFILE,

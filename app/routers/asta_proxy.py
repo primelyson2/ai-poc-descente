@@ -115,7 +115,7 @@ def _report_document(run_id: str, markdown: str) -> str:
 body{{margin:0;background:#f4f7fb;color:#172033;font:16px/1.65 system-ui,sans-serif}}main{{max-width:1080px;margin:auto;padding:32px}}article{{background:white;border:1px solid #dfe5ef;border-radius:16px;padding:clamp(20px,4vw,48px);box-shadow:0 12px 40px #0f172a14}}nav{{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:20px}}nav a{{padding:9px 13px;border-radius:9px;background:#2563eb;color:white;text-decoration:none}}nav a+a{{background:#475569}}h1,h2,h3,h4{{line-height:1.25;margin-top:1.5em}}pre{{overflow:auto;background:#0f172a;color:#e2e8f0;padding:16px;border-radius:10px}}table{{border-collapse:collapse;width:100%;display:block;overflow:auto}}th,td{{border:1px solid #cbd5e1;padding:8px 12px;text-align:left}}th{{background:#eef2ff}}blockquote{{border-left:4px solid #93c5fd;margin-left:0;padding-left:16px;color:#475569}}.run{{color:#64748b}}
 </style></head><body><main><nav><a href="{base}/download">원본 Markdown 다운로드</a><a href="{base}">JSON API 보기</a></nav><article><div class="run">Run ID: {safe_id}</div>{content}</article></main></body></html>'''
 
-DEFAULT_LLM_PROFILE = "ASTA_GPT5_PROFILE"
+DEFAULT_LLM_PROFILE = "ASTA_GROK_REASONING_PROFILE"
 DEFAULT_SOURCE_DB_ID = "DB0903_TESTDB"
 DEFAULT_TIMEOUT_SECONDS = 2100
 HEARTBEAT_INTERVAL_SECONDS = 5.0
@@ -638,8 +638,8 @@ async def llm_sql_only(request: Request, database: str = Depends(current_db)) ->
     started = perf_counter()
     fallback_profiles = [
         profile,
-        "ASTA_GROK_REASONING_PROFILE",
         "ASTA_GROK_GENAI_PROFILE",
+        "ASTA_GEMINI_PROFILE",
         "ASTA_DB_GENAI_TEST",
     ]
     tried_profiles: list[str] = []

@@ -1,6 +1,6 @@
 # AI SQL Tuning Assistant 사용자·운영 매뉴얼
 
-최종 업데이트: 2026-06-30
+최종 업데이트: 2026-07-03
 
 ## 사용법
 
@@ -13,14 +13,14 @@ SQL과 ASTA profile/Advisor 옵션을 선택해 분석한다. UI는 FastAPI **th
 3. `SQL_GUARD`
 4. `BEFORE_EVIDENCE`
 5. `SQL_TUNING_ADVISOR`
-6. `LLM_REWRITE` — **SQL-only** 구조 재작성
+6. `LLM_REWRITE` — SQL + 실행계획/실행통계/객체정보/유사사례 기반 구조 재작성
 7. `AFTER_EVIDENCE` — 후보 SQL이 있을 때만
 8. `BEFORE_AFTER_COMPARE` — **deterministic** 비교
-9. `VECTOR_KB` — 검증 뒤 참고 사례 조회
+9. `VECTOR_KB` — LLM 호출 전에 유사 사례 조회
 10. `FINAL_REPORT`
 11. `VECTOR_SAVE`
 
-`LLM_REWRITE` 후 `VECTOR_KB` 순서다. 과거 `LLM_FINAL_REVIEW` 표시는 deprecated run 조회 호환용일 뿐 신규 판정을 만들지 않는다.
+화면 단계 번호는 기존 계약을 유지하지만 실제 수집은 `BEFORE_EVIDENCE → SQL_TUNING_ADVISOR → VECTOR_KB → LLM_REWRITE` 순서다. LLM에는 원본 SQL뿐 아니라 compact XPLAN, 실행 메트릭, 객체/인덱스 정보, Advisor 상태, Vector 유사 사례와 사용자 목표를 함께 전달한다. `LLM_FINAL_REVIEW` 표시는 deprecated run 조회 호환용일 뿐 신규 판정을 만들지 않는다.
 
 ## 결과 읽기
 

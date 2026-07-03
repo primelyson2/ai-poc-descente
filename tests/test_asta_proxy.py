@@ -82,7 +82,7 @@ def test_profiles_loader_uses_ords_not_database(monkeypatch):
 
 def test_fastapi_default_llm_profile_is_gpt5():
     """ASTA 계약/회귀 조건을 검증한다: fastapi default llm profile is gpt5."""
-    assert asta_proxy.DEFAULT_LLM_PROFILE == "ASTA_GPT5_PROFILE"
+    assert asta_proxy.DEFAULT_LLM_PROFILE == "ASTA_GROK_REASONING_PROFILE"
 
 
 def test_runtime_observation_fresh_and_stale_heartbeat():

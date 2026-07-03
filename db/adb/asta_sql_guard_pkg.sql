@@ -31,7 +31,9 @@ CREATE OR REPLACE PACKAGE BODY asta_sql_guard_pkg AS
   FUNCTION strip_leading_comments(p_sql IN VARCHAR2) RETURN VARCHAR2 IS
     l_pos PLS_INTEGER := 1;
     l_len PLS_INTEGER := NVL(LENGTH(p_sql), 0);
-    l_c2  VARCHAR2(2);
+    -- SUBSTR length is characters while VARCHAR2 capacity is bytes here.
+    -- Reserve four bytes per character so AL32UTF8 identifiers are safe.
+    l_c2  VARCHAR2(8);
     l_nl  PLS_INTEGER;
     l_end PLS_INTEGER;
   BEGIN
@@ -65,8 +67,9 @@ CREATE OR REPLACE PACKAGE BODY asta_sql_guard_pkg AS
     l_pos PLS_INTEGER := 1;
     l_len PLS_INTEGER := NVL(LENGTH(p_sql), 0);
     l_out VARCHAR2(32767);
-    l_c1  VARCHAR2(1);
-    l_c2  VARCHAR2(2);
+    -- One Unicode character may occupy four bytes in AL32UTF8.
+    l_c1  VARCHAR2(4);
+    l_c2  VARCHAR2(8);
     l_nl  PLS_INTEGER;
     l_end PLS_INTEGER;
   BEGIN

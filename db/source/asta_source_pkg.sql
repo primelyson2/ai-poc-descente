@@ -12,7 +12,8 @@
 --   GRANT EXECUTE ON dbms_sqltune               TO <owner>;  -- p_run_advisor='Y'일 때만 필요
 --
 -- 호환 버전: Oracle 12.2 이상(Source BaseDB).
---   AUTHID DEFINER를 사용하므로 권한을 부여받는 사용자는 이 패키지의 EXECUTE 권한만 있으면 된다.
+--   AUTHID CURRENT_USER를 사용한다. DB Link 원격 사용자와 패키지 소유자는
+--   동일한 전용 Source helper 계정이어야 한다.
 --
 -- 설치 및 권한 부여 방법은 db/source/README.md를 참고한다.
 
@@ -51,7 +52,8 @@ CREATE OR REPLACE PACKAGE asta_source_pkg AUTHID CURRENT_USER AS
     p_fetch_rows       IN NUMBER   DEFAULT 100,
     p_repeat_policy    IN VARCHAR2 DEFAULT 'AUTO',
     p_run_advisor      IN VARCHAR2 DEFAULT 'N',
-    p_sqltune_time_sec IN NUMBER   DEFAULT 1800
+    p_sqltune_time_sec IN NUMBER   DEFAULT 1800,
+    p_source_sql_id    IN VARCHAR2 DEFAULT NULL
   ) RETURN CLOB;
 
   FUNCTION run_evidence_store_vc(
@@ -60,7 +62,8 @@ CREATE OR REPLACE PACKAGE asta_source_pkg AUTHID CURRENT_USER AS
     p_fetch_rows       IN NUMBER   DEFAULT 100,
     p_repeat_policy    IN VARCHAR2 DEFAULT 'AUTO',
     p_run_advisor      IN VARCHAR2 DEFAULT 'N',
-    p_sqltune_time_sec IN NUMBER   DEFAULT 1800
+    p_sqltune_time_sec IN NUMBER   DEFAULT 1800,
+    p_source_sql_id    IN VARCHAR2 DEFAULT NULL
   ) RETURN VARCHAR2;
 
   PROCEDURE run_evidence_store_proc(
@@ -70,6 +73,7 @@ CREATE OR REPLACE PACKAGE asta_source_pkg AUTHID CURRENT_USER AS
     p_repeat_policy    IN VARCHAR2 DEFAULT 'AUTO',
     p_run_advisor      IN VARCHAR2 DEFAULT 'N',
     p_sqltune_time_sec IN NUMBER   DEFAULT 1800,
+    p_source_sql_id    IN VARCHAR2 DEFAULT NULL,
     p_status_json      OUT VARCHAR2
   );
 
@@ -133,6 +137,27 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
     END IF;
   END clob_app;
 
+  -- 원시 JSON처럼 이스케이프 없이 붙여야 하는 CLOB을 안전한 조각 크기로
+  -- 추가한다. CLOB을 clob_app(VARCHAR2)에 넘기면 32KB 초과 시 ORA-06502가
+  -- 발생하므로 대용량 object_info에는 반드시 이 경로를 사용한다.
+  PROCEDURE clob_app_clob(p_out IN OUT NOCOPY CLOB, p_val IN CLOB) IS
+    l_offset   PLS_INTEGER := 1;
+    l_len      PLS_INTEGER;
+    l_chunk_sz CONSTANT PLS_INTEGER := 8000;
+    l_chunk    VARCHAR2(32767);
+  BEGIN
+    IF p_val IS NULL THEN
+      RETURN;
+    END IF;
+    l_len := NVL(DBMS_LOB.GETLENGTH(p_val), 0);
+    WHILE l_offset <= l_len LOOP
+      l_chunk := DBMS_LOB.SUBSTR(p_val, l_chunk_sz, l_offset);
+      EXIT WHEN l_chunk IS NULL;
+      DBMS_LOB.WRITEAPPEND(p_out, LENGTH(l_chunk), l_chunk);
+      l_offset := l_offset + LENGTH(l_chunk);
+    END LOOP;
+  END clob_app_clob;
+
   -- CLOB 값을 JSON 문자열 리터럴로 p_out에 추가한다.
   -- NULL은 JSON null, 빈 값은 ""로 기록하며 임의 길이의 값을 처리한다.
   PROCEDURE clob_app_json_str(p_out IN OUT NOCOPY CLOB, p_val IN CLOB) IS
@@ -177,7 +202,9 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
   FUNCTION strip_leading_comments(p_sql IN VARCHAR2) RETURN VARCHAR2 IS
     l_pos PLS_INTEGER := 1;
     l_len PLS_INTEGER := NVL(LENGTH(p_sql), 0);
-    l_c2  VARCHAR2(2);
+    -- SUBSTR length is characters while VARCHAR2 capacity is bytes here.
+    -- Reserve four bytes per character so AL32UTF8 identifiers are safe.
+    l_c2  VARCHAR2(8);
     l_nl  PLS_INTEGER;
     l_end PLS_INTEGER;
   BEGIN
@@ -213,8 +240,9 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
     l_pos PLS_INTEGER := 1;
     l_len PLS_INTEGER := NVL(LENGTH(p_sql), 0);
     l_out VARCHAR2(32767);
-    l_c1  VARCHAR2(1);
-    l_c2  VARCHAR2(2);
+    -- One Unicode character may occupy four bytes in AL32UTF8.
+    l_c1  VARCHAR2(4);
+    l_c2  VARCHAR2(8);
     l_nl  PLS_INTEGER;
     l_end PLS_INTEGER;
   BEGIN
@@ -387,6 +415,41 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
   BEGIN
     RETURN LEAST(GREATEST(NVL(p_sqltune_time_sec, 1800), 60), 1800);
   END normalize_sqltune_time_sec;
+
+  -- Browser/API callers may provide only the collected SQL_ID. The execution
+  -- schema itself is resolved server-side from AWR and never trusted from the
+  -- request payload.
+  FUNCTION resolve_parsing_schema(p_source_sql_id IN VARCHAR2) RETURN VARCHAR2 IS
+    l_sql_id VARCHAR2(13) := LOWER(TRIM(p_source_sql_id));
+    l_schema VARCHAR2(128);
+  BEGIN
+    IF l_sql_id IS NULL THEN
+      RETURN NULL;
+    END IF;
+    IF NOT REGEXP_LIKE(l_sql_id, '^[0-9a-z]{13}$') THEN
+      RAISE_APPLICATION_ERROR(-20001, 'ASTA_SOURCE: invalid source_sql_id');
+    END IF;
+
+    SELECT parsing_schema_name
+    INTO l_schema
+    FROM (
+      SELECT parsing_schema_name
+      FROM dba_hist_sqlstat
+      WHERE sql_id = l_sql_id
+      AND parsing_schema_name IS NOT NULL
+      ORDER BY snap_id DESC, instance_number DESC
+    )
+    WHERE ROWNUM = 1;
+
+    l_schema := UPPER(TRIM(l_schema));
+    IF NOT REGEXP_LIKE(l_schema, '^[A-Z][A-Z0-9_$#]{0,127}$') THEN
+      RAISE_APPLICATION_ERROR(-20001, 'ASTA_SOURCE: invalid AWR parsing schema');
+    END IF;
+    RETURN DBMS_ASSERT.SIMPLE_SQL_NAME(l_schema);
+  EXCEPTION
+    WHEN NO_DATA_FOUND THEN
+      RAISE_APPLICATION_ERROR(-20001, 'ASTA_SOURCE: source_sql_id not found in AWR');
+  END resolve_parsing_schema;
 
   -- =========================================================================
   -- 커서 조회
@@ -733,7 +796,8 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
     p_fetch_rows       IN NUMBER   DEFAULT 100,
     p_repeat_policy    IN VARCHAR2 DEFAULT 'AUTO',
     p_run_advisor      IN VARCHAR2 DEFAULT 'N',
-    p_sqltune_time_sec IN NUMBER   DEFAULT 1800
+    p_sqltune_time_sec IN NUMBER   DEFAULT 1800,
+    p_source_sql_id    IN VARCHAR2 DEFAULT NULL
   ) RETURN CLOB IS
     -- 실행 변수
     l_exec_sql        CLOB;
@@ -763,6 +827,9 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
     l_repeat_policy   VARCHAR2(30);
     l_run_advisor     VARCHAR2(1);
     l_sqltune_time_sec PLS_INTEGER;
+    l_original_schema  VARCHAR2(128);
+    l_parsing_schema   VARCHAR2(128);
+    l_schema_changed   BOOLEAN := FALSE;
   BEGIN
     -- 1. 검증: SELECT 또는 WITH만 허용한다.
     assert_safe_select(p_sql);
@@ -776,6 +843,16 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
     l_repeats := normalize_repeat_count(l_repeat_policy);
     l_run_advisor := normalize_run_advisor(p_run_advisor);
     l_sqltune_time_sec := normalize_sqltune_time_sec(p_sqltune_time_sec);
+
+    -- Reproduce the namespace used when the collected SQL was originally
+    -- parsed. ALTER SESSION changes name resolution only; it grants no object
+    -- privileges. The ORCLAI helper still needs direct SELECT grants.
+    l_original_schema := SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA');
+    l_parsing_schema := resolve_parsing_schema(p_source_sql_id);
+    IF l_parsing_schema IS NOT NULL AND l_parsing_schema <> UPPER(l_original_schema) THEN
+      EXECUTE IMMEDIATE 'ALTER SESSION SET CURRENT_SCHEMA = ' || l_parsing_schema;
+      l_schema_changed := TRUE;
+    END IF;
 
     -- 4. gather_plan_statistics 힌트와 실행 표식이 포함된 제한 실행 SQL을 생성한다.
     l_exec_sql := build_exec_sql(p_sql, l_run_id, l_fetch_rows);
@@ -838,6 +915,8 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
       ',"evidence_method":"BOUNDED_COUNT_GATHER_PLAN_STATS"' ||
       ',"metrics_source":"V$SQL_PLAN_STATISTICS_ALL_LAST"' ||
       ',"run_id":'               || json_str(l_run_id)              ||
+      ',"source_sql_id":'        || json_str(LOWER(TRIM(p_source_sql_id))) ||
+      ',"parsing_schema_name":'  || json_str(l_parsing_schema)       ||
       ',"sql_id":'               || json_str(l_sql_id)              ||
       ',"child_number":'         || json_num(l_child_number)        ||
       ',"plan_hash_value":'      || json_num(l_plan_hash_value)     ||
@@ -864,7 +943,7 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
     IF l_object_info IS NULL OR NVL(DBMS_LOB.GETLENGTH(l_object_info), 0) = 0 THEN
       clob_app(l_result, 'null');
     ELSE
-      clob_app(l_result, l_object_info);
+      clob_app_clob(l_result, l_object_info);
     END IF;
 
     -- Advisor 하위 객체
@@ -874,10 +953,26 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
     clob_app(l_result, '}');
 
     clob_app(l_result, ',"error":null}');
+    IF l_schema_changed THEN
+      EXECUTE IMMEDIATE 'ALTER SESSION SET CURRENT_SCHEMA = ' ||
+        DBMS_ASSERT.SIMPLE_SQL_NAME(UPPER(l_original_schema));
+      l_schema_changed := FALSE;
+    END IF;
     RETURN l_result;
 
   EXCEPTION
     WHEN OTHERS THEN
+      DECLARE
+        l_error_code NUMBER := SQLCODE;
+        l_error_message VARCHAR2(4000) := SUBSTR(SQLERRM, 1, 4000);
+      BEGIN
+        IF l_schema_changed THEN
+          BEGIN
+            EXECUTE IMMEDIATE 'ALTER SESSION SET CURRENT_SCHEMA = ' ||
+              DBMS_ASSERT.SIMPLE_SQL_NAME(UPPER(l_original_schema));
+          EXCEPTION WHEN OTHERS THEN NULL;
+          END;
+        END IF;
       -- ADB Bridge가 정확히 보고할 수 있도록 구조화된 오류 JSON을 반환한다.
       RETURN TO_CLOB(
         '{"status":"FAILED"'       ||
@@ -887,6 +982,8 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
         ',"evidence_method":"BOUNDED_COUNT_GATHER_PLAN_STATS"' ||
         ',"metrics_source":"V$SQL_PLAN_STATISTICS_ALL_LAST"' ||
         ',"run_id":'               || json_str(p_run_id) ||
+        ',"source_sql_id":'        || json_str(LOWER(TRIM(p_source_sql_id))) ||
+        ',"parsing_schema_name":'  || json_str(l_parsing_schema) ||
         ',"sql_id":null,"child_number":null,"plan_hash_value":null' ||
         ',"fetch_rows_limit":null,"repeat_count":null,"repeat_policy":' ||
         json_str(SUBSTR(UPPER(TRIM(p_repeat_policy)), 1, 30)) ||
@@ -896,9 +993,10 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
         ',"plan_text":null' ||
         ',"object_info":{"status":"SKIPPED","source":"PLAN_OBJECTS","table_stats":[]}' ||
         ',"advisor":{"status":"SKIPPED","report":null}' ||
-        ',"error":{"code":' || TO_CHAR(SQLCODE) ||
-        ',"message":' || json_str(SUBSTR(SQLERRM, 1, 4000)) || '}}'
+        ',"error":{"code":' || TO_CHAR(l_error_code) ||
+        ',"message":' || json_str(l_error_message) || '}}'
       );
+      END;
   END run_evidence;
 
   FUNCTION run_evidence_store_vc(
@@ -907,13 +1005,15 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
     p_fetch_rows       IN NUMBER   DEFAULT 100,
     p_repeat_policy    IN VARCHAR2 DEFAULT 'AUTO',
     p_run_advisor      IN VARCHAR2 DEFAULT 'N',
-    p_sqltune_time_sec IN NUMBER   DEFAULT 1800
+    p_sqltune_time_sec IN NUMBER   DEFAULT 1800,
+    p_source_sql_id    IN VARCHAR2 DEFAULT NULL
   ) RETURN VARCHAR2 IS
     PRAGMA AUTONOMOUS_TRANSACTION;
     l_result CLOB;
     l_len    NUMBER;
     l_sql_id VARCHAR2(13);
     l_job_name VARCHAR2(128);
+    l_job_action VARCHAR2(4000);
     l_advisor_report CLOB;
     l_advisor_status VARCHAR2(30);
     l_deadline TIMESTAMP;
@@ -927,7 +1027,8 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
       p_fetch_rows       => p_fetch_rows,
       p_repeat_policy    => p_repeat_policy,
       p_run_advisor      => 'N',
-      p_sqltune_time_sec => p_sqltune_time_sec
+      p_sqltune_time_sec => p_sqltune_time_sec,
+      p_source_sql_id    => p_source_sql_id
     );
 
     IF UPPER(NVL(p_run_advisor, 'N')) = 'Y' THEN
@@ -954,17 +1055,28 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
             || 'Action: ask DBA to open normal logins/disable restricted session for the DB Link helper path, then rerun ASTA. '
             || 'No Source DB direct fallback was attempted.'
           );
+        ELSIF l_sql_id IS NULL THEN
+          l_advisor_status := 'FAILED';
+          l_advisor_report := TO_CLOB(
+            'SQLTUNE_ERROR: Source cursor SQL_ID was not found; no Scheduler job was created.'
+          );
         ELSE
           l_job_name := 'ASTA_ADV_' || SUBSTR(RAWTOHEX(SYS_GUID()), 1, 20);
+          -- SQL text를 job_action에 삽입하지 않는다. 실행 직후 찾은 SQL_ID만
+          -- 안전하게 인용해 전달하여 길이 제한과 PL/SQL 문자열 주입을 피한다.
+          l_job_action :=
+            'BEGIN ' ||
+            DBMS_ASSERT.ENQUOTE_NAME(SYS_CONTEXT('USERENV', 'SESSION_USER'), FALSE) ||
+            '.ASTA_SOURCE_PKG.RUN_ADVISOR_JOB(' ||
+            DBMS_ASSERT.ENQUOTE_LITERAL(p_run_id) || ',' ||
+            DBMS_ASSERT.ENQUOTE_LITERAL(l_sql_id) || ',NULL,' ||
+            TO_CHAR(LEAST(GREATEST(NVL(p_sqltune_time_sec, 300), 60), 1800)) ||
+            '); END;';
           DBMS_SCHEDULER.CREATE_JOB(
             job_name   => l_job_name,
             job_type   => 'PLSQL_BLOCK',
-            job_action => 'BEGIN asta_source_pkg.run_advisor_job(' ||
-                          json_str(p_run_id) || ',' || json_str(l_sql_id) || ',' ||
-                          json_str(SUBSTR(p_sql, 1, 32767)) || ',' ||
-                          TO_CHAR(LEAST(GREATEST(NVL(p_sqltune_time_sec, 300), 60), 1800)) ||
-                          '); END;',
-            enabled    => TRUE,
+            job_action => l_job_action,
+            enabled    => FALSE,
             auto_drop  => TRUE
           );
           DBMS_SCHEDULER.RUN_JOB(job_name => l_job_name, use_current_session => FALSE);
@@ -1033,6 +1145,7 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
     p_repeat_policy    IN VARCHAR2 DEFAULT 'AUTO',
     p_run_advisor      IN VARCHAR2 DEFAULT 'N',
     p_sqltune_time_sec IN NUMBER   DEFAULT 1800,
+    p_source_sql_id    IN VARCHAR2 DEFAULT NULL,
     p_status_json      OUT VARCHAR2
   ) IS
   BEGIN
@@ -1042,7 +1155,8 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
       p_fetch_rows       => p_fetch_rows,
       p_repeat_policy    => p_repeat_policy,
       p_run_advisor      => p_run_advisor,
-      p_sqltune_time_sec => p_sqltune_time_sec
+      p_sqltune_time_sec => p_sqltune_time_sec,
+      p_source_sql_id    => p_source_sql_id
     );
   END run_evidence_store_proc;
 

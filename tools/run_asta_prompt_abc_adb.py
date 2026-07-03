@@ -114,7 +114,7 @@ def write_summary(outdir: pathlib.Path, results: list[dict], started: str) -> No
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--samples", default="asta-ui-01,asta-ui-02,asta-ui-08")
+    ap.add_argument("--samples", default="asta-awr-01,asta-awr-02,asta-awr-03")
     ap.add_argument("--modes", default="A,B,C")
     ap.add_argument("--profile", default="ASTA_GPT5_PROFILE")
     ap.add_argument("--outdir", default=str(ROOT / "reports" / "asta_prompt_abc_adb_latest"))

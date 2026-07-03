@@ -28,13 +28,49 @@ def test_c1_report_stage_table_matches_canonical_order():
 
 def test_c2_sql_only_arrays_are_preserved_and_vector_metadata_is_searchable():
     section = body(LLM, "FUNCTION generate_sql_only_tuning(\n", "END generate_sql_only_tuning;")
-    assert "JSON_QUERY(l_response, '$.change_summary'" in section
-    assert "JSON_QUERY(l_response, '$.semantic_risks'" in section
+    assert "JSON_QUERY(l_diagnosis_response, '$.change_summary'" in section
+    assert "JSON_QUERY(l_diagnosis_response, '$.semantic_risks'" in section
     assert '\\"change_summary\\":[]' not in section
     metadata = body(PKG, "FUNCTION build_vector_metadata(", "END build_vector_metadata;")
     assert "JSON_QUERY(p_llm_json, '$.change_summary'" in metadata
     assert "FORMAT JSON" in metadata
     assert "JSON_VALUE(p_llm_json, '$.change_summary'" not in metadata
+
+
+def test_c2b_candidate_syntax_repair_preserves_failure_evidence_and_before_metrics():
+    assert "FUNCTION repair_sql_candidate(" in LLM
+    assert "Make the smallest syntax-only correction" in LLM
+    orchestration = body(PKG, "FUNCTION run_pipeline(", "END run_pipeline;")
+    assert "asta_llm_pkg.repair_sql_candidate(" in orchestration
+    assert "l_run_id || '-REPAIRED'" in orchestration
+    assert '"rejected_candidate_sql":' in PKG
+    assert '"generation":' in PKG
+    failure = orchestration[orchestration.index('"verdict":"CANDIDATE_FAILED"'):]
+    assert '"before_buffer_gets":' in failure
+    assert '"before_elapsed_time_us":' in failure
+
+
+def test_c2c_response_isolates_malformed_json_artifacts():
+    report = (ROOT / "db/adb/asta_report_pkg.sql").read_text(encoding="utf-8")
+    helper = body(report, "PROCEDURE clob_app_json_or_null(", "END clob_app_json_or_null;")
+    assert "p_val IS JSON" in helper
+    assert "INVALID_JSON_ARTIFACT" in helper
+    assert "p_artifact_name" in helper
+    assert "artifacts.llm" in report
+    orchestration = body(PKG, "FUNCTION run_pipeline(", "END run_pipeline;")
+    assert "'$.message' RETURNING VARCHAR2(1000)" in orchestration
+
+
+def test_c2d_candidate_execution_has_adaptive_watchdog():
+    assert "PROCEDURE enforce_candidate_timeout(p_run_id IN VARCHAR2);" in PKG
+    assert "FUNCTION candidate_timeout_seconds" in PKG
+    assert "GREATEST(60, LEAST(900" in PKG
+    assert "ASTA_PKG.ENFORCE_CANDIDATE_TIMEOUT" in PKG
+    orchestration = body(PKG, "FUNCTION run_pipeline(", "END run_pipeline;")
+    assert "arm_candidate_watchdog(" in orchestration
+    assert "disarm_candidate_watchdog(" in orchestration
+    assert "Adaptive candidate runtime limit:" in orchestration
+    assert "CANDIDATE_RUNTIME_LIMIT" in PKG
 
 
 def test_c3_candidate_failure_verdict_survives_original_fallback():

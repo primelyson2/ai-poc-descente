@@ -9,7 +9,8 @@ CREATE OR REPLACE PACKAGE asta_source_bridge_pkg AUTHID DEFINER AS
     p_fetch_rows        IN NUMBER   DEFAULT 100,
     p_repeat_policy     IN VARCHAR2 DEFAULT 'AUTO',
     p_run_advisor       IN VARCHAR2 DEFAULT 'N',
-    p_sqltune_time_sec  IN NUMBER   DEFAULT 1800
+    p_sqltune_time_sec  IN NUMBER   DEFAULT 1800,
+    p_source_sql_id     IN VARCHAR2 DEFAULT NULL
   ) RETURN CLOB;
 
   FUNCTION get_connection_json(p_source_db_id IN VARCHAR2) RETURN CLOB;
@@ -91,6 +92,18 @@ CREATE OR REPLACE PACKAGE BODY asta_source_bridge_pkg AS
     RETURN l_run_id;
   END validated_run_id;
 
+  FUNCTION validated_source_sql_id(p_source_sql_id IN VARCHAR2) RETURN VARCHAR2 IS
+    l_sql_id VARCHAR2(13) := LOWER(TRIM(p_source_sql_id));
+  BEGIN
+    IF l_sql_id IS NULL THEN
+      RETURN NULL;
+    END IF;
+    IF NOT REGEXP_LIKE(l_sql_id, '^[0-9a-z]{13}$') THEN
+      RAISE_APPLICATION_ERROR(-20002, 'ASTA_SOURCE_BRIDGE: invalid source_sql_id');
+    END IF;
+    RETURN l_sql_id;
+  END validated_source_sql_id;
+
   FUNCTION normalized_fetch_rows(p_fetch_rows IN NUMBER) RETURN PLS_INTEGER IS
   BEGIN
     RETURN LEAST(GREATEST(NVL(p_fetch_rows, 100), 1), 10000);
@@ -154,7 +167,8 @@ CREATE OR REPLACE PACKAGE BODY asta_source_bridge_pkg AS
     p_fetch_rows        IN NUMBER   DEFAULT 100,
     p_repeat_policy     IN VARCHAR2 DEFAULT 'AUTO',
     p_run_advisor       IN VARCHAR2 DEFAULT 'N',
-    p_sqltune_time_sec  IN NUMBER   DEFAULT 1800
+    p_sqltune_time_sec  IN NUMBER   DEFAULT 1800,
+    p_source_sql_id     IN VARCHAR2 DEFAULT NULL
   ) RETURN CLOB IS
     l_db_link_name VARCHAR2(128);
     l_source_schema VARCHAR2(128);
@@ -170,11 +184,13 @@ CREATE OR REPLACE PACKAGE BODY asta_source_bridge_pkg AS
     l_repeat_policy VARCHAR2(30);
     l_run_advisor   VARCHAR2(1);
     l_run_id         VARCHAR2(64);
+    l_source_sql_id  VARCHAR2(13);
     l_sqltune_time_sec PLS_INTEGER;
   BEGIN
     resolve_connection(p_source_db_id, l_db_link_name, l_source_schema);
     asta_sql_guard_pkg.assert_safe_select(p_sql);
     l_run_id := validated_run_id(p_run_id);
+    l_source_sql_id := validated_source_sql_id(p_source_sql_id);
     l_fetch_rows := normalized_fetch_rows(p_fetch_rows);
     l_repeat_policy := normalized_repeat_policy(p_repeat_policy);
     l_run_advisor := normalized_run_advisor(p_run_advisor);
@@ -185,7 +201,7 @@ CREATE OR REPLACE PACKAGE BODY asta_source_bridge_pkg AS
       l_stmt :=
       'BEGIN ' || l_source_prefix ||
       'asta_source_pkg.run_evidence_store_proc@' || l_db_link_name ||
-      '(:sql_text, :run_id, :fetch_rows, :repeat_policy, :run_advisor, :sqltune_time_sec, :out_json); END;';
+      '(:sql_text, :run_id, :fetch_rows, :repeat_policy, :run_advisor, :sqltune_time_sec, :source_sql_id, :out_json); END;';
 
     -- Source helper owns its storage transaction via its autonomous
     -- run_evidence_store_vc path. Do not COMMIT or ROLLBACK here:
@@ -198,6 +214,7 @@ CREATE OR REPLACE PACKAGE BODY asta_source_bridge_pkg AS
             IN  l_repeat_policy,
             IN  l_run_advisor,
             IN  l_sqltune_time_sec,
+            IN  l_source_sql_id,
             OUT l_status_vc;
 
     IF l_status_vc IS NULL OR INSTR(l_status_vc, '"status":"STORED"') = 0 THEN
