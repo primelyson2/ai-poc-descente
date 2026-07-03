@@ -1,10 +1,11 @@
 [Unit]
-Description=ASTA hourly result-quality experiment and review report
+Description=ASTA result-quality experiment, improvement, and package deployment loop
 After=network-online.target
 
 [Service]
 Type=oneshot
-TimeoutStartSec=56min
+# DB experiment(55m) + Codex/test(40m) + package deploy/smoke(55m) 상한.
+TimeoutStartSec=2h30min
 WorkingDirectory=/opt/select-ai-test
 ExecStart=/opt/select-ai-test/.venv/bin/python tools/asta_quality_agent.py --config asta-quality-agent.yaml
 ExecStart=/opt/select-ai-test/.venv/bin/python tools/asta_quality_autopilot.py
@@ -12,7 +13,7 @@ User=opc
 Group=opc
 Environment=PATH=/home/opc/bin:/home/opc/.local/bin:/usr/local/bin:/usr/bin:/bin
 
-# 이 서비스는 코드/DB를 배포하지 않으며 보고서만 기록한다.
+# 자동 변경은 회귀 테스트를 통과한 뒤에만 Source/ADB 패키지로 배포한다.
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict

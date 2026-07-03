@@ -65,7 +65,7 @@ E1부터는 한 번에 긴 SQL JSON을 요구하지 않는다.
 ## 파일과 승인 흐름
 
 1. `asta-quality-agent.yaml.example`을 `asta-quality-agent.yaml`로 복사하고 profile과 SQL 목록을 확인한다.
-2. `scripts/asta-quality-agent.timer`가 매시간 oneshot service를 실행한다.
+2. `scripts/asta-quality-agent.timer`가 이전 회차 종료 한 시간 뒤 oneshot service를 실행한다.
 3. agent는 기존 A/B/C ADB 실험기를 호출하고 `history.jsonl`에 결과를 누적한다.
 4. 담당자는 `latest.md`의 고객 gate, 단계별 표, 다음 조치를 검토한다.
 5. 자동 개선기는 `asta_llm_pkg.sql`, `asta_pkg.sql`, 테스트 중 작은 변경 한 건만 수행한다.
