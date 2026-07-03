@@ -13,6 +13,9 @@ wheels/
 config.yaml
 wallets/
 
+# region 별 model 후보 (환경별 파일) — 추적 템플릿은 models.txt.example, 실제 파일은 무시
+models.txt
+
 # 내부 보안 문서 (공개 금지)
 Guide_Security_info.md
 

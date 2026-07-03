@@ -27,8 +27,14 @@ router = APIRouter(tags=["profiles"])
 _DATA_DIR = Path(__file__).resolve().parent.parent.parent
 # region 드롭다운 후보 — project/regions.txt (한 줄 1개, '#' 주석/빈 줄 무시)
 REGIONS_FILE = _DATA_DIR / "regions.txt"
-# region 별 model 후보 — project/models.txt ('#region' 섹션 헤더 + 모델 줄)
+# region 별 model 후보 — models.txt ('#region' 섹션 헤더 + 모델 줄).
+# 환경별 파일이라 gitignore 대상. 없으면 추적되는 템플릿(models.txt.example)으로 폴백.
 MODELS_FILE = _DATA_DIR / "models.txt"
+MODELS_EXAMPLE_FILE = _DATA_DIR / "models.txt.example"
+
+
+def _models_file() -> Path:
+    return MODELS_FILE if MODELS_FILE.exists() else MODELS_EXAMPLE_FILE
 
 
 @router.get("/regions")
@@ -49,9 +55,10 @@ async def list_regions() -> list[str]:
 
 @router.get("/models")
 async def list_models() -> dict[str, list[str]]:
-    """region -> 사용 가능한 model 목록. '#region' 헤더로 섹션을 구분한다."""
+    """region -> 사용 가능한 model 목록. '#region' 헤더로 섹션을 구분한다.
+    실제 파일(models.txt)이 없으면 템플릿(models.txt.example)으로 폴백한다."""
     try:
-        lines = MODELS_FILE.read_text(encoding="utf-8").splitlines()
+        lines = _models_file().read_text(encoding="utf-8").splitlines()
     except OSError as exc:
         logger.warning("models.txt 읽기 실패: %s", exc)
         return {}
