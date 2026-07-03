@@ -4,6 +4,11 @@
   let REGIONS = [];  // region 속성 드롭다운 후보 (project/regions.txt)
   let MODELS = {};   // region -> model 후보 (project/models.txt)
 
+  // region 후보 조회 — region 속성이 없으면(빈 값) models.txt 의 '#etc' 섹션 후보를 사용한다.
+  function modelsForRegion(region) {
+    return (MODELS && MODELS[region || "etc"]) || [];
+  }
+
   // Tool관리 > "Select AI Action 관리" 에서 체크한 action 만 Action 드롭다운에 노출한다.
   // runsql·narrate 는 실제 SQL 실행/데이터 노출을 동반하므로 기본 숨김(전역 localStorage 키).
   const GATED_ACTIONS = ["runsql", "narrate"];
@@ -297,11 +302,12 @@
         return;
       }
       if (sel.value !== name) return;  // 조회 도중 선택이 바뀌면 무시
-      pHint.textContent = meta.region ? `· region: ${meta.region}` : "· region 속성 없음";
+      pHint.textContent = meta.region ? `· region: ${meta.region}` : "· region 속성 없음 (#etc 후보 사용)";
       hint.textContent = meta.model ? `· 현재 모델: ${meta.model}` : "";
-      const candidates = (MODELS && MODELS[meta.region]) || [];
+      const candidates = modelsForRegion(meta.region);
       if (candidates.length === 0) {
-        host.innerHTML = `<div class="muted">region '${window.escapeHtml(meta.region || "?")}' 의 모델 후보가 없습니다 (models.txt 확인)</div>`;
+        const where = meta.region ? `region '${window.escapeHtml(meta.region)}'` : "#etc 섹션";
+        host.innerHTML = `<div class="muted">${where} 의 모델 후보가 없습니다 (models.txt 확인)</div>`;
         return;
       }
       // 후보에 현재 model 이 없으면 맨 앞에 추가해 비교 대상에서 누락되지 않게
@@ -558,15 +564,15 @@
       try { meta = await getMeta(name); }
       catch (e) { modelSel.innerHTML = `<option value="">${errMsg(e, "속성 조회 실패")}</option>`; return; }
       if (targetSel.value !== name) return;  // 조회 중 선택이 바뀌면 무시
-      targetHint.textContent = meta.region ? `· region: ${meta.region}` : "· region 속성 없음";
-      const candidates = (MODELS && MODELS[meta.region]) || [];
+      targetHint.textContent = meta.region ? `· region: ${meta.region}` : "· region 속성 없음 (#etc 후보 사용)";
+      const candidates = modelsForRegion(meta.region);
       const models = (meta.model && !candidates.includes(meta.model))
         ? [meta.model, ...candidates] : candidates.slice();
       if (models.length === 0) {
         // 후보가 없으면 현재 model(있으면)만이라도 선택지로
         modelSel.innerHTML = meta.model
           ? `<option value="${window.escapeAttr(meta.model)}" selected>${window.escapeHtml(meta.model)}</option>`
-          : `<option value="">region '${window.escapeHtml(meta.region || "?")}' 모델 후보 없음</option>`;
+          : `<option value="">${meta.region ? `region '${window.escapeHtml(meta.region)}'` : "#etc 섹션"} 모델 후보 없음</option>`;
         return;
       }
       modelSel.innerHTML = models.map((m) => {
@@ -1686,7 +1692,7 @@ END;
     const sel = styleSelect(document.createElement("select"));
     const apply = () => {
       const region = (ctx && ctx.regionValue) || "";
-      const list = (MODELS && MODELS[region]) || [];
+      const list = modelsForRegion(region);  // region 없으면 #etc 후보
       // region 변경 시에는 select 의 현재 값을, 최초 렌더 시에는 속성 값을 보존
       const keep = sel.options.length ? sel.value : currentValue;
       fillSelectOptions(sel, list, keep);
