@@ -33,6 +33,7 @@ def test_codex_runs_non_interactively_inside_workspace_sandbox():
 def test_changed_packages_are_deployed_and_adb_is_smoke_tested():
     commands = deployment_commands({"db/source/asta_source_pkg.sql", "db/adb/asta_llm_pkg.sql"})
     assert [name for name, _, _ in commands] == ["source_deploy", "adb_deploy", "adb_smoke"]
+    assert commands[-1][1][-1] == "--deployment-only"
 
 
 def test_non_database_changes_do_not_trigger_deployment():

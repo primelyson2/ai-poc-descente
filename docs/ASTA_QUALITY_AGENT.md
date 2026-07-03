@@ -69,7 +69,7 @@ E1부터는 한 번에 긴 SQL JSON을 요구하지 않는다.
 3. agent는 기존 A/B/C ADB 실험기를 호출하고 `history.jsonl`에 결과를 누적한다.
 4. 담당자는 `latest.md`의 고객 gate, 단계별 표, 다음 조치를 검토한다.
 5. 자동 개선기는 `asta_llm_pkg.sql`, `asta_pkg.sql`, 테스트 중 작은 변경 한 건만 수행한다.
-6. 회귀 테스트를 통과한 패키지 변경은 Source DB(해당 시)와 ADB에 자동 배포하고 ADB workflow smoke를 실행한다.
+6. 회귀 테스트를 통과한 패키지 변경은 Source DB(해당 시)와 ADB에 자동 배포하고 ADB package smoke를 실행한다.
 
 현재 A/B/C는 `SQL`, `SQL+metrics`, `compact full evidence` 비교다. 위의 E1~E5를 완전히 독립 실험하려면
 다음 승인 변경에서 실험 runner와 `ASTA_LLM_PKG`가 evidence mask를 받도록 확장해야 한다.
@@ -98,11 +98,12 @@ systemd 파일은 템플릿만 제공한다. 복사, daemon-reload, timer enable
 
 `tools/asta_quality_autopilot.py`는 `latest.md`가 gate 미통과일 때 Codex에 보고서를 전달해 작은 소스 변경
 한 건을 수행한다. 전체 pytest의 기존 실패 목록과 비교해 신규 실패가 생기면 해당 변경을 복구한다.
-통과하면 변경된 Source/ADB 패키지를 자동 배포하고 ADB workflow smoke를 수행한 뒤 커밋한다.
+통과하면 변경된 Source/ADB 패키지를 자동 배포하고 Source DB 상태와 독립적인 ADB package smoke를 수행한 뒤 커밋한다.
 
 Codex는 `--ask-for-approval never`와 `--sandbox workspace-write`로 실행한다. 따라서 실행 중 승인 입력을
 기다리지 않으며, sandbox 밖 권한이 필요한 작업은 사용자에게 묻는 대신 실패로 처리한다.
 
 배포 결과는 `reports/asta_quality_agent/last_deployment.json`과 회차별 `deploy_*.log`에 기록한다.
-배포 또는 smoke가 실패하면 소스 변경을 복구하고 기존 패키지를 다시 배포한다. 복구 배포 결과도
+package smoke는 SQL guard, AI profile 목록, Source allowlist 호출을 확인한다. 실제 DB link를 포함한 end-to-end
+workflow는 다음 품질 실험 회차가 검증한다. 배포 또는 smoke가 실패하면 소스 변경을 복구하고 기존 패키지를 다시 배포한다. 복구 배포 결과도
 `restore_*.log`와 회차 결과에 남기며, 실패한 변경은 커밋하지 않는다.

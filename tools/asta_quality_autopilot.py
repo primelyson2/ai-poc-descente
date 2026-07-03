@@ -35,7 +35,7 @@ def deployment_commands(paths: set[str]) -> list[tuple[str, list[str], int]]:
     if any(path.startswith("db/adb/") for path in paths):
         commands.extend([
             ("adb_deploy", [PYTHON, "tools/asta_deploy_adb.py"], 900),
-            ("adb_smoke", [PYTHON, "tools/asta_smoke_adb.py"], 2400),
+            ("adb_smoke", [PYTHON, "tools/asta_smoke_adb.py", "--deployment-only"], 300),
         ])
     return commands
 

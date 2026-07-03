@@ -97,6 +97,15 @@ def test_smoke_contract_rejects_order_status_report_and_after_mismatches():
         with pytest.raises(RuntimeError, match=message): smoke.validate_workflow_contract(bad, {})
 
 
+def test_smoke_uses_async_submit_and_waits_for_terminal_run():
+    smoke = (ROOT / "tools" / "asta_smoke_adb.py").read_text(encoding="utf-8")
+    assert "asta_pkg.submit_run(:body)" in smoke
+    assert "wait_for_run(" in smoke
+    assert "asta_pkg.analyze_sql(:body)" not in smoke
+    assert 'parser.add_argument("--deployment-only"' in smoke
+    assert "deployment_smoke(cur)" in smoke
+
+
 def test_10sql_summary_and_verdict_aggregation_are_deterministic():
     runner = load_tool("run_asta_10_sqls")
     summaries = [runner.summarize(result(v, candidate=v != "NO_REWRITE")) for v in
