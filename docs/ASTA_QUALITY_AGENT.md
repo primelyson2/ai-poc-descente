@@ -93,3 +93,12 @@ cp asta-quality-agent.yaml.example asta-quality-agent.yaml
 ```
 
 systemd 파일은 템플릿만 제공한다. 복사, daemon-reload, timer enable은 운영 승인을 받은 뒤 수행한다.
+
+## 자동 소스 개선 모드
+
+`tools/asta_quality_autopilot.py`는 `latest.md`가 gate 미통과일 때 Codex에 보고서를 전달해 작은 소스 변경
+한 건을 수행한다. 전체 pytest의 기존 실패 목록과 비교해 신규 실패가 생기면 해당 변경을 복구한다.
+통과하면 커밋하고 `reports/asta_quality_agent/pending_deployment.json`을 만든다.
+
+이 표식이 있는 동안 추가 자동 수정은 중단된다. 담당자가 변경을 검토·배포한 뒤 표식을 제거해야 다음 실험 결과에
+대한 자동 수정이 가능하다. autopilot은 ADB package compile, ORDS 설치 또는 DB 배포를 실행하지 않는다.

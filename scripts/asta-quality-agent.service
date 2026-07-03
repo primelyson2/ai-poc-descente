@@ -7,6 +7,7 @@ Type=oneshot
 TimeoutStartSec=56min
 WorkingDirectory=/opt/select-ai-test
 ExecStart=/opt/select-ai-test/.venv/bin/python tools/asta_quality_agent.py --config asta-quality-agent.yaml
+ExecStart=/opt/select-ai-test/.venv/bin/python tools/asta_quality_autopilot.py
 User=opc
 Group=opc
 
@@ -14,4 +15,4 @@ Group=opc
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ReadWritePaths=/opt/select-ai-test/reports
+ReadWritePaths=/opt/select-ai-test /home/opc/.cache /home/opc/.codex
