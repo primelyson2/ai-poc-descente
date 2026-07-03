@@ -129,3 +129,16 @@ def test_all_prompt_modes_require_complete_and_resolvable_asta_awr_01_sql():
     assert "never emit ellipses (... or …), TODO text, \"unchanged\" shorthand, or placeholder comments" in prompt
     assert "trace every alias.column reference in SELECT, JOIN, WHERE, GROUP BY, HAVING, and ORDER BY" in prompt
     assert "to a column projected by that exact CTE or inline-view alias" in prompt
+
+
+def test_sql_only_candidate_preflights_asta_awr_01_semantic_contract():
+    llm = read("db/adb/asta_llm_pkg.sql")
+    sql_only = llm[llm.index("FUNCTION generate_sql_only_tuning("):llm.index("END generate_sql_only_tuning;")]
+    contract = "Before returning SQL, perform a semantic preflight against the original"
+    assert contract in sql_only
+    assert sql_only.index(contract) < sql_only.index("'DIAGNOSIS:'")
+    assert "preserve all filter predicates, join conditions, outer-join null extension, row grain, and duplicate multiplicity" in sql_only
+    assert "preserve GROUP BY and analytic PARTITION BY grains plus scalar-aggregate empty-input behavior" in sql_only
+    assert "Trace every alias.column reference to a column projected by that exact source, CTE, or inline view" in sql_only
+    assert "never invent a column, drop a UNION ALL branch, or replace an original expression with a placeholder" in sql_only
+    assert "Return NO_REWRITE if any check cannot be satisfied." in sql_only
