@@ -127,7 +127,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--samples", default="asta-awr-01,asta-awr-02,asta-awr-03")
     ap.add_argument("--modes", default="A,B,C")
-    ap.add_argument("--profile", default="ASTA_GPT5_PROFILE")
+    ap.add_argument("--profile", default="ASTA_GROK_REASONING_PROFILE")
     ap.add_argument("--outdir", default=str(ROOT / "reports" / "asta_prompt_abc_adb_latest"))
     ap.add_argument("--rotation", type=int, default=int(os.environ.get("ASTA_EXPERIMENT_ROTATION", "0")))
     args = ap.parse_args()

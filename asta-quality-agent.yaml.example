@@ -33,6 +33,6 @@ experiment:
     - --modes
     - A,B,C
     - --profile
-    - ASTA_GPT5_PROFILE
+    - ASTA_GROK_REASONING_PROFILE
   summary_file: reports/asta_prompt_abc_adb_latest/summary.json
   timeout_sec: 3300

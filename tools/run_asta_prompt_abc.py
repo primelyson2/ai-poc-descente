@@ -121,7 +121,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--samples", default="asta-awr-01,asta-awr-02,asta-awr-03")
     parser.add_argument("--modes", default="A,B,C")
-    parser.add_argument("--profile", default="ASTA_GPT5_PROFILE")
+    parser.add_argument("--profile", default="ASTA_GROK_REASONING_PROFILE")
     parser.add_argument("--timeout", type=int, default=2100)
     parser.add_argument("--outdir", default=str(DEFAULT_OUT))
     args = parser.parse_args()
