@@ -68,8 +68,8 @@ E1부터는 한 번에 긴 SQL JSON을 요구하지 않는다.
 2. `scripts/asta-quality-agent.timer`가 매시간 oneshot service를 실행한다.
 3. agent는 기존 A/B/C ADB 실험기를 호출하고 `history.jsonl`에 결과를 누적한다.
 4. 담당자는 `latest.md`의 고객 gate, 단계별 표, 다음 조치를 검토한다.
-5. 승인된 경우에만 별도 작업으로 `asta_llm_pkg.sql`, `asta_pkg.sql`, 테스트를 수정한다.
-6. 코드 리뷰 후 ADB compile/ORDS 배포를 별도로 승인한다.
+5. 자동 개선기는 `asta_llm_pkg.sql`, `asta_pkg.sql`, 테스트 중 작은 변경 한 건만 수행한다.
+6. 회귀 테스트를 통과한 패키지 변경은 Source DB(해당 시)와 ADB에 자동 배포하고 ADB workflow smoke를 실행한다.
 
 현재 A/B/C는 `SQL`, `SQL+metrics`, `compact full evidence` 비교다. 위의 E1~E5를 완전히 독립 실험하려면
 다음 승인 변경에서 실험 runner와 `ASTA_LLM_PKG`가 evidence mask를 받도록 확장해야 한다.
@@ -98,7 +98,11 @@ systemd 파일은 템플릿만 제공한다. 복사, daemon-reload, timer enable
 
 `tools/asta_quality_autopilot.py`는 `latest.md`가 gate 미통과일 때 Codex에 보고서를 전달해 작은 소스 변경
 한 건을 수행한다. 전체 pytest의 기존 실패 목록과 비교해 신규 실패가 생기면 해당 변경을 복구한다.
-통과하면 커밋하고 `reports/asta_quality_agent/pending_deployment.json`을 만든다.
+통과하면 변경된 Source/ADB 패키지를 자동 배포하고 ADB workflow smoke를 수행한 뒤 커밋한다.
 
-이 표식이 있는 동안 추가 자동 수정은 중단된다. 담당자가 변경을 검토·배포한 뒤 표식을 제거해야 다음 실험 결과에
-대한 자동 수정이 가능하다. autopilot은 ADB package compile, ORDS 설치 또는 DB 배포를 실행하지 않는다.
+Codex는 `--ask-for-approval never`와 `--sandbox workspace-write`로 실행한다. 따라서 실행 중 승인 입력을
+기다리지 않으며, sandbox 밖 권한이 필요한 작업은 사용자에게 묻는 대신 실패로 처리한다.
+
+배포 결과는 `reports/asta_quality_agent/last_deployment.json`과 회차별 `deploy_*.log`에 기록한다.
+배포 또는 smoke가 실패하면 소스 변경을 복구하고 기존 패키지를 다시 배포한다. 복구 배포 결과도
+`restore_*.log`와 회차 결과에 남기며, 실패한 변경은 커밋하지 않는다.

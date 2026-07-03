@@ -11,6 +11,8 @@ wheels/
 
 # App secrets & wallets
 config.yaml
+asta-quality-agent.yaml
+asta-loop.yaml
 wallets/
 .secrets/
 

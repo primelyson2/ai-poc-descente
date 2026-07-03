@@ -13,9 +13,42 @@ from datetime import datetime, timezone
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 REPORT_ROOT = ROOT / "reports" / "asta_quality_agent"
-PENDING = REPORT_ROOT / "pending_deployment.json"
-ALLOWED = ("db/adb", "tests", "tools", "docs")
+LAST_DEPLOYMENT = REPORT_ROOT / "last_deployment.json"
+ALLOWED = ("db/adb", "db/source", "tests", "tools", "docs")
 PYTEST = ["uv", "run", "--with", "pytest", "pytest", "-q"]
+PYTHON = str(ROOT / ".venv" / "bin" / "python")
+
+
+def codex_command(prompt: str) -> list[str]:
+    """승인 입력 없이 workspace sandbox 안에서 Codex를 실행한다."""
+    return [
+        "codex", "--ask-for-approval", "never", "exec",
+        "--ephemeral", "--sandbox", "workspace-write", "-C", str(ROOT), prompt,
+    ]
+
+
+def deployment_commands(paths: set[str]) -> list[tuple[str, list[str], int]]:
+    """변경된 DB 패키지만 의존 순서대로 배포하고 실제 workflow를 확인한다."""
+    commands: list[tuple[str, list[str], int]] = []
+    if any(path.startswith("db/source/") for path in paths):
+        commands.append(("source_deploy", [PYTHON, "tools/asta_deploy_source.py"], 600))
+    if any(path.startswith("db/adb/") for path in paths):
+        commands.extend([
+            ("adb_deploy", [PYTHON, "tools/asta_deploy_adb.py"], 900),
+            ("adb_smoke", [PYTHON, "tools/asta_smoke_adb.py"], 2400),
+        ])
+    return commands
+
+
+def deploy(paths: set[str], work_dir: pathlib.Path, prefix: str = "deploy") -> tuple[bool, list[dict[str, Any]]]:
+    results: list[dict[str, Any]] = []
+    for name, command, timeout in deployment_commands(paths):
+        code, _ = run(command, work_dir / f"{prefix}_{name}.log", timeout)
+        results.append({"name": name, "command": command, "returncode": code,
+                        "log": str(work_dir / f"{prefix}_{name}.log")})
+        if code:
+            return False, results
+    return True, results
 
 
 def run(command: list[str], log: pathlib.Path, timeout: int) -> tuple[int, str]:
@@ -61,9 +94,6 @@ def rollback(patch: pathlib.Path, untracked: set[str]) -> None:
 
 def main() -> int:
     REPORT_ROOT.mkdir(parents=True, exist_ok=True)
-    if PENDING.exists():
-        print(json.dumps({"status": "SKIPPED", "reason": "PENDING_DEPLOYMENT", "marker": str(PENDING)}))
-        return 0
     if status_paths():
         print(json.dumps({"status": "SKIPPED", "reason": "DIRTY_WORKTREE"}), file=sys.stderr)
         return 2
@@ -86,12 +116,12 @@ def main() -> int:
     prompt = (
         f"{latest_md} 파일을 읽고 ASTA 결과 품질을 높이는 소스 변경을 정확히 한 가지 수행하라. "
         "첫 고객 SQL asta-awr-01의 안전한 구조 재작성 성공률을 최우선으로 하라. "
-        "허용 경로는 db/adb, tests, tools, docs뿐이다. 관련 회귀 테스트를 추가하라. "
+        "허용 경로는 db/adb, db/source, tests, tools, docs뿐이다. 관련 회귀 테스트를 추가하라. "
         "DB 접속, package compile, 배포, git commit/push, credential 변경은 하지 마라. "
+        "패키지 배포와 DB smoke는 이 실행을 호출한 오케스트레이터가 변경 검증 후 수행한다. "
         "한 회차에는 원인이 명확하고 되돌릴 수 있는 작은 변경만 하라."
     )
-    codex_command = ["codex", "exec", "--ephemeral", "--sandbox", "workspace-write", "-C", str(ROOT), prompt]
-    codex_code, _ = run(codex_command, work_dir / "codex.log", 1800)
+    codex_code, _ = run(codex_command(prompt), work_dir / "codex.log", 1800)
     paths = status_paths()
     untracked = {path for path in paths if subprocess.run(
         ["git", "ls-files", "--error-unmatch", "--", path], cwd=ROOT,
@@ -113,9 +143,22 @@ def main() -> int:
         if new_failures:
             reject_reason = "NEW_TEST_FAILURES: " + ", ".join(sorted(new_failures))
 
+    deploy_results: list[dict[str, Any]] = []
+    db_paths = {path for path in paths if path.startswith(("db/adb/", "db/source/"))}
+    if not reject_reason and db_paths:
+        deployed, deploy_results = deploy(db_paths, work_dir)
+        if not deployed:
+            reject_reason = "DB_DEPLOYMENT_FAILED"
+
     if reject_reason:
         rollback(patch, untracked)
-        result = {"status": "REJECTED", "reason": reject_reason, "cycle_id": cycle}
+        restore_results: list[dict[str, Any]] = []
+        restore_ok = True
+        if deploy_results:
+            restore_ok, restore_results = deploy(db_paths, work_dir, "restore")
+        result = {"status": "REJECTED", "reason": reject_reason, "cycle_id": cycle,
+                  "deployment": deploy_results, "database_restore_ok": restore_ok,
+                  "database_restore": restore_results}
         (work_dir / "result.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
         print(json.dumps(result, ensure_ascii=False), file=sys.stderr)
         return 1
@@ -124,14 +167,15 @@ def main() -> int:
     subprocess.run(["git", "commit", "-m", f"Improve ASTA quality from experiment {cycle}"], cwd=ROOT, check=True)
     commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
     result = {
-        "status": "ACCEPTED_PENDING_DEPLOYMENT",
+        "status": "ACCEPTED_DEPLOYED" if deploy_results else "ACCEPTED",
         "cycle_id": cycle,
         "commit": commit,
         "changed_paths": sorted(paths),
-        "automatic_db_deployment": False,
+        "automatic_db_deployment": bool(deploy_results),
+        "deployment": deploy_results,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
-    PENDING.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    LAST_DEPLOYMENT.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     (work_dir / "result.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(result, ensure_ascii=False))
     return 0
