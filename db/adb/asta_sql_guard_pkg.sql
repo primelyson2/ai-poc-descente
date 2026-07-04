@@ -242,13 +242,19 @@ CREATE OR REPLACE PACKAGE BODY asta_sql_guard_pkg AS
     -- back to fenced SQL extraction; otherwise the caller reruns the original
     -- SQL and the before/after loop looks successful but never tests the LLM SQL.
     IF l_candidate_vc IS NULL THEN
-      l_marker := '"candidate_sql":"';
+      l_marker := '"candidate_sql"';
       l_start := DBMS_LOB.INSTR(p_llm_text, l_marker, 1, 1);
       IF l_start > 0 THEN
-        l_start := l_start + LENGTH(l_marker);
-        l_end := DBMS_LOB.INSTR(p_llm_text, '","change_reason"', l_start, 1);
+        l_start := DBMS_LOB.INSTR(p_llm_text, ':', l_start + LENGTH(l_marker), 1);
+      END IF;
+      IF l_start > 0 THEN
+        l_start := DBMS_LOB.INSTR(p_llm_text, '"', l_start + 1, 1);
+      END IF;
+      IF l_start > 0 THEN
+        l_start := l_start + 1;
+        l_end := DBMS_LOB.INSTR(p_llm_text, '"change_reason"', l_start, 1);
         IF l_end = 0 THEN
-          l_end := DBMS_LOB.INSTR(p_llm_text, '","change_summary"', l_start, 1);
+          l_end := DBMS_LOB.INSTR(p_llm_text, '"change_summary"', l_start, 1);
         END IF;
         IF l_end > l_start THEN
           l_candidate_vc := DBMS_LOB.SUBSTR(
@@ -256,6 +262,13 @@ CREATE OR REPLACE PACKAGE BODY asta_sql_guard_pkg AS
             LEAST(l_end - l_start, 32767),
             l_start
           );
+          l_candidate_vc := RTRIM(l_candidate_vc, ' ' || CHR(9) || CHR(10) || CHR(13));
+          IF SUBSTR(l_candidate_vc, -1) = ',' THEN
+            l_candidate_vc := RTRIM(SUBSTR(l_candidate_vc, 1, LENGTH(l_candidate_vc) - 1), ' ' || CHR(9) || CHR(10) || CHR(13));
+          END IF;
+          IF SUBSTR(l_candidate_vc, -1) = '"' THEN
+            l_candidate_vc := SUBSTR(l_candidate_vc, 1, LENGTH(l_candidate_vc) - 1);
+          END IF;
           l_candidate_vc := REPLACE(l_candidate_vc, '\n', CHR(10));
           l_candidate_vc := REPLACE(l_candidate_vc, '\r', CHR(13));
           l_candidate_vc := REPLACE(l_candidate_vc, '\t', CHR(9));

@@ -384,7 +384,14 @@ def test_adb_guard_extracts_candidate_sql_only_after_guard_validation():
     assert "$.candidate_sql" in src
     assert "DBMS_LOB.INSTR(p_llm_text, l_marker" in src
     assert "JSON-looking text with literal newlines" in src
-    assert "DBMS_LOB.INSTR(p_llm_text, '\",\"change_reason\"'" in src
+    assert "l_marker := '\"candidate_sql\"'" in src
+    assert "DBMS_LOB.INSTR(p_llm_text, ':', l_start + LENGTH(l_marker), 1)" in src
+    assert "DBMS_LOB.INSTR(p_llm_text, '\"', l_start + 1, 1)" in src
+    assert "l_start := l_start + 1" in src
+    assert "DBMS_LOB.INSTR(p_llm_text, '\"change_reason\"'" in src
+    assert "RTRIM(l_candidate_vc, ' ' || CHR(9) || CHR(10) || CHR(13))" in src
+    assert "IF SUBSTR(l_candidate_vc, -1) = ',' THEN" in src
+    assert "IF SUBSTR(l_candidate_vc, -1) = '\"' THEN" in src
     assert "l_candidate_vc := REPLACE(l_candidate_vc, '\\n', CHR(10))" in src
     assert "assert_safe_select(l_candidate)" in src
     assert '"execution_boundary":"ADB_SQL_GUARD_PLSQL"' in src
