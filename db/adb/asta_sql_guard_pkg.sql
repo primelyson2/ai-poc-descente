@@ -217,7 +217,9 @@ CREATE OR REPLACE PACKAGE BODY asta_sql_guard_pkg AS
     l_start        PLS_INTEGER;
     l_end          PLS_INTEGER;
     l_marker       VARCHAR2(30);
-    l_value_prefix VARCHAR2(100);
+    -- DBMS_LOB.SUBSTR amount is characters; reserve four bytes per character
+    -- so a Korean JSON refusal can be inspected safely on AL32UTF8.
+    l_value_prefix VARCHAR2(400);
   BEGIN
     IF p_llm_text IS NULL OR NVL(DBMS_LOB.GETLENGTH(p_llm_text), 0) = 0 THEN
       RETURN NULL;

@@ -16,6 +16,13 @@ def test_sql_guard_character_buffers_allow_al32utf8_characters():
         assert source.count("l_c2  VARCHAR2(8);") >= 2
 
 
+def test_adb_candidate_null_prefix_buffer_allows_al32utf8_characters():
+    source = (ROOT / "db/adb/asta_sql_guard_pkg.sql").read_text(encoding="utf-8")
+    assert "DBMS_LOB.SUBSTR(p_llm_text, 100, l_start + 1)" in source
+    assert "l_value_prefix VARCHAR2(400);" in source
+    assert "l_value_prefix VARCHAR2(100);" not in source
+
+
 def test_source_large_object_info_uses_clob_append_path():
     source = (ROOT / "db/source/asta_source_pkg.sql").read_text(encoding="utf-8")
     assert "PROCEDURE clob_app_clob" in source
