@@ -1173,8 +1173,8 @@ END;
       </div>
       <div class="panel-body stack-sm">
         <div class="stack-sm">
-          <label>SQL Text <span class="muted" style="font-size:var(--fs-sm);">— 자연어 프롬프트 또는 SELECT AI 구문</span></label>
-          <textarea id="fb-sql-text" rows="2">select ai showsql how many movies</textarea>
+          <label>SQL Text <span class="muted" style="font-size:var(--fs-sm);">— content 만 입력하면 앞에 <code>select ai</code> 가 자동으로 붙습니다 (예: <code>이번주 가장 매출이 큰 상품을 알려줘</code>)</span></label>
+          <textarea id="fb-sql-text" rows="2">이번주 가장 매출이 큰 상품을 알려줘</textarea>
         </div>
         <div class="row" style="gap:12px; align-items:center;">
           <label style="width:90px;">Feedback</label>
@@ -1183,11 +1183,11 @@ END;
           <span class="muted" style="font-size:var(--fs-sm);">— 고정</span>
         </div>
         <div class="stack-sm">
-          <label>Response <span class="muted" style="font-size:var(--fs-sm);">— 기대하는(교정된) SQL. negative 일 때 권장</span></label>
+          <label>Response <span class="muted" style="font-size:var(--fs-sm);">— Predefined SQL 입력</span></label>
           <textarea id="fb-response" rows="3" style="font-family:var(--font-mono); font-size:var(--fs-sm);">SELECT SUM(1) FROM "ADB_USER"."MOVIES"</textarea>
         </div>
         <div class="stack-sm">
-          <label>Feedback Content <span class="muted" style="font-size:var(--fs-sm);">— 자연어 피드백(선택). 입력 시 feedback_content 로 전달</span></label>
+          <label>Feedback Content <span class="muted" style="font-size:var(--fs-sm);">— 추가feedback</span></label>
           <textarea id="fb-feedback-content" rows="2"></textarea>
         </div>
       </div>
@@ -1453,8 +1453,10 @@ END;
     document.getElementById("fb-gen-direct").addEventListener("click", () => {
       const profile = fbProfile();
       if (!profile) { window.Toast.show("Profile 을 선택하세요", "warn"); return; }
-      const sqlText = document.getElementById("fb-sql-text").value.trim();
+      let sqlText = document.getElementById("fb-sql-text").value.trim();
       if (!sqlText) { window.Toast.show("SQL Text 를 입력하세요", "warn"); return; }
+      // content 만 입력하면 앞에 'select ai ' 를 자동으로 붙인다 (이미 'select ai' 로 시작하면 그대로).
+      if (!/^select\s+ai\b/i.test(sqlText)) sqlText = "select ai " + sqlText;
       const type = document.getElementById("fb-direct-type").value;
       const response = document.getElementById("fb-response").value;
       const feedbackContent = document.getElementById("fb-feedback-content").value.trim();
