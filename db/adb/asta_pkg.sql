@@ -725,7 +725,6 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
     l_run_id              VARCHAR2(64);
     l_sql_vc              VARCHAR2(32767);
     l_sql                 CLOB;
-    l_tuned_sql_vc        VARCHAR2(32767);
     l_tuned_sql           CLOB;
     l_llm_profile         VARCHAR2(128);
     l_source_db_id        VARCHAR2(64);
@@ -941,18 +940,13 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
     record_progress(l_run_id, 6, 'LLM_REWRITE', 'Evidence-aware structural rewrite', progress_status_from_json(l_llm_json));
 
     BEGIN
-      SELECT JSON_VALUE(l_llm_json, '$.candidate_sql' RETURNING VARCHAR2(32767) NULL ON ERROR)
-      INTO   l_tuned_sql_vc
+      SELECT JSON_VALUE(l_llm_json, '$.candidate_sql' RETURNING CLOB NULL ON ERROR)
+      INTO   l_tuned_sql
       FROM   dual;
     EXCEPTION
       WHEN OTHERS THEN
-        l_tuned_sql_vc := NULL;
+        l_tuned_sql := NULL;
     END;
-    IF l_tuned_sql_vc IS NULL THEN
-      l_tuned_sql := NULL;
-    ELSE
-      l_tuned_sql := TO_CLOB(l_tuned_sql_vc);
-    END IF;
 
     IF l_tuned_sql IS NOT NULL THEN
       record_progress(l_run_id, 7, 'AFTER_EVIDENCE', 'Tuned SQL evidence', 'RUNNING');

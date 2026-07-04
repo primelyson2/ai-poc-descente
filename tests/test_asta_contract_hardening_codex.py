@@ -50,6 +50,40 @@ def test_llm_prompts_keep_candidate_sql_inside_guardable_single_statement_contra
     assert "asta_sql_guard_pkg.assert_safe_select(p_sql)" in src
 
 
+def test_operational_sql_xplan_path_never_silently_truncates_evidence():
+    llm = _read("db/adb/asta_llm_pkg.sql")
+    operational = llm[llm.index("FUNCTION generate_sql_only_tuning("):llm.index("END generate_sql_only_tuning;")]
+    assert operational.count("clob_app_clob(l_diagnosis_prompt, l_plan_text)") == 1
+    assert operational.count("clob_app_clob(l_candidate_prompt, l_plan_text)") == 1
+    assert "clob_app_limited(l_diagnosis_prompt" not in operational
+    assert "clob_app_limited(l_candidate_prompt" not in operational
+    assert 'DBMS_XPLAN (full CLOB; no truncation)' in operational
+    assert ',"xplan_truncated":false' in operational
+
+
+def test_candidate_length_boundary_fails_closed_instead_of_using_a_truncated_sql():
+    llm = _read("db/adb/asta_llm_pkg.sql")
+    main = _read("db/adb/asta_pkg.sql")
+    operational = llm[llm.index("FUNCTION generate_sql_only_tuning("):llm.index("END generate_sql_only_tuning;")]
+    assert "FEATURE_LIMITED: candidate SQL exceeds the 32767-character SQL validation boundary" in operational
+    assert "truncated SQL is never executed" in operational
+    assert "JSON_VALUE(l_llm_json, '$.candidate_sql' RETURNING CLOB NULL ON ERROR)" in main
+    assert "l_tuned_sql_vc" not in main
+
+
+def test_every_direct_llm_prompt_uses_clob_without_32k_prompt_truncation():
+    llm = _read("db/adb/asta_llm_pkg.sql")
+    proxy = _read("app/routers/asta_proxy.py")
+    assert "l_prompt_vc       CLOB;" in llm
+    assert "l_prompt_vc := l_prompt;" in llm
+    assert "l_prompt_vc := DBMS_LOB.SUBSTR(l_prompt, 32767, 1)" not in llm
+    assert "prompt_clob = cur.var(oracledb.DB_TYPE_CLOB)" in proxy
+    assert "prompt_clob.setvalue(0, prompt_text)" in proxy
+    assert '"prompt": prompt_bind' in proxy
+    assert "[truncated for SQL-only LLM prompt]" not in proxy
+    assert "sql too long for SQL-only LLM call" not in proxy
+
+
 def test_ords_handlers_emit_runtime_ownership_headers_for_all_json_routes():
     """ASTA 계약/회귀 조건을 검증한다: ords handlers emit runtime ownership headers for all json routes."""
     src = _read("db/ords/asta_ords_module.sql")

@@ -21,6 +21,8 @@ from urllib import request as urllib_request
 from urllib.parse import quote, urljoin
 import uuid
 
+import oracledb
+
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 
@@ -619,8 +621,6 @@ async def llm_sql_only(request: Request, database: str = Depends(current_db)) ->
     sql_text = str(payload.get("sql") or payload.get("sql_text") or "").strip()
     if not sql_text:
         raise HTTPException(status_code=400, detail={"error": "sql required"})
-    if len(sql_text) > 32767:
-        raise HTTPException(status_code=400, detail={"error": "sql too long for SQL-only LLM call"})
     profile = str(payload.get("llm_profile") or payload.get("ai_profile") or DEFAULT_LLM_PROFILE).strip() or DEFAULT_LLM_PROFILE
     prompt_text = str(payload.get("prompt") or payload.get("user_prompt") or "").strip()
     if not prompt_text:
@@ -633,8 +633,6 @@ async def llm_sql_only(request: Request, database: str = Depends(current_db)) ->
             "SQL:",
             sql_text,
         ])
-    if len(prompt_text) > 32767:
-        prompt_text = prompt_text[:32700] + "\n... [truncated for SQL-only LLM prompt]"
     started = perf_counter()
     fallback_profiles = [
         profile,
@@ -656,13 +654,21 @@ async def llm_sql_only(request: Request, database: str = Depends(current_db)) ->
                         continue
                     seen_profiles.add(candidate_profile)
                     tried_profiles.append(candidate_profile)
+                    # python-oracledb needs an explicit CLOB bind to avoid the
+                    # VARCHAR2 32K boundary. Lightweight test cursors may not
+                    # implement var(), so they retain the plain string value.
+                    prompt_bind: Any = prompt_text
+                    if hasattr(cur, "var"):
+                        prompt_clob = cur.var(oracledb.DB_TYPE_CLOB)
+                        prompt_clob.setvalue(0, prompt_text)
+                        prompt_bind = prompt_clob
                     await cur.execute(
                         (
                         "select "
                         "dbms_cloud" "_ai.generate(prompt => :prompt, profile_name => :profile, action => 'chat') "
                         "as response from dual"
                     ),
-                        {"prompt": prompt_text, "profile": candidate_profile},
+                        {"prompt": prompt_bind, "profile": candidate_profile},
                     )
                     row = await cur.fetchone()
                     candidate_response = row[0] if row else ""

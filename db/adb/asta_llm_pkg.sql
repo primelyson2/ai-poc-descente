@@ -552,7 +552,7 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
     p_use_llm              IN VARCHAR2 DEFAULT 'Y'
   ) RETURN CLOB IS
     l_prompt          CLOB;
-    l_prompt_vc       VARCHAR2(32767);
+    l_prompt_vc       CLOB;
     l_response        CLOB;
     l_result          CLOB;
     l_candidate_sql   CLOB;
@@ -580,7 +580,9 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
       p_vector_json,
       p_tuning_context_json
     );
-    l_prompt_vc := DBMS_LOB.SUBSTR(l_prompt, 32767, 1);
+    -- Keep the complete SQL/evidence prompt as CLOB. Never collapse the
+    -- combined prompt into VARCHAR2(32767) before DBMS_CLOUD_AI.
+    l_prompt_vc := l_prompt;
 
     FOR i IN 1..3 LOOP
       l_response := NULL;
@@ -692,8 +694,8 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
     clob_app(l_diagnosis_prompt, 'Identify the safest structural rewrite for repeated scans, correlated MIN/SUM, UNION ALL, nested loops and temp transformations. ASTA will execute and compare the candidate later. Explanations must be Korean.' || CHR(10));
     clob_app(l_diagnosis_prompt, 'SQL:' || CHR(10));
     clob_app_clob(l_diagnosis_prompt, p_sql);
-    clob_app(l_diagnosis_prompt, CHR(10) || 'DBMS_XPLAN (focused excerpt):' || CHR(10));
-    clob_app_limited(l_diagnosis_prompt, l_plan_text, 10000);
+    clob_app(l_diagnosis_prompt, CHR(10) || 'DBMS_XPLAN (full CLOB; no truncation):' || CHR(10));
+    clob_app_clob(l_diagnosis_prompt, l_plan_text);
 
     FOR i IN 1..2 LOOP
       l_try_profile := CASE i
@@ -748,8 +750,8 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
     IF l_diagnosis_ok = 'Y' THEN clob_app_clob(l_candidate_prompt, l_diagnosis_response); ELSE clob_app(l_candidate_prompt, '{}'); END IF;
     clob_app(l_candidate_prompt, CHR(10) || 'SQL:' || CHR(10));
     clob_app_clob(l_candidate_prompt, p_sql);
-    clob_app(l_candidate_prompt, CHR(10) || 'DBMS_XPLAN (focused excerpt):' || CHR(10));
-    clob_app_limited(l_candidate_prompt, l_plan_text, 9000);
+    clob_app(l_candidate_prompt, CHR(10) || 'DBMS_XPLAN (full CLOB; no truncation):' || CHR(10));
+    clob_app_clob(l_candidate_prompt, l_plan_text);
 
     FOR i IN 1..4 LOOP
       l_try_profile := CASE i
@@ -781,6 +783,11 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
           ',"stage":"CANDIDATE_SQL","error_code":null,"message":"empty response"}');
         l_error_count := l_error_count + 1;
         CONTINUE;
+      END IF;
+      IF NVL(DBMS_LOB.GETLENGTH(l_candidate_response), 0) > 32767 THEN
+        l_candidate_error := 'FEATURE_LIMITED: candidate SQL exceeds the 32767-character SQL validation boundary; truncated SQL is never executed';
+        l_candidate_sql := NULL;
+        EXIT;
       END IF;
       IF UPPER(TRIM(DBMS_LOB.SUBSTR(l_candidate_response, 100, 1))) = 'NO_REWRITE' THEN CONTINUE; END IF;
       l_candidate_sql := normalize_sql_response(l_candidate_response);
@@ -817,7 +824,8 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
     clob_app(l_result, ',"prompt_mode":"SQL_XPLAN_TWO_STAGE"');
     clob_app(l_result, ',"diagnosis_prompt_chars":' || TO_CHAR(NVL(DBMS_LOB.GETLENGTH(l_diagnosis_prompt), 0)));
     clob_app(l_result, ',"prompt_chars":' || TO_CHAR(NVL(DBMS_LOB.GETLENGTH(l_candidate_prompt), 0)));
-    clob_app(l_result, ',"xplan_excerpt_chars":' || TO_CHAR(LEAST(NVL(DBMS_LOB.GETLENGTH(l_plan_text), 0), 10000)));
+    clob_app(l_result, ',"xplan_chars":' || TO_CHAR(NVL(DBMS_LOB.GETLENGTH(l_plan_text), 0)));
+    clob_app(l_result, ',"xplan_truncated":false');
     clob_app(l_result, ',"source_evidence_included":' || CASE WHEN p_source_evidence_json IS NULL THEN 'false' ELSE 'true' END);
     clob_app(l_result, ',"vector_evidence_included":false');
     IF l_candidate_sql IS NOT NULL AND structural_sql_key(p_sql) = structural_sql_key(l_candidate_sql) THEN
