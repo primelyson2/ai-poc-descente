@@ -1150,6 +1150,7 @@ SELECT H.COMP_CD,
    */
   function renderProgressStack(target, progress) {
     const steps = normalizeSteps(progress);
+    const runId = String(progress?.run_id || progress?.runId || "").trim();
     const statusText = progress?.status || "READY";
     const overall = String(statusText || "READY").toUpperCase();
     const running = steps.find((step) => String(step.status || "").toUpperCase() === "RUNNING");
@@ -1197,6 +1198,7 @@ SELECT H.COMP_CD,
         <span class="tuning-current-main">${escapeHtml(label)}</span>
         <span class="tuning-current-detail">${escapeHtml([detail, elapsed].filter(Boolean).join(""))}</span>
         ${totalElapsedText ? `<span class="tuning-current-total">${escapeHtml(totalElapsedText)}</span>` : ""}
+        ${runId ? `<span class="tuning-current-run-id" title="ASTA Run ID">ID ${escapeHtml(runId)}</span>` : ""}
       </div>`;
   }
 
@@ -1350,8 +1352,9 @@ SELECT H.COMP_CD,
         .tuning-card-title { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:14px; font-weight:590; }
         .tuning-hero-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
         .tuning-top-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
-        .tuning-current-progress { display:inline-flex; align-items:center; gap:8px; min-height:40px; max-width:min(680px, 100%); padding:8px 12px; border:1px solid #dbe3ef; border-radius:999px; background:#ffffff; color:#334155; box-shadow:0 8px 22px rgba(15,23,42,.07); }
+        .tuning-current-progress { display:inline-flex; align-items:center; gap:8px; min-height:40px; max-width:min(980px, 100%); padding:8px 12px; border:1px solid #dbe3ef; border-radius:999px; background:#ffffff; color:#334155; box-shadow:0 8px 22px rgba(15,23,42,.07); }
         .tuning-current-label { color:#64748b; font-size:12px; font-weight:650; white-space:nowrap; }
+        .tuning-current-run-id { max-width:360px; overflow:hidden; text-overflow:ellipsis; color:#475569; font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; font-size:11px; white-space:nowrap; user-select:all; }
         .tuning-current-dot { width:22px; height:22px; display:inline-grid; place-items:center; border-radius:999px; background:#eff6ff; color:#1d4ed8; font-size:12px; font-weight:700; flex:0 0 auto; }
         .tuning-current-running .tuning-current-dot { background:#eff6ff; }
         .tuning-current-done .tuning-current-dot { background:#dcfce7; color:#15803d; }
@@ -1925,6 +1928,7 @@ SELECT H.COMP_CD,
         });
         window.clearInterval(progressTimer);
         if (data?.run_id && ["RUNNING", "QUEUED"].includes(String(data?.status || "").toUpperCase())) {
+          renderProgressStack(progressTarget, { ...data, totalDurationMs: Date.now() - startedAt.getTime() });
           await pollRunProgress(baseUrl, data.run_id, progressTarget, result);
         } else {
           const endedAt = new Date();
