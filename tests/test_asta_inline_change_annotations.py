@@ -141,6 +141,20 @@ def test_all_prompt_modes_require_complete_and_resolvable_asta_awr_01_sql():
     assert "to a column projected by that exact CTE or inline-view alias" in prompt
 
 
+def test_all_prompt_modes_keep_asta_awr_01_correlated_aggregates_on_original_consumers():
+    llm = read("db/adb/asta_llm_pkg.sql")
+    prompt = llm[llm.index("FUNCTION build_tuning_prompt("):llm.index("END build_tuning_prompt;")]
+    contract = "Correlated-aggregate lift safety is mandatory"
+    assert contract in prompt
+    assert prompt.index(contract) < prompt.index("IF l_mode IN ('A', 'B') THEN")
+    assert "build each helper CTE only from the original inner tables" in prompt
+    assert "grouped by every original correlation key" in prompt
+    assert "LEFT JOIN it from the original immediate outer consumer" in prompt
+    assert "Never join the helper producer to a pre-existing CTE as a substitute for that outer consumer" in prompt
+    assert "do not move an outer-alias DECODE or other wildcard correlation into the helper" in prompt
+    assert "return no candidate when that localized lift is not possible" in prompt
+
+
 def test_all_prompt_modes_reject_asta_awr_01_noop_rewrites():
     llm = read("db/adb/asta_llm_pkg.sql")
     prompt = llm[llm.index("FUNCTION build_tuning_prompt("):llm.index("END build_tuning_prompt;")]
