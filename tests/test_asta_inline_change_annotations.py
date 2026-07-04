@@ -154,6 +154,20 @@ def test_all_prompt_modes_keep_asta_awr_01_correlated_aggregates_on_original_con
     assert "return no candidate when this localized lift is not possible" in prompt
 
 
+def test_all_prompt_modes_preserve_asta_awr_01_cte_output_aliases():
+    """A rewritten XX producer must still expose SALE_QTY to unchanged consumers."""
+    llm = read("db/adb/asta_llm_pkg.sql")
+    prompt = llm[llm.index("FUNCTION build_tuning_prompt("):llm.index("END build_tuning_prompt;")]
+    contract = "CTE interface preservation is mandatory"
+    assert contract in prompt
+    assert prompt.index(contract) < prompt.index("IF l_mode IN ('A', 'B') THEN")
+    assert "keep each original output column under its original alias" in prompt
+    assert "Add derived values under new aliases instead of renaming or replacing an original output column" in prompt
+    assert "every unchanged downstream alias.column reference remains valid" in prompt
+    assert "for example XX.SALE_QTY" in prompt
+    assert "reject the candidate if any unchanged downstream reference" in prompt
+
+
 def test_all_prompt_modes_preserve_asta_awr_01_decode_wildcards_without_legacy_outer_joins():
     """The customer SQL's '-' wildcard aggregates must yield one joined row and compile."""
     llm = read("db/adb/asta_llm_pkg.sql")
