@@ -109,7 +109,7 @@ ORDS_BASE='https://<host>/ords/<schema-alias>/asta' \
 
 ## Important caveats
 
-- `db/asta/001_asta_repository.sql`, `002_asta_source_connections.sql`, and `004_asta_vector_tables.sql` use raw `CREATE TABLE`/`CREATE INDEX`. `02_adb_compile.sql` does prechecks and skips those files if tables already exist.
+- `db/asta/001_asta_repository.sql`, `002_asta_source_connections.sql`, and `004_asta_vector_tables.sql` use raw `CREATE TABLE`/`CREATE INDEX`. `02_adb_compile.sql` does prechecks and skips those files if tables already exist. `006_asta_llm_call_log.sql` creates the autonomous two-stage LLM prompt/response audit store and is idempotent.
 - Source helper CLOB evidence over DB Link uses the store/chunk VARCHAR2 contract (`run_evidence_store_proc` + `get_result_chunk`); do not call `run_evidence` directly over the DB Link.
 - `ASTA_VECTOR_PKG` is currently fingerprint-first chunk scan, not full VECTOR_DISTANCE embedding search.
 - `ASTA_LLM_PKG` requires same-owner ASTA DBMS_CLOUD_AI profiles/credentials under definer-rights execution.

@@ -8,6 +8,7 @@ responsibility into PL/SQL.
 
 ```sql
 @db/asta/001_asta_repository.sql
+@db/asta/006_asta_llm_call_log.sql
 @db/asta/002_asta_source_connections.sql
 @db/asta/003_asta_runs_source_db_id.sql
 @db/asta/004_asta_vector_tables.sql

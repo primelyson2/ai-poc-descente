@@ -935,7 +935,8 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
       p_source_evidence_json => l_source_json,
       p_vector_json          => l_vector_json,
       p_tuning_context_json  => l_context_json,
-      p_use_llm              => l_use_llm
+      p_use_llm              => l_use_llm,
+      p_run_id               => l_run_id
     );
     record_progress(l_run_id, 6, 'LLM_REWRITE', 'Evidence-aware structural rewrite', progress_status_from_json(l_llm_json));
 

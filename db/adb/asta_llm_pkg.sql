@@ -26,7 +26,8 @@ CREATE OR REPLACE PACKAGE asta_llm_pkg AUTHID DEFINER AS
     p_source_evidence_json IN CLOB DEFAULT NULL,
     p_vector_json          IN CLOB DEFAULT NULL,
     p_tuning_context_json  IN CLOB DEFAULT NULL,
-    p_use_llm              IN VARCHAR2 DEFAULT 'Y'
+    p_use_llm              IN VARCHAR2 DEFAULT 'Y',
+    p_run_id               IN VARCHAR2 DEFAULT NULL
   ) RETURN CLOB;
 
   FUNCTION repair_sql_candidate(
@@ -97,6 +98,63 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
       l_offset := l_offset + 1000;
     END LOOP;
   END clob_app_clob;
+
+  FUNCTION begin_llm_call_log(
+    p_run_id       IN VARCHAR2,
+    p_stage        IN VARCHAR2,
+    p_attempt_no   IN PLS_INTEGER,
+    p_profile_name IN VARCHAR2,
+    p_prompt       IN CLOB
+  ) RETURN NUMBER IS
+    PRAGMA AUTONOMOUS_TRANSACTION;
+    l_call_id NUMBER;
+  BEGIN
+    IF p_run_id IS NULL THEN
+      RETURN NULL;
+    END IF;
+
+    INSERT INTO asta_llm_call_log(
+      run_id, stage, attempt_no, profile_name, call_status,
+      prompt_clob, prompt_chars, started_at
+    ) VALUES (
+      p_run_id, p_stage, p_attempt_no, p_profile_name, 'SENT',
+      p_prompt, NVL(DBMS_LOB.GETLENGTH(p_prompt), 0), SYSTIMESTAMP
+    )
+    RETURNING call_id INTO l_call_id;
+    COMMIT;
+    RETURN l_call_id;
+  EXCEPTION
+    WHEN OTHERS THEN
+      ROLLBACK;
+      RETURN NULL;
+  END begin_llm_call_log;
+
+  PROCEDURE finish_llm_call_log(
+    p_call_id       IN NUMBER,
+    p_response      IN CLOB,
+    p_call_status   IN VARCHAR2,
+    p_error_code    IN NUMBER DEFAULT NULL,
+    p_error_message IN VARCHAR2 DEFAULT NULL
+  ) IS
+    PRAGMA AUTONOMOUS_TRANSACTION;
+  BEGIN
+    IF p_call_id IS NULL THEN
+      RETURN;
+    END IF;
+
+    UPDATE asta_llm_call_log
+    SET    call_status = p_call_status,
+           response_clob = p_response,
+           response_chars = NVL(DBMS_LOB.GETLENGTH(p_response), 0),
+           error_code = p_error_code,
+           error_message = SUBSTR(p_error_message, 1, 4000),
+           completed_at = SYSTIMESTAMP
+    WHERE  call_id = p_call_id;
+    COMMIT;
+  EXCEPTION
+    WHEN OTHERS THEN
+      ROLLBACK;
+  END finish_llm_call_log;
 
   PROCEDURE clob_app_limited(p_out IN OUT NOCOPY CLOB, p_val IN CLOB, p_max_chars IN PLS_INTEGER) IS
     l_offset  PLS_INTEGER := 1;
@@ -664,7 +722,8 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
     p_source_evidence_json IN CLOB DEFAULT NULL,
     p_vector_json          IN CLOB DEFAULT NULL,
     p_tuning_context_json  IN CLOB DEFAULT NULL,
-    p_use_llm              IN VARCHAR2 DEFAULT 'Y'
+    p_use_llm              IN VARCHAR2 DEFAULT 'Y',
+    p_run_id               IN VARCHAR2 DEFAULT NULL
   ) RETURN CLOB IS
     l_diagnosis_prompt   CLOB;
     l_candidate_prompt   CLOB;
@@ -688,6 +747,8 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
     l_workload_type      VARCHAR2(10) := CASE WHEN UPPER(TRIM(p_workload_type)) = 'BATCH' THEN 'BATCH' ELSE 'OLTP' END;
     l_optimization_goal VARCHAR2(40);
     l_annotation_count PLS_INTEGER := 0;
+    l_diagnosis_call_id NUMBER;
+    l_candidate_call_id NUMBER;
   BEGIN
     l_optimization_goal := CASE WHEN l_workload_type = 'BATCH' THEN 'MINIMIZE_ELAPSED_TIME' ELSE 'MINIMIZE_BUFFER_READS' END;
     IF UPPER(NVL(p_use_llm, 'Y')) <> 'Y' THEN
@@ -727,13 +788,32 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
       IF i > 1 AND l_try_profile = l_profile THEN
         CONTINUE;
       END IF;
+      l_diagnosis_call_id := begin_llm_call_log(
+        p_run_id       => p_run_id,
+        p_stage        => 'DIAGNOSIS',
+        p_attempt_no   => i,
+        p_profile_name => l_try_profile,
+        p_prompt       => l_diagnosis_prompt
+      );
       BEGIN
         EXECUTE IMMEDIATE
           'SELECT DBMS_CLOUD_AI.GENERATE(prompt => :in_prompt, profile_name => :in_profile, action => ''chat'') FROM dual'
           INTO l_diagnosis_response
           USING IN l_diagnosis_prompt, IN l_try_profile;
+        finish_llm_call_log(
+          p_call_id     => l_diagnosis_call_id,
+          p_response    => l_diagnosis_response,
+          p_call_status => 'RECEIVED'
+        );
       EXCEPTION
         WHEN OTHERS THEN
+          finish_llm_call_log(
+            p_call_id       => l_diagnosis_call_id,
+            p_response      => NULL,
+            p_call_status   => 'FAILED',
+            p_error_code    => SQLCODE,
+            p_error_message => SQLERRM
+          );
           -- Preserve a non-sensitive profile/stage diagnostic without raw exception text
           -- because provider errors can contain request or endpoint details.
           IF l_error_count > 0 THEN clob_app(l_profile_errors, ','); END IF;
@@ -789,13 +869,32 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
       END;
       IF i > 1 AND l_try_profile = NVL(l_diagnosis_profile, l_profile) THEN CONTINUE; END IF;
       l_candidate_response := NULL;
+      l_candidate_call_id := begin_llm_call_log(
+        p_run_id       => p_run_id,
+        p_stage        => 'CANDIDATE_SQL',
+        p_attempt_no   => i,
+        p_profile_name => l_try_profile,
+        p_prompt       => l_candidate_prompt
+      );
       BEGIN
         EXECUTE IMMEDIATE
           'SELECT DBMS_CLOUD_AI.GENERATE(prompt => :in_prompt, profile_name => :in_profile, action => ''chat'') FROM dual'
           INTO l_candidate_response
           USING IN l_candidate_prompt, IN l_try_profile;
+        finish_llm_call_log(
+          p_call_id     => l_candidate_call_id,
+          p_response    => l_candidate_response,
+          p_call_status => 'RECEIVED'
+        );
       EXCEPTION
         WHEN OTHERS THEN
+          finish_llm_call_log(
+            p_call_id       => l_candidate_call_id,
+            p_response      => NULL,
+            p_call_status   => 'FAILED',
+            p_error_code    => SQLCODE,
+            p_error_message => SQLERRM
+          );
           -- Preserve a non-sensitive profile/stage diagnostic without raw exception text
           -- because provider errors can contain request or endpoint details.
           IF l_error_count > 0 THEN clob_app(l_profile_errors, ','); END IF;
