@@ -75,9 +75,12 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
 
     l_len := NVL(DBMS_LOB.GETLENGTH(p_val), 0);
     WHILE l_offset <= l_len LOOP
-      l_chunk := DBMS_LOB.SUBSTR(p_val, 32767, l_offset);
+      -- Use a character-safe chunk under AL32UTF8 and never skip characters
+      -- when DBMS_LOB.SUBSTR returns less than the requested amount.
+      l_chunk := DBMS_LOB.SUBSTR(p_val, 8000, l_offset);
+      EXIT WHEN l_chunk IS NULL;
       DBMS_LOB.WRITEAPPEND(p_out, LENGTH(l_chunk), l_chunk);
-      l_offset := l_offset + 32767;
+      l_offset := l_offset + LENGTH(l_chunk);
     END LOOP;
   END clob_app_clob;
 
@@ -763,6 +766,7 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
     l_response_json       CLOB;
     l_error_json          CLOB;
     l_error_message       VARCHAR2(4000);
+    l_persist_error       VARCHAR2(4000);
     l_status              VARCHAR2(30) := 'COMPLETED';
   BEGIN
     l_run_id := COALESCE(
@@ -1193,7 +1197,29 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
         COMMIT;
       EXCEPTION
         WHEN OTHERS THEN
+          l_persist_error := SUBSTR(SQLERRM, 1, 2000);
           ROLLBACK;
+          -- Never leave a finished Scheduler run stuck in RUNNING merely
+          -- because the rich response artifact could not satisfy persistence.
+          BEGIN
+            UPDATE asta_runs
+            SET    status = 'FAILED',
+                   completed_at = SYSTIMESTAMP,
+                   error_code = 'ASTA_PERSIST',
+                   error_message = SUBSTR(
+                     NVL(l_error_message, 'ASTA response persistence failed') ||
+                     ' | persistence: ' || l_persist_error,
+                     1,
+                     4000
+                   ),
+                   detailed_report_md = l_report_markdown,
+                   response_json = NULL
+            WHERE  run_id = l_run_id;
+            COMMIT;
+          EXCEPTION
+            WHEN OTHERS THEN
+              ROLLBACK;
+          END;
       END;
 
       RETURN l_response_json;
