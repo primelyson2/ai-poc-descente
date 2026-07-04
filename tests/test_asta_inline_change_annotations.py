@@ -172,3 +172,17 @@ def test_sql_only_candidate_preflights_asta_awr_01_semantic_contract():
     assert "Trace every alias.column reference to a column projected by that exact source, CTE, or inline view" in sql_only
     assert "never invent a column, drop a UNION ALL branch, or replace an original expression with a placeholder" in sql_only
     assert "Return NO_REWRITE if any check cannot be satisfied." in sql_only
+
+
+def test_sql_only_long_candidate_limits_asta_awr_01_to_one_complete_rewrite():
+    llm = read("db/adb/asta_llm_pkg.sql")
+    sql_only = llm[llm.index("FUNCTION generate_sql_only_tuning("):llm.index("END generate_sql_only_tuning;")]
+    boundary = "Long-SQL candidate boundary: rewrite exactly one repeated-access pattern completely across its producer and consumer blocks"
+    assert "IF NVL(DBMS_LOB.GETLENGTH(p_sql), 0) >= 12000 THEN" in sql_only
+    assert boundary in sql_only
+    assert sql_only.index(boundary) < sql_only.index("'DIAGNOSIS:'")
+    assert "Add every helper CTE, projected join key, GROUP BY expression, join, and correlated-reference change required for that one pattern" in sql_only
+    assert "copying every unrelated CTE, UNION ALL branch, predicate, and select-list expression verbatim" in sql_only
+    assert "Do not redesign the full statement" in sql_only
+    assert "change any set-operation branch projection count" in sql_only
+    assert "reference a grouping key after aggregation removed it" in sql_only
