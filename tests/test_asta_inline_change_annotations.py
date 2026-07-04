@@ -143,6 +143,18 @@ def test_all_prompt_modes_reject_asta_awr_01_noop_rewrites():
     assert "return no candidate when no safe effective rewrite can be completed" in prompt
 
 
+def test_xplan_focus_targets_one_dominant_asta_awr_01_operation():
+    llm = read("db/adb/asta_llm_pkg.sql")
+    prompt = llm[llm.index("FUNCTION build_tuning_prompt("):llm.index("END build_tuning_prompt;")]
+    contract = "Evidence focus is mandatory when XPLAN is supplied"
+    assert contract in prompt
+    assert prompt.index(contract) < prompt.index("IF l_mode IN ('A', 'B') THEN")
+    assert "rank operations by measured Buffers and A-Time, using Starts to identify repeated work" in prompt
+    assert "rewrite exactly one pattern containing the dominant measured operation" in prompt
+    assert "Do not select a low-buffer scalar subquery or another cheap operation" in prompt
+    assert "return no candidate if that dominant pattern cannot be rewritten safely" in prompt
+
+
 def test_long_asta_awr_01_prompt_allows_one_cross_block_repeated_access_rewrite():
     llm = read("db/adb/asta_llm_pkg.sql")
     prompt = llm[llm.index("FUNCTION build_tuning_prompt("):llm.index("END build_tuning_prompt;")]
