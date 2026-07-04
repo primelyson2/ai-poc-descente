@@ -150,9 +150,11 @@ def test_long_asta_awr_01_prompt_allows_one_cross_block_repeated_access_rewrite(
     assert "DBMS_LOB.GETLENGTH(p_sql), 0) >= 12000" in prompt
     assert boundary in prompt
     assert prompt.index(boundary) < prompt.index("IF l_mode IN ('A', 'B') THEN")
-    assert "one existing query block" not in prompt
-    assert "add one helper CTE and replace every occurrence of that same logical computation" in prompt
-    assert "in the required producer and consumer query blocks; this still counts as one localized structural change" in prompt
+    assert "This is a semantic scope, not a one-CTE or one-query-block edit limit" in prompt
+    assert "add the helper CTEs and change projections, joins, GROUP BY expressions, and correlated references required" in prompt
+    assert "within only the producer and consumer blocks participating in that pattern" in prompt
+    assert "Preserve the original correlation or join-key grain and project every key needed downstream." in prompt
+    assert "You may add one helper CTE" not in prompt
     assert "Copy every unrelated query block, CTE, UNION ALL branch, join, predicate, and select-list expression verbatim" in prompt
     assert "Do not decompose or rebuild the full statement into a new CTE architecture." in prompt
     assert "do not change any UNION ALL branch projection count" in prompt
