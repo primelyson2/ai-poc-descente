@@ -398,6 +398,20 @@ def test_adb_guard_extracts_candidate_sql_only_after_guard_validation():
     assert '"contract_version":"asta.v1"' in src
 
 
+def test_adb_guard_does_not_parse_fields_after_explicit_null_candidate():
+    """A JSON refusal must not reinterpret change_reason as executable SQL."""
+    src = _read("db/adb/asta_sql_guard_pkg.sql")
+    extractor = src[
+        src.index("FUNCTION extract_candidate_sql(p_llm_text IN CLOB) RETURN CLOB"):
+        src.index("END extract_candidate_sql;")
+    ]
+    colon = extractor.index("DBMS_LOB.INSTR(p_llm_text, ':', l_start + LENGTH(l_marker), 1)")
+    null_check = extractor.index("REGEXP_LIKE(l_value_prefix, '^null[[:space:]]*[,}]', 'i')")
+    next_quote = extractor.index("DBMS_LOB.INSTR(p_llm_text, '\"', l_start + 1, 1)")
+    assert colon < null_check < next_quote
+    assert "RETURN NULL;" in extractor[null_check:next_quote]
+
+
 def test_vector_and_llm_packages_emit_boundary_and_json_only_contracts():
     """ASTA 계약/회귀 조건을 검증한다: vector and llm packages emit boundary and json only contracts."""
     vector = _read("db/adb/asta_vector_pkg.sql")

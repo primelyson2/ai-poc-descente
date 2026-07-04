@@ -217,6 +217,7 @@ CREATE OR REPLACE PACKAGE BODY asta_sql_guard_pkg AS
     l_start        PLS_INTEGER;
     l_end          PLS_INTEGER;
     l_marker       VARCHAR2(30);
+    l_value_prefix VARCHAR2(100);
   BEGIN
     IF p_llm_text IS NULL OR NVL(DBMS_LOB.GETLENGTH(p_llm_text), 0) = 0 THEN
       RETURN NULL;
@@ -246,6 +247,12 @@ CREATE OR REPLACE PACKAGE BODY asta_sql_guard_pkg AS
       l_start := DBMS_LOB.INSTR(p_llm_text, l_marker, 1, 1);
       IF l_start > 0 THEN
         l_start := DBMS_LOB.INSTR(p_llm_text, ':', l_start + LENGTH(l_marker), 1);
+      END IF;
+      IF l_start > 0 THEN
+        l_value_prefix := LTRIM(DBMS_LOB.SUBSTR(p_llm_text, 100, l_start + 1));
+        IF REGEXP_LIKE(l_value_prefix, '^null[[:space:]]*[,}]', 'i') THEN
+          RETURN NULL;
+        END IF;
       END IF;
       IF l_start > 0 THEN
         l_start := DBMS_LOB.INSTR(p_llm_text, '"', l_start + 1, 1);
