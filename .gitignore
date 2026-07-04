@@ -25,6 +25,8 @@ Guide_Security_info.md
 .pytest_cache/
 logs/
 reports/
+# 로컬 전용 문서 (추적 안 함)
+Guide_페르소나관리.md
 
 # OS
 .DS_Store
