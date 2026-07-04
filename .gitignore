@@ -19,6 +19,9 @@ models.txt
 # 내부 보안 문서 (공개 금지)
 Guide_Security_info.md
 
+# 로컬 전용 문서 (추적 안 함)
+Guide_페르소나관리.md
+
 # OS
 .DS_Store
 
