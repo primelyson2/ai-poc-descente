@@ -161,6 +161,18 @@ def test_long_asta_awr_01_prompt_allows_one_cross_block_repeated_access_rewrite(
     assert "reference a grouping key after it has been removed by aggregation" in prompt
 
 
+def test_long_asta_awr_01_prompt_does_not_treat_unrelated_patterns_as_blockers():
+    llm = read("db/adb/asta_llm_pkg.sql")
+    prompt = llm[llm.index("FUNCTION build_tuning_prompt("):llm.index("END build_tuning_prompt;")]
+    boundary = "Long-SQL rewrite boundary: target exactly one repeated-access pattern"
+    clarification = "Other repeated-access patterns elsewhere do not block an isolated rewrite"
+    assert boundary in prompt
+    assert clarification in prompt
+    assert prompt.index(boundary) < prompt.index(clarification) < prompt.index("IF l_mode IN ('A', 'B') THEN")
+    assert "correlated scalar MIN or SUM lookups may be pre-aggregated by their existing correlation keys" in prompt
+    assert "LEFT JOINed only into their immediate consumer while unrelated UNION ALL producers remain unchanged" in prompt
+
+
 def test_sql_only_candidate_preflights_asta_awr_01_semantic_contract():
     llm = read("db/adb/asta_llm_pkg.sql")
     sql_only = llm[llm.index("FUNCTION generate_sql_only_tuning("):llm.index("END generate_sql_only_tuning;")]
