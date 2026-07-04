@@ -276,6 +276,20 @@ def test_sql_only_candidate_preflights_asta_awr_01_semantic_contract():
     assert "Return NO_REWRITE if any check cannot be satisfied." in sql_only
 
 
+def test_sql_only_candidate_preserves_asta_awr_01_wildcard_scalar_aggregate_semantics():
+    """Exact/wildcard lifting must retain one-row NULL behavior without fan-out."""
+    llm = read("db/adb/asta_llm_pkg.sql")
+    sql_only = llm[llm.index("FUNCTION generate_sql_only_tuning("):llm.index("END generate_sql_only_tuning;")]
+    contract = "For a correlated MIN or SUM whose outer DECODE maps ''-'' to all inner COLOR_CD or SIZE_CD values"
+    assert contract in sql_only
+    assert sql_only.index(contract) < sql_only.index("'DIAGNOSIS:'")
+    assert "separate exact and wildcard grains with GROUPING SETS and GROUPING flags" in sql_only
+    assert "LEFT JOIN at most one aggregate row from the original immediate consumer" in sql_only
+    assert "Preserve the scalar aggregate result of one NULL value when no inner row matches" in sql_only
+    assert "never use a detail-grain wildcard join or COALESCE that changes this empty-input result" in sql_only
+    assert "Return NO_REWRITE if these semantics cannot be preserved." in sql_only
+
+
 def test_sql_only_long_candidate_limits_asta_awr_01_to_one_complete_rewrite():
     llm = read("db/adb/asta_llm_pkg.sql")
     sql_only = llm[llm.index("FUNCTION generate_sql_only_tuning("):llm.index("END generate_sql_only_tuning;")]
