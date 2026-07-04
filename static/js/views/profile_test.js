@@ -1173,7 +1173,7 @@ END;
       </div>
       <div class="panel-body stack-sm">
         <div class="stack-sm">
-          <label>SQL Text <span class="muted" style="font-size:var(--fs-sm);">— content 만 입력하면 앞에 <code>select ai</code> 가 자동으로 붙습니다 (예: <code>이번주 가장 매출이 큰 상품을 알려줘</code>)</span></label>
+          <label>SQL Text <span class="muted" style="font-size:var(--fs-sm);">— content 만 입력하면 앞에 <code>select ai showsql</code> 가 자동으로 붙습니다 (예: <code>이번주 가장 매출이 큰 상품을 알려줘</code>)</span></label>
           <textarea id="fb-sql-text" rows="2">이번주 가장 매출이 큰 상품을 알려줘</textarea>
         </div>
         <div class="row" style="gap:12px; align-items:center;">
@@ -1455,8 +1455,8 @@ END;
       if (!profile) { window.Toast.show("Profile 을 선택하세요", "warn"); return; }
       let sqlText = document.getElementById("fb-sql-text").value.trim();
       if (!sqlText) { window.Toast.show("SQL Text 를 입력하세요", "warn"); return; }
-      // content 만 입력하면 앞에 'select ai ' 를 자동으로 붙인다 (이미 'select ai' 로 시작하면 그대로).
-      if (!/^select\s+ai\b/i.test(sqlText)) sqlText = "select ai " + sqlText;
+      // content 만 입력하면 앞에 'select ai showsql ' 를 자동으로 붙인다 (이미 'select ai' 로 시작하면 그대로).
+      if (!/^select\s+ai\b/i.test(sqlText)) sqlText = "select ai showsql " + sqlText;
       const type = document.getElementById("fb-direct-type").value;
       const response = document.getElementById("fb-response").value;
       const feedbackContent = document.getElementById("fb-feedback-content").value.trim();
