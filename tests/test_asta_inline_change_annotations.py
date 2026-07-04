@@ -165,6 +165,19 @@ def test_xplan_focus_targets_one_dominant_asta_awr_01_operation():
     assert "return no candidate if that dominant pattern cannot be rewritten safely" in prompt
 
 
+def test_full_evidence_rewrites_dominant_correlated_exists_view_once():
+    llm = read("db/adb/asta_llm_pkg.sql")
+    prompt = llm[llm.index("FUNCTION build_tuning_prompt("):llm.index("END build_tuning_prompt;")]
+    contract = "CORRELATED_EXISTS_VIEW_RESTART"
+    assert contract in prompt
+    assert prompt.index(contract) > prompt.index("IF l_mode IN ('A', 'B') THEN")
+    assert "Starts greater than 1 and dominates measured Buffers or A-Time" in prompt
+    assert "evaluate that producer once in a DISTINCT CTE containing only the original correlation keys and inner predicates" in prompt
+    assert "then semi-join or anti-join it only from the immediate consumer" in prompt
+    assert "Preserve EXISTS versus NOT EXISTS and NULL semantics" in prompt
+    assert "leave every unrelated query block unchanged" in prompt
+
+
 def test_long_asta_awr_01_prompt_allows_one_cross_block_repeated_access_rewrite():
     llm = read("db/adb/asta_llm_pkg.sql")
     prompt = llm[llm.index("FUNCTION build_tuning_prompt("):llm.index("END build_tuning_prompt;")]
