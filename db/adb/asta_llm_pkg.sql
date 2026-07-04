@@ -286,6 +286,7 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
     l_select_pos PLS_INTEGER;
     l_with_pos   PLS_INTEGER;
     l_start      PLS_INTEGER;
+    l_comment_end PLS_INTEGER;
   BEGIN
     IF p_response IS NULL OR NVL(DBMS_LOB.GETLENGTH(p_response), 0) > 32767 THEN
       RETURN p_response;
@@ -299,12 +300,23 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
         l_text := TRIM(SUBSTR(l_text, l_line_end + 1, l_close - l_line_end - 1));
       END IF;
     END IF;
-    l_select_pos := REGEXP_INSTR(l_text, '(^|[[:space:]])SELECT[[:space:]]', 1, 1, 0, 'i');
-    l_with_pos := REGEXP_INSTR(l_text, '(^|[[:space:]])WITH[[:space:]]', 1, 1, 0, 'i');
+    -- A required ASTA_TUNING_CHANGE header can itself contain words such as
+    -- "with" or "select". Never mistake a keyword inside that comment for
+    -- the executable SQL start.
+    l_comment_end := CASE WHEN SUBSTR(l_text, 1, 2) = '/*' THEN INSTR(l_text, '*/', 3) ELSE 0 END;
+    l_select_pos := REGEXP_INSTR(l_text, '(^|[[:space:]])SELECT[[:space:]]',
+                                 CASE WHEN l_comment_end > 0 THEN l_comment_end + 2 ELSE 1 END,
+                                 1, 0, 'i');
+    l_with_pos := REGEXP_INSTR(l_text, '(^|[[:space:]])WITH[[:space:]]',
+                               CASE WHEN l_comment_end > 0 THEN l_comment_end + 2 ELSE 1 END,
+                               1, 0, 'i');
     IF l_with_pos > 0 AND (l_select_pos = 0 OR l_with_pos < l_select_pos) THEN
       l_start := l_with_pos;
     ELSE
       l_start := l_select_pos;
+    END IF;
+    IF l_comment_end > 0 AND l_start > l_comment_end THEN
+      l_start := 1; -- preserve the validated leading change annotation
     END IF;
     IF l_start > 1 THEN l_text := LTRIM(SUBSTR(l_text, l_start)); END IF;
     IF SUBSTR(RTRIM(l_text), -1) = ';' THEN
@@ -697,6 +709,11 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
     clob_app(l_diagnosis_prompt, 'Return JSON only; do not wrap the response in Markdown fences.' || CHR(10));
     clob_app(l_diagnosis_prompt, 'Return JSON only with rewrite_strategy(array), change_summary(array), semantic_risks(array), target_operations(array). Do not return candidate_sql.' || CHR(10));
     clob_app(l_diagnosis_prompt, 'Identify the safest structural rewrite for repeated scans, correlated MIN/SUM, UNION ALL, nested loops and temp transformations. ASTA will execute and compare the candidate later. Explanations must be Korean.' || CHR(10));
+    IF p_tuning_context_json IS NOT NULL THEN
+      clob_app(l_diagnosis_prompt, 'User tuning context JSON is a hard scope constraint. Diagnose only the bottleneck named in user_notes and do not add unrelated rewrites:' || CHR(10));
+      clob_app_clob(l_diagnosis_prompt, p_tuning_context_json);
+      clob_app(l_diagnosis_prompt, CHR(10));
+    END IF;
     clob_app(l_diagnosis_prompt, 'SQL:' || CHR(10));
     clob_app_clob(l_diagnosis_prompt, p_sql);
     clob_app(l_diagnosis_prompt, CHR(10) || 'DBMS_XPLAN (full CLOB; no truncation):' || CHR(10));
@@ -751,6 +768,11 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
     clob_app(l_candidate_prompt, 'No DDL, new hints, statistics changes, indexes, optimizer hints, SQL Profile, or Plan Baseline proposals. 인덱스, 옵티마이저 힌트, DDL, 통계, SQL Profile 제안은 금지합니다.' || CHR(10));
     clob_app(l_candidate_prompt, 'For a changed SQL, prepend: /* ASTA_TUNING_CHANGE_1: existing issue -> structural rewrite -> expected buffer/elapsed effect */. Keep all numbered change comments in the leading header; ASTA will add it if omitted.' || CHR(10));
     clob_app(l_candidate_prompt, 'If absolutely no candidate can be written, return exactly NO_REWRITE.' || CHR(10));
+    IF p_tuning_context_json IS NOT NULL THEN
+      clob_app(l_candidate_prompt, 'User tuning context JSON is a hard scope constraint. Implement only the localized rewrite requested in user_notes; copy every unrelated SQL fragment verbatim:' || CHR(10));
+      clob_app_clob(l_candidate_prompt, p_tuning_context_json);
+      clob_app(l_candidate_prompt, CHR(10));
+    END IF;
     clob_app(l_candidate_prompt, 'DIAGNOSIS:' || CHR(10));
     IF l_diagnosis_ok = 'Y' THEN clob_app_clob(l_candidate_prompt, l_diagnosis_response); ELSE clob_app(l_candidate_prompt, '{}'); END IF;
     clob_app(l_candidate_prompt, CHR(10) || 'SQL:' || CHR(10));

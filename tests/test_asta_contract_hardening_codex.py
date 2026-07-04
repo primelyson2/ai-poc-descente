@@ -84,6 +84,24 @@ def test_every_direct_llm_prompt_uses_clob_without_32k_prompt_truncation():
     assert "sql too long for SQL-only LLM call" not in proxy
 
 
+def test_sql_normalizer_never_uses_keywords_inside_change_comment_as_sql_start():
+    llm = _read("db/adb/asta_llm_pkg.sql")
+    normalizer = llm[llm.index("FUNCTION normalize_sql_response("):llm.index("END normalize_sql_response;")]
+    assert "l_comment_end" in normalizer
+    assert "l_comment_end + 2" in normalizer
+    assert "preserve the validated leading change annotation" in normalizer
+    assert "IF l_comment_end > 0 AND l_start > l_comment_end THEN" in normalizer
+
+
+def test_operational_prompts_treat_ui_user_notes_as_hard_scope():
+    llm = _read("db/adb/asta_llm_pkg.sql")
+    operational = llm[llm.index("FUNCTION generate_sql_only_tuning("):llm.index("END generate_sql_only_tuning;")]
+    assert operational.count("clob_app_clob(l_diagnosis_prompt, p_tuning_context_json)") == 1
+    assert operational.count("clob_app_clob(l_candidate_prompt, p_tuning_context_json)") == 1
+    assert "Diagnose only the bottleneck named in user_notes and do not add unrelated rewrites" in operational
+    assert "Implement only the localized rewrite requested in user_notes; copy every unrelated SQL fragment verbatim" in operational
+
+
 def test_ords_handlers_emit_runtime_ownership_headers_for_all_json_routes():
     """ASTA 계약/회귀 조건을 검증한다: ords handlers emit runtime ownership headers for all json routes."""
     src = _read("db/ords/asta_ords_module.sql")
