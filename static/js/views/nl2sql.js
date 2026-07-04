@@ -151,6 +151,7 @@
         <span id="nl-timing" class="muted" style="font-size:var(--fs-sm);"></span>
         <div class="row" style="gap:var(--space-3); align-items:center;">
           <button class="btn btn-ai-test" id="nl-analyze" type="button" style="display:none;">AI분석</button>
+          <button class="btn btn-ai-test" id="nl-persona-manage" type="button" style="display:none;">페르소나 관리</button>
           <a id="nl-download" role="button" tabindex="0" style="color:#0066cc; text-decoration:underline; cursor:pointer; display:none;">Download</a>
         </div>
       </div>
@@ -208,6 +209,7 @@
     const timingEl = panel.querySelector("#nl-timing");
     const downloadLink = panel.querySelector("#nl-download");
     const analyzeBtn = panel.querySelector("#nl-analyze");
+    const personaBtn = panel.querySelector("#nl-persona-manage");
     panel.querySelector("#nl-run").addEventListener("click", async () => {
       const res = await runQuery(configSel, qInput, colInput, sortInput, sqlArea, resultArea);
       lastResult = res;
@@ -216,6 +218,7 @@
         timingEl.textContent = fmtTiming(res);
         const hasRows = (res.rows || []).length > 0;
         analyzeBtn.style.display = hasRows ? "" : "none";
+        personaBtn.style.display = hasRows ? "" : "none";
         downloadLink.style.display = hasRows ? "" : "none";
         downloadBar.style.display = "flex";
       } else {
@@ -226,6 +229,11 @@
     // AI분석 — 직전 생성 SQL 로 최대 100행을 조회해 페르소나 프롬프트와 함께 LLM 분석.
     analyzeBtn.addEventListener("click", () => {
       openAnalyzeModal(lastResult);
+    });
+
+    // 페르소나 관리 — AI분석 팝업을 열지 않고도 바로 페르소나 CRUD 팝업을 연다.
+    personaBtn.addEventListener("click", () => {
+      openPersonaManageModal(() => {});
     });
 
     // Download — 표시용 100행이 아니라 SQL 을 다시 실행해 전체 row 를 CSV 로 받는다.
