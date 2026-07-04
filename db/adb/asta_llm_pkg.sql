@@ -771,6 +771,7 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
     clob_app(l_diagnosis_prompt, 'Return JSON only; do not wrap the response in Markdown fences.' || CHR(10));
     clob_app(l_diagnosis_prompt, 'Return JSON only with rewrite_strategy(array), change_summary(array), semantic_risks(array), target_operations(array). Do not return candidate_sql.' || CHR(10));
     clob_app(l_diagnosis_prompt, 'Identify the safest structural rewrite for repeated scans, correlated MIN/SUM, UNION ALL, nested loops and temp transformations. ASTA will execute and compare the candidate later. Explanations must be Korean.' || CHR(10));
+    clob_app(l_diagnosis_prompt, 'Rank XPLAN operations by measured A-Time and Buffers, using Starts to identify repeated work; choose exactly one dominant repeated-work operation, and record its query block, object, original correlation keys, immediate consumer, and one localized rewrite boundary in target_operations and rewrite_strategy. Do not propose a rewrite when those details cannot be established from the supplied SQL and XPLAN.' || CHR(10));
     IF p_tuning_context_json IS NOT NULL THEN
       clob_app(l_diagnosis_prompt, 'User tuning context JSON is a hard scope constraint. Diagnose only the bottleneck named in user_notes and do not add unrelated rewrites:' || CHR(10));
       clob_app_clob(l_diagnosis_prompt, p_tuning_context_json);

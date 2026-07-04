@@ -61,6 +61,18 @@ def test_operational_sql_xplan_path_never_silently_truncates_evidence():
     assert ',"xplan_truncated":false' in operational
 
 
+def test_operational_diagnosis_localizes_one_dominant_awr_01_rewrite():
+    llm = _read("db/adb/asta_llm_pkg.sql")
+    operational = llm[llm.index("FUNCTION generate_sql_only_tuning("):llm.index("END generate_sql_only_tuning;")]
+    diagnosis = operational[:operational.index("-- Stage 2: request SQL text only")]
+    contract = "Rank XPLAN operations by measured A-Time and Buffers, using Starts to identify repeated work"
+    assert contract in diagnosis
+    assert "choose exactly one dominant repeated-work operation" in diagnosis
+    assert "query block, object, original correlation keys, immediate consumer, and one localized rewrite boundary" in diagnosis
+    assert "Do not propose a rewrite when those details cannot be established from the supplied SQL and XPLAN." in diagnosis
+    assert diagnosis.index(contract) < diagnosis.index("clob_app_clob(l_diagnosis_prompt, l_plan_text)")
+
+
 def test_candidate_length_boundary_fails_closed_instead_of_using_a_truncated_sql():
     llm = _read("db/adb/asta_llm_pkg.sql")
     main = _read("db/adb/asta_pkg.sql")
