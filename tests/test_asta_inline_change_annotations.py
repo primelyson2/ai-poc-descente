@@ -148,11 +148,25 @@ def test_all_prompt_modes_keep_asta_awr_01_correlated_aggregates_on_original_con
     assert contract in prompt
     assert prompt.index(contract) < prompt.index("IF l_mode IN ('A', 'B') THEN")
     assert "build each helper CTE only from the original inner tables" in prompt
-    assert "grouped by every original correlation key" in prompt
+    assert "Preserve every non-wildcard correlation key" in prompt
     assert "LEFT JOIN it from the original immediate outer consumer" in prompt
-    assert "Never join the helper producer to a pre-existing CTE as a substitute for that outer consumer" in prompt
-    assert "do not move an outer-alias DECODE or other wildcard correlation into the helper" in prompt
-    assert "return no candidate when that localized lift is not possible" in prompt
+    assert "Never join a helper producer to a pre-existing CTE as a substitute for the immediate outer consumer" in prompt
+    assert "return no candidate when this localized lift is not possible" in prompt
+
+
+def test_all_prompt_modes_preserve_asta_awr_01_decode_wildcards_without_legacy_outer_joins():
+    """The customer SQL's '-' wildcard aggregates must yield one joined row and compile."""
+    llm = read("db/adb/asta_llm_pkg.sql")
+    prompt = llm[llm.index("FUNCTION build_tuning_prompt("):llm.index("END build_tuning_prompt;")]
+    contract = "When an outer DECODE makes ''-'' match all inner COLOR_CD or SIZE_CD values"
+    assert contract in prompt
+    assert prompt.index(contract) < prompt.index("IF l_mode IN ('A', 'B') THEN")
+    assert "pre-aggregating every required exact and wildcard grain with GROUPING SETS plus GROUPING flags" in prompt
+    assert "ANSI LEFT JOIN exactly one matching aggregate row" in prompt
+    assert "Never join detail-grain helper rows through wildcard predicates because that multiplies consumer rows" in prompt
+    assert "Never attach helper aliases with legacy (+) predicates" in prompt
+    assert "isolating pre-existing (+) joins in an unchanged inline view first when necessary" in prompt
+    assert "so multiple helpers cannot raise ORA-01416" in prompt
 
 
 def test_all_prompt_modes_reject_asta_awr_01_noop_rewrites():
