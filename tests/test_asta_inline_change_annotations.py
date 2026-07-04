@@ -169,6 +169,19 @@ def test_all_prompt_modes_preserve_asta_awr_01_decode_wildcards_without_legacy_o
     assert "so multiple helpers cannot raise ORA-01416" in prompt
 
 
+def test_all_prompt_modes_isolate_asta_awr_01_helpers_from_parent_legacy_outer_join():
+    """Helper ANSI joins must not share the query block containing YY's (+) predicates."""
+    llm = read("db/adb/asta_llm_pkg.sql")
+    prompt = llm[llm.index("FUNCTION build_tuning_prompt("):llm.index("END build_tuning_prompt;")]
+    contract = "Legacy outer-join compatibility preflight is mandatory"
+    assert contract in prompt
+    assert prompt.index(contract) < prompt.index("IF l_mode IN ('A', 'B') THEN")
+    assert "if the query block where a helper would be joined contains any (+) predicate, add no ANSI JOIN to that block" in prompt
+    assert "put the original immediate consumer (for example XX) and its helper ANSI LEFT JOINs in a new nested inline view" in prompt
+    assert "leave the parent comma-separated sources and every (+) predicate verbatim" in prompt
+    assert "Return no candidate if this syntax isolation cannot be completed." in prompt
+
+
 def test_all_prompt_modes_reject_asta_awr_01_noop_rewrites():
     llm = read("db/adb/asta_llm_pkg.sql")
     prompt = llm[llm.index("FUNCTION build_tuning_prompt("):llm.index("END build_tuning_prompt;")]
