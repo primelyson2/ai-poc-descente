@@ -99,6 +99,16 @@ def test_all_prompt_modes_require_join_and_aggregation_grain_equivalence():
     assert "Pre-aggregate only at the original correlation or join-key grain." in prompt
 
 
+def test_sql_and_metrics_modes_receive_batch_workload_objective_before_return():
+    llm = read("db/adb/asta_llm_pkg.sql")
+    prompt = llm[llm.index("FUNCTION build_tuning_prompt("):llm.index("END build_tuning_prompt;")]
+    branch_start = prompt.index("IF l_mode IN ('A', 'B') THEN")
+    early_modes = prompt[branch_start:prompt.index("RETURN l_prompt;", branch_start)]
+    assert "IF p_tuning_context_json IS NOT NULL THEN" in early_modes
+    assert "workload_type, optimization_goal, and user_notes are mandatory rewrite objectives" in early_modes
+    assert "clob_app_clob(l_prompt, p_tuning_context_json)" in early_modes
+
+
 def test_all_prompt_modes_prevent_asta_awr_01_invalid_identifier_rewrites():
     llm = read("db/adb/asta_llm_pkg.sql")
     prompt = llm[llm.index("FUNCTION build_tuning_prompt("):llm.index("END build_tuning_prompt;")]

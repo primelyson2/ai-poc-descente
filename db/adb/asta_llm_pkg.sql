@@ -495,6 +495,10 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
         clob_app(l_prompt, CHR(10) || CHR(10) || '참고할 핵심 실행 메트릭(JSON):' || CHR(10));
         clob_app_clob(l_prompt, compact_source_metrics(p_source_evidence_json));
       END IF;
+      IF p_tuning_context_json IS NOT NULL THEN
+        clob_app(l_prompt, CHR(10) || CHR(10) || 'User tuning context JSON: workload_type, optimization_goal, and user_notes are mandatory rewrite objectives.' || CHR(10));
+        clob_app_clob(l_prompt, p_tuning_context_json);
+      END IF;
       RETURN l_prompt;
     END IF;
     clob_app(l_prompt, 'You are ASTA running inside Oracle ADB PL/SQL.' || CHR(10));
