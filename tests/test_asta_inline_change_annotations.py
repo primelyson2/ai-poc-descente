@@ -193,6 +193,9 @@ def test_all_prompt_modes_isolate_asta_awr_01_helpers_from_parent_legacy_outer_j
     assert "if the query block where a helper would be joined contains any (+) predicate, add no ANSI JOIN to that block" in prompt
     assert "put the original immediate consumer (for example XX) and its helper ANSI LEFT JOINs in a new nested inline view" in prompt
     assert "leave the parent comma-separated sources and every (+) predicate verbatim" in prompt
+    assert "inspect every query block independently" in prompt
+    assert "reject the candidate if one block contains both an ANSI JOIN keyword and a (+) predicate" in prompt
+    assert "Oracle raises ORA-25156 even when the ANSI-joined sources precede a comma-separated legacy outer join" in prompt
     assert "Return no candidate if this syntax isolation cannot be completed." in prompt
 
 
