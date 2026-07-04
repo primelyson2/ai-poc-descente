@@ -910,6 +910,27 @@ SELECT H.COMP_CD,
   }
 
   /**
+   * 라벨 없이 전달받은 원문만 클립보드에 복사한다.
+   */
+  async function copyPlainText(text) {
+    const value = String(text || "");
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(value);
+      return;
+    }
+    const textarea = document.createElement("textarea");
+    textarea.value = value;
+    textarea.setAttribute("readonly", "");
+    textarea.style.position = "fixed";
+    textarea.style.opacity = "0";
+    document.body.appendChild(textarea);
+    textarea.select();
+    const copied = document.execCommand("copy");
+    textarea.remove();
+    if (!copied) throw new Error("clipboard copy failed");
+  }
+
+  /**
    * UI 진행률에 표시할 한 단계의 상태와 시간 정보를 만든다.
    */
   function stepWithTiming(step, status, detail, at = new Date(), elapsedMs = null) {
@@ -1198,8 +1219,16 @@ SELECT H.COMP_CD,
         <span class="tuning-current-main">${escapeHtml(label)}</span>
         <span class="tuning-current-detail">${escapeHtml([detail, elapsed].filter(Boolean).join(""))}</span>
         ${totalElapsedText ? `<span class="tuning-current-total">${escapeHtml(totalElapsedText)}</span>` : ""}
-        ${runId ? `<span class="tuning-current-run-id" title="ASTA Run ID">ID ${escapeHtml(runId)}</span>` : ""}
+        ${runId ? `<span class="tuning-current-run-label">Run ID</span><code class="tuning-current-run-id" title="ASTA Run ID">${escapeHtml(runId)}</code><button class="tuning-copy-run-id" type="button" title="Run ID 값만 복사">복사</button>` : ""}
       </div>`;
+    target.querySelector(".tuning-copy-run-id")?.addEventListener("click", async () => {
+      try {
+        await copyPlainText(runId);
+        window.Toast?.show?.("Run ID만 복사했습니다.", "success");
+      } catch (_) {
+        window.Toast?.show?.("Run ID 복사에 실패했습니다.", "error");
+      }
+    });
   }
 
   /**
@@ -1354,7 +1383,10 @@ SELECT H.COMP_CD,
         .tuning-top-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
         .tuning-current-progress { display:inline-flex; align-items:center; gap:8px; min-height:40px; max-width:min(980px, 100%); padding:8px 12px; border:1px solid #dbe3ef; border-radius:999px; background:#ffffff; color:#334155; box-shadow:0 8px 22px rgba(15,23,42,.07); }
         .tuning-current-label { color:#64748b; font-size:12px; font-weight:650; white-space:nowrap; }
+        .tuning-current-run-label { color:#64748b; font-size:11px; white-space:nowrap; }
         .tuning-current-run-id { max-width:360px; overflow:hidden; text-overflow:ellipsis; color:#475569; font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; font-size:11px; white-space:nowrap; user-select:all; }
+        .tuning-copy-run-id { padding:3px 7px; border:1px solid #cbd5e1; border-radius:7px; background:#f8fafc; color:#334155; font-size:11px; font-weight:650; cursor:pointer; white-space:nowrap; }
+        .tuning-copy-run-id:hover { border-color:#94a3b8; background:#f1f5f9; }
         .tuning-current-dot { width:22px; height:22px; display:inline-grid; place-items:center; border-radius:999px; background:#eff6ff; color:#1d4ed8; font-size:12px; font-weight:700; flex:0 0 auto; }
         .tuning-current-running .tuning-current-dot { background:#eff6ff; }
         .tuning-current-done .tuning-current-dot { background:#dcfce7; color:#15803d; }
