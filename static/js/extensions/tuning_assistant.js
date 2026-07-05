@@ -944,6 +944,19 @@ SELECT H.COMP_CD,
   function renderResult(target, data) {
     const report = data?.detailed_report_markdown || data?.report_markdown || data?.llm_final_report?.report_markdown || data?.report || data?.message || "";
     const runId = data?.run_id ? `<div class="muted">Run ID: ${escapeHtml(data.run_id)}</div>` : "";
+    const errorCandidates = [
+      data?.error_message,
+      data?.error?.message,
+      data?.comparison?.verdict_reason,
+      data?.artifacts?.llm?.candidate_error,
+      data?.artifacts?.llm?.generation?.candidate_error,
+      data?.runtime_evidence?.error?.message,
+      data?.after_evidence?.error?.message,
+    ].filter((value) => typeof value === "string" && value.trim());
+    const oraMessage = errorCandidates.find((value) => /ORA-\d{5}/i.test(value));
+    const oraBanner = oraMessage
+      ? `<div class="tuning-ora-banner"><strong>Oracle SQL 오류</strong><code>${escapeHtml(oraMessage.slice(0, 2000))}</code></div>`
+      : "";
     window.__astaLastReport = {
       runId: data?.run_id || "report",
       report: report || JSON.stringify(data, null, 2),
@@ -960,6 +973,7 @@ SELECT H.COMP_CD,
             <button class="tuning-secondary" id="asta-report-bottom" type="button">맨 아래</button>
           </div>
         </div>
+        ${oraBanner}
         <div id="asta-report-scroll" class="code-block tuning-report-scroll" tabindex="0"></div>
       </div>`;
     const reportScroller = document.getElementById("asta-report-scroll");
@@ -1383,6 +1397,8 @@ SELECT H.COMP_CD,
         .tuning-current-run-id { max-width:360px; overflow:hidden; text-overflow:ellipsis; color:#475569; font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; font-size:11px; white-space:nowrap; user-select:all; }
         .tuning-copy-run-id { padding:3px 7px; border:1px solid #cbd5e1; border-radius:7px; background:#f8fafc; color:#334155; font-size:11px; font-weight:650; cursor:pointer; white-space:nowrap; }
         .tuning-copy-run-id:hover { border-color:#94a3b8; background:#f1f5f9; }
+        .tuning-ora-banner { display:flex; flex-direction:column; gap:6px; padding:10px 12px; border:1px solid #fecaca; border-radius:10px; background:#fff7f7; color:#991b1b; }
+        .tuning-ora-banner code { color:#7f1d1d; font-size:12px; white-space:pre-wrap; overflow-wrap:anywhere; }
         .tuning-current-dot { width:22px; height:22px; display:inline-grid; place-items:center; border-radius:999px; background:#eff6ff; color:#1d4ed8; font-size:12px; font-weight:700; flex:0 0 auto; }
         .tuning-current-running .tuning-current-dot { background:#eff6ff; }
         .tuning-current-done .tuning-current-dot { background:#dcfce7; color:#15803d; }

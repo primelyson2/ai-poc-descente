@@ -34,7 +34,8 @@ CREATE OR REPLACE PACKAGE asta_llm_pkg AUTHID DEFINER AS
     p_original_sql       IN CLOB,
     p_rejected_candidate IN CLOB,
     p_error_message      IN VARCHAR2,
-    p_llm_profile        IN VARCHAR2
+    p_llm_profile        IN VARCHAR2,
+    p_run_id             IN VARCHAR2 DEFAULT NULL
   ) RETURN CLOB;
 
   FUNCTION final_review(
@@ -847,6 +848,7 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
     clob_app(l_candidate_prompt, 'Return only one complete executable Oracle SELECT or WITH statement. No JSON, Markdown, prose, DDL, DML, PL/SQL, new hints, semicolon, or slash.' || CHR(10));
     clob_app(l_candidate_prompt, 'Use the diagnosis and XPLAN to produce the safest testable structural rewrite. Preserve columns, datatypes, order, NULL and COUNT(DISTINCT) semantics, including aggregate behavior. ASTA will execute and compare results, so put uncertainty in the diagnosis rather than refusing.' || CHR(10));
     clob_app(l_candidate_prompt, 'Before returning SQL, perform a semantic preflight against the original: preserve every output expression in the same order with the same alias and datatype; preserve all filter predicates, join conditions, outer-join null extension, row grain, and duplicate multiplicity; preserve GROUP BY and analytic PARTITION BY grains plus scalar-aggregate empty-input behavior. Trace every alias.column reference to a column projected by that exact source, CTE, or inline view; never invent a column, drop a UNION ALL branch, or replace an original expression with a placeholder. Return NO_REWRITE if any check cannot be satisfied.' || CHR(10));
+    clob_app(l_candidate_prompt, 'Oracle syntax preflight is mandatory before returning SQL: balance every parenthesis; keep every SELECT/FROM/JOIN/WHERE/GROUP BY and set-operation branch syntactically complete; ensure each CTE has one unique name; never give a CTE the same name as a referenced base table or view; update every consumer to the exact new CTE name; prohibit accidental self-reference or recursive WITH; and trace every alias and column to a declared source. Return NO_REWRITE instead of SQL that could raise ORA-00904, ORA-00918, ORA-00942, ORA-01789, ORA-32039, or another Oracle parse/name-resolution error.' || CHR(10));
     clob_app(l_candidate_prompt, 'For a correlated MIN or SUM whose outer DECODE maps ''-'' to all inner COLOR_CD or SIZE_CD values, pre-aggregate separate exact and wildcard grains with GROUPING SETS and GROUPING flags, then LEFT JOIN at most one aggregate row from the original immediate consumer. Preserve the scalar aggregate result of one NULL value when no inner row matches; never use a detail-grain wildcard join or COALESCE that changes this empty-input result. Return NO_REWRITE if these semantics cannot be preserved.' || CHR(10));
     IF NVL(DBMS_LOB.GETLENGTH(p_sql), 0) >= 12000 THEN
       clob_app(l_candidate_prompt, 'Long-SQL candidate boundary: rewrite exactly one repeated-access pattern completely across its producer and consumer blocks. Add every helper CTE, projected join key, GROUP BY expression, join, and correlated-reference change required for that one pattern, while copying every unrelated CTE, UNION ALL branch, predicate, and select-list expression verbatim. Do not redesign the full statement, change any set-operation branch projection count, or reference a grouping key after aggregation removed it.' || CHR(10));
@@ -1005,13 +1007,15 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
     p_original_sql       IN CLOB,
     p_rejected_candidate IN CLOB,
     p_error_message      IN VARCHAR2,
-    p_llm_profile        IN VARCHAR2
+    p_llm_profile        IN VARCHAR2,
+    p_run_id             IN VARCHAR2 DEFAULT NULL
   ) RETURN CLOB IS
     l_prompt       CLOB;
     l_response     CLOB;
     l_candidate    CLOB;
     l_profile      VARCHAR2(128);
     l_try_profile  VARCHAR2(128);
+    l_call_id      NUMBER;
   BEGIN
     IF p_rejected_candidate IS NULL THEN
       RETURN NULL;
@@ -1019,21 +1023,38 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
     l_profile := validated_profile_name(p_llm_profile);
     asta_sql_guard_pkg.assert_safe_select(p_original_sql);
     DBMS_LOB.CREATETEMPORARY(l_prompt, TRUE);
-    clob_app(l_prompt, 'Repair the Oracle SQL syntax error below. Return only one complete executable Oracle SELECT or WITH statement.' || CHR(10));
-    clob_app(l_prompt, 'Make the smallest syntax-only correction. Preserve the candidate structure, output columns, datatypes, ordering, NULL behavior, aggregates and COUNT(DISTINCT) semantics.' || CHR(10));
+    clob_app(l_prompt, 'Rewrite the rejected candidate into one complete executable Oracle SELECT or WITH statement that resolves the exact ORA error below.' || CHR(10));
+    clob_app(l_prompt, 'Use ORIGINAL SQL as the semantic contract and REJECTED CANDIDATE as the intended optimization. Preserve the original output columns, aliases, datatypes, ordering, filters, joins, row grain, duplicate multiplicity, NULL behavior, aggregates and COUNT(DISTINCT) semantics. Apply the intended optimization only when it can be expressed as valid Oracle SQL.' || CHR(10));
+    clob_app(l_prompt, 'Perform a full Oracle syntax and name-resolution preflight: balance parentheses; make every clause and UNION branch complete; ensure CTE names are unique and do not collide with referenced base table/view names; replace all stale consumer references after a CTE rename; prohibit accidental recursive WITH; and ensure every alias.column resolves to a declared projection. Do not return the same failing SQL. Return NO_REWRITE only if no safe executable repair is possible.' || CHR(10));
+    clob_app(l_prompt, 'ORA-32039 rule: Oracle can treat a CTE as recursive when its name equals a schema-qualified base table or view read inside that CTE (for example WITH VIF_WHOLESALE_S AS (... FROM DSNT.VIF_WHOLESALE_S ...)). Rename the CTE to a distinct helper name such as WHOLESALE_STYLE_KEYS and update every consumer to that exact helper name; do not add a recursive column alias list unless the original SQL intentionally uses recursion.' || CHR(10));
     clob_app(l_prompt, 'No JSON, Markdown, prose, DDL, DML, PL/SQL, new hints, semicolon, or slash. Keep the leading ASTA_TUNING_CHANGE comments.' || CHR(10));
-    clob_app(l_prompt, 'Oracle parse error: ' || SUBSTR(p_error_message, 1, 2000) || CHR(10));
-    clob_app(l_prompt, 'Rejected candidate:' || CHR(10));
+    clob_app(l_prompt, 'Oracle execution error to resolve exactly: ' || SUBSTR(p_error_message, 1, 2000) || CHR(10));
+    clob_app(l_prompt, 'ORIGINAL SQL (semantic contract):' || CHR(10));
+    clob_app_clob(l_prompt, p_original_sql);
+    clob_app(l_prompt, CHR(10) || 'REJECTED CANDIDATE (rewrite this into valid SQL):' || CHR(10));
     clob_app_clob(l_prompt, p_rejected_candidate);
 
     FOR i IN 1..2 LOOP
       l_try_profile := CASE i WHEN 1 THEN l_profile ELSE 'ASTA_GROK_GENAI_PROFILE' END;
       IF i > 1 AND l_try_profile = l_profile THEN CONTINUE; END IF;
+      l_call_id := begin_llm_call_log(
+        p_run_id       => p_run_id,
+        p_stage        => 'REPAIR_SQL',
+        p_attempt_no   => i,
+        p_profile_name => l_try_profile,
+        p_prompt       => l_prompt
+      );
+      l_response := NULL;
       BEGIN
         EXECUTE IMMEDIATE
           'SELECT DBMS_CLOUD_AI.GENERATE(prompt => :in_prompt, profile_name => :in_profile, action => ''chat'') FROM dual'
           INTO l_response
           USING IN l_prompt, IN l_try_profile;
+        finish_llm_call_log(
+          p_call_id     => l_call_id,
+          p_response    => l_response,
+          p_call_status => 'RECEIVED'
+        );
         l_candidate := normalize_sql_response(l_response);
         IF l_candidate IS NULL
            OR UPPER(TRIM(DBMS_LOB.SUBSTR(l_candidate, 100, 1))) = 'NO_REWRITE'
@@ -1047,6 +1068,15 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
         asta_sql_guard_pkg.assert_safe_select(l_candidate);
         RETURN l_candidate;
       EXCEPTION WHEN OTHERS THEN
+        IF l_response IS NULL THEN
+          finish_llm_call_log(
+            p_call_id       => l_call_id,
+            p_response      => NULL,
+            p_call_status   => 'FAILED',
+            p_error_code    => SQLCODE,
+            p_error_message => SQLERRM
+          );
+        END IF;
         l_candidate := NULL;
       END;
     END LOOP;

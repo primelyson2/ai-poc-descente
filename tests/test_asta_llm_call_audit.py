@@ -13,7 +13,7 @@ def test_llm_call_log_schema_preserves_full_clob_payloads():
     assert "CREATE TABLE asta_llm_call_log" in ddl
     assert "prompt_clob      CLOB" in ddl
     assert "response_clob    CLOB" in ddl
-    assert "stage IN ('DIAGNOSIS', 'CANDIDATE_SQL')" in ddl
+    assert "stage IN ('DIAGNOSIS', 'CANDIDATE_SQL', 'REPAIR_SQL')" in ddl
     assert "call_status IN ('SENT', 'RECEIVED', 'FAILED')" in ddl
     assert "asta_llm_call_run_ix" in ddl
 
@@ -56,3 +56,4 @@ def test_pipeline_passes_run_id_and_deploys_log_schema_before_packages():
     package_pos = deployer.index("for rel in DEPLOY_PACKAGE_ORDER")
     assert migration_pos < package_pos
     assert "@db/asta/006_asta_llm_call_log.sql" in compile_sql
+    assert "@db/asta/007_asta_llm_repair_log_stage.sql" in compile_sql

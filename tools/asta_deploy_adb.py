@@ -143,6 +143,9 @@ def main():
         run_script(cur, "db/asta/006_asta_llm_call_log.sql")
         log.append("applied db/asta/006_asta_llm_call_log.sql")
 
+        run_script(cur, "db/asta/007_asta_llm_repair_log_stage.sql")
+        log.append("applied db/asta/007_asta_llm_repair_log_stage.sql")
+
         for rel in DEPLOY_PACKAGE_ORDER:
             run_script(cur, rel)
             log.append(f"compiled {rel}")

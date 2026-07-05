@@ -755,6 +755,7 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
     l_generation_json     CLOB;
     l_rejected_candidate  CLOB;
     l_repaired_candidate  CLOB;
+    l_second_repaired_candidate CLOB;
     l_candidate_failed    VARCHAR2(1) := 'N';
     l_candidate_timeout   PLS_INTEGER;
     l_candidate_watchdog  VARCHAR2(128);
@@ -979,7 +980,8 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
           p_original_sql       => l_sql,
           p_rejected_candidate => l_rejected_candidate,
           p_error_message      => l_source_error,
-          p_llm_profile        => l_llm_profile
+          p_llm_profile        => l_llm_profile,
+          p_run_id             => l_run_id
         );
         IF l_repaired_candidate IS NOT NULL THEN
           arm_candidate_watchdog(l_run_id, l_candidate_timeout, l_candidate_watchdog);
@@ -1001,6 +1003,44 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
               l_repaired_candidate, NULL, l_rejected_candidate,
               l_generation_json, 'SUCCESS'
             );
+          END IF;
+        END IF;
+
+        -- If the first LLM repair still raises an ORA error on Source DB,
+        -- send that exact failed repair and the new ORA message through one
+        -- more complete rewrite round before retaining the original SQL.
+        IF l_repaired_candidate IS NOT NULL AND l_source_error IS NOT NULL THEN
+          l_second_repaired_candidate := asta_llm_pkg.repair_sql_candidate(
+            p_original_sql       => l_sql,
+            p_rejected_candidate => l_repaired_candidate,
+            p_error_message      => l_source_error,
+            p_llm_profile        => l_llm_profile,
+            p_run_id             => l_run_id
+          );
+          IF l_second_repaired_candidate IS NOT NULL THEN
+            arm_candidate_watchdog(l_run_id, l_candidate_timeout, l_candidate_watchdog);
+            l_after_json := asta_source_bridge_pkg.run_source_evidence(
+              p_source_db_id     => l_source_db_id,
+              p_sql              => l_second_repaired_candidate,
+              p_run_id           => l_run_id || '-REPAIRED2',
+              p_fetch_rows       => l_fetch_rows,
+              p_repeat_policy    => 'AUTO',
+              p_run_advisor      => 'N',
+              p_sqltune_time_sec => l_sqltune_time_limit,
+              p_source_sql_id    => l_source_sql_id
+            );
+            disarm_candidate_watchdog(l_candidate_watchdog);
+            l_source_error := source_response_error_message(l_after_json);
+            IF l_source_error IS NULL THEN
+              l_tuned_sql := l_second_repaired_candidate;
+              l_repaired_candidate := l_second_repaired_candidate;
+              l_llm_json := llm_original_fallback_json(
+                l_second_repaired_candidate, NULL, l_rejected_candidate,
+                l_generation_json, 'SUCCESS_ROUND_2'
+              );
+            ELSE
+              l_repaired_candidate := l_second_repaired_candidate;
+            END IF;
           END IF;
         END IF;
       END IF;

@@ -26,7 +26,7 @@ BEGIN
         started_at       TIMESTAMP DEFAULT SYSTIMESTAMP NOT NULL,
         completed_at     TIMESTAMP,
         CONSTRAINT asta_llm_call_stage_ck
-          CHECK (stage IN ('DIAGNOSIS', 'CANDIDATE_SQL')),
+          CHECK (stage IN ('DIAGNOSIS', 'CANDIDATE_SQL', 'REPAIR_SQL')),
         CONSTRAINT asta_llm_call_status_ck
           CHECK (call_status IN ('SENT', 'RECEIVED', 'FAILED'))
       )

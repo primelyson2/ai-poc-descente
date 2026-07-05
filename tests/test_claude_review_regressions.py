@@ -39,7 +39,8 @@ def test_c2_sql_only_arrays_are_preserved_and_vector_metadata_is_searchable():
 
 def test_c2b_candidate_syntax_repair_preserves_failure_evidence_and_before_metrics():
     assert "FUNCTION repair_sql_candidate(" in LLM
-    assert "Make the smallest syntax-only correction" in LLM
+    assert "Rewrite the rejected candidate into one complete executable Oracle SELECT or WITH statement" in LLM
+    assert "ORIGINAL SQL (semantic contract):" in LLM
     orchestration = body(PKG, "FUNCTION run_pipeline(", "END run_pipeline;")
     assert "asta_llm_pkg.repair_sql_candidate(" in orchestration
     assert "l_run_id || '-REPAIRED'" in orchestration
