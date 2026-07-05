@@ -1238,6 +1238,10 @@ CREATE OR REPLACE PACKAGE BODY asta_report_pkg AS
     clob_app(l_out, json_str(p_run_id));
     clob_app(l_out, ',"status":');
     clob_app(l_out, json_str(NVL(p_status, 'UNKNOWN')));
+    clob_app(l_out, ',"error_code":');
+    clob_app(l_out, json_str(json_vc(p_error_json, '$.code', NULL)));
+    clob_app(l_out, ',"error_message":');
+    clob_app(l_out, json_str(json_vc(p_error_json, '$.message', NULL)));
     clob_app(l_out, ',"contract_version":"asta.v1","architecture":"ADB_ORDS_PLSQL","source":"ADB_ORDS"');
     clob_app(l_out, ',"report_source":"ADB_REPORT_PLSQL"');
     clob_app(l_out, ',"response_contract":');

@@ -523,6 +523,18 @@ def _response_error_code(data: dict[str, Any]) -> str:
     return ""
 
 
+def _response_error_message(data: dict[str, Any]) -> str:
+    """Extract the most specific ASTA/ORDS error message without hiding ORA text."""
+    if data.get("error_message"):
+        return str(data.get("error_message"))
+    error = data.get("error")
+    if isinstance(error, dict) and error.get("message"):
+        return str(error.get("message"))
+    if data.get("message"):
+        return str(data.get("message"))
+    return _response_error_code(data) or "ASTA request failed"
+
+
 async def _audited_run_lookup(run_id: str, database: str, endpoint_kind: str, suffix: str = "") -> dict[str, Any]:
     """ASTA 내부 처리 보조 함수: audited run lookup."""
     request_id = asta_audit.new_request_id()
@@ -743,6 +755,21 @@ async def analyze(request: Request, background_tasks: BackgroundTasks, database:
             "execution_mode": result.get("execution_mode"),
         },
     )
+    result_status = str(annotated.get("status") or "").upper()
+    result_error_code = _response_error_code(annotated)
+    if result_status in {"FAILED", "ERROR"} or (result_error_code and result_status not in {"QUEUED", "RUNNING", "COMPLETED", "DONE"}):
+        client_error_codes = {
+            "SQL_GUARD_REJECTED", "RUN_ID_CONFLICT", "IDEMPOTENCY_CONFLICT",
+            "SQL_INVALID_IDENTIFIER", "SQL_AMBIGUOUS_COLUMN", "SQL_SET_SHAPE_MISMATCH",
+        }
+        raise HTTPException(
+            status_code=422 if result_error_code in client_error_codes else 502,
+            detail={
+                "error": result_error_code or "ASTA_SUBMIT_FAILED",
+                "message": _response_error_message(annotated),
+                "run_id": annotated.get("run_id"),
+            },
+        )
     return annotated
 
 

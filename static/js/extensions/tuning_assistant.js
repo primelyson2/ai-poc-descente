@@ -1324,7 +1324,7 @@ SELECT H.COMP_CD,
       if (["COMPLETED", "DONE", "FAILED"].includes(status)) {
         if (status === "FAILED") {
           const failedStep = (progress?.progress || progress?.steps || []).find((step) => ["FAILED", "ERROR"].includes(String(step?.status || "").toUpperCase()));
-          const message = failedStep?.detail || progress?.error_message || progress?.error?.message || "ASTA 분석이 실패했습니다.";
+          const message = progress?.error_message || progress?.error?.message || failedStep?.detail || "ASTA 분석이 실패했습니다.";
           const err = new Error(message);
           err.progress = progress;
           throw err;
@@ -1970,6 +1970,12 @@ SELECT H.COMP_CD,
             },
           }),
         });
+        if (["FAILED", "ERROR"].includes(String(data?.status || "").toUpperCase())) {
+          const immediateMessage = data?.error_message || data?.error?.message || data?.message || data?.error_code || "ASTA 요청이 실패했습니다.";
+          const immediateError = new Error(immediateMessage);
+          immediateError.progress = data;
+          throw immediateError;
+        }
         window.clearInterval(progressTimer);
         if (data?.run_id && ["RUNNING", "QUEUED"].includes(String(data?.status || "").toUpperCase())) {
           renderProgressStack(progressTarget, { ...data, totalDurationMs: Date.now() - startedAt.getTime() });

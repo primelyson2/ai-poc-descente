@@ -205,6 +205,49 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
     );
   END error_json;
 
+  FUNCTION classify_error_code(p_message IN VARCHAR2, p_sqlcode IN NUMBER DEFAULT NULL) RETURN VARCHAR2 IS
+    l_message VARCHAR2(4000) := UPPER(NVL(p_message, ''));
+  BEGIN
+    RETURN CASE
+      WHEN p_sqlcode = -20001 OR INSTR(l_message, 'ASTA_SQL_GUARD') > 0 THEN 'SQL_GUARD_REJECTED'
+      WHEN INSTR(l_message, 'SQL IS REQUIRED') > 0 THEN 'SQL_REQUIRED'
+      WHEN INSTR(l_message, 'INVALID RUN_ID') > 0 THEN 'INVALID_RUN_ID'
+      WHEN INSTR(l_message, 'INVALID SOURCE_DB_ID') > 0 THEN 'INVALID_SOURCE_DB'
+      WHEN INSTR(l_message, 'RUN_ID_CONFLICT') > 0 THEN 'RUN_ID_CONFLICT'
+      WHEN INSTR(l_message, 'IDEMPOTENCY_CONFLICT') > 0 THEN 'IDEMPOTENCY_CONFLICT'
+      WHEN INSTR(l_message, 'ORA-00942') > 0 THEN 'SOURCE_OBJECT_NOT_FOUND'
+      WHEN INSTR(l_message, 'ORA-01031') > 0 THEN 'SOURCE_PRIVILEGE_DENIED'
+      WHEN INSTR(l_message, 'ORA-00904') > 0 THEN 'SQL_INVALID_IDENTIFIER'
+      WHEN INSTR(l_message, 'ORA-00918') > 0 THEN 'SQL_AMBIGUOUS_COLUMN'
+      WHEN INSTR(l_message, 'ORA-00900') > 0
+        OR INSTR(l_message, 'ORA-00905') > 0
+        OR INSTR(l_message, 'ORA-00907') > 0
+        OR INSTR(l_message, 'ORA-00911') > 0
+        OR INSTR(l_message, 'ORA-00933') > 0
+        OR INSTR(l_message, 'ORA-00936') > 0 THEN 'SQL_SYNTAX_ERROR'
+      WHEN INSTR(l_message, 'ORA-01789') > 0 THEN 'SQL_SET_SHAPE_MISMATCH'
+      WHEN INSTR(l_message, 'ORA-32039') > 0 THEN 'SQL_RECURSIVE_WITH_INVALID'
+      WHEN INSTR(l_message, 'ORA-01476') > 0 THEN 'SQL_DIVIDE_BY_ZERO'
+      WHEN INSTR(l_message, 'ORA-01722') > 0 THEN 'SQL_INVALID_NUMBER'
+      WHEN INSTR(l_message, 'ORA-01861') > 0 OR INSTR(l_message, 'ORA-01843') > 0 THEN 'SQL_INVALID_DATE'
+      WHEN INSTR(l_message, 'ORA-02019') > 0
+        OR INSTR(l_message, 'ORA-12154') > 0
+        OR INSTR(l_message, 'ORA-12514') > 0
+        OR INSTR(l_message, 'ORA-12541') > 0
+        OR INSTR(l_message, 'ORA-03150') > 0 THEN 'SOURCE_DBLINK_UNAVAILABLE'
+      WHEN INSTR(l_message, 'ORA-01013') > 0 OR INSTR(l_message, 'ORA-00028') > 0 THEN 'EXECUTION_CANCELLED'
+      WHEN INSTR(l_message, 'ORA-00054') > 0 OR INSTR(l_message, 'ORA-04021') > 0 THEN 'RESOURCE_BUSY'
+      WHEN INSTR(l_message, 'ORA-01555') > 0 THEN 'SNAPSHOT_TOO_OLD'
+      WHEN INSTR(l_message, 'ORA-01652') > 0 OR INSTR(l_message, 'ORA-01653') > 0 THEN 'SPACE_EXHAUSTED'
+      WHEN INSTR(l_message, 'ORA-06502') > 0 OR INSTR(l_message, 'ORA-22828') > 0 THEN 'PAYLOAD_LIMIT'
+      WHEN INSTR(l_message, 'ORA-04061') > 0 OR INSTR(l_message, 'ORA-04068') > 0 THEN 'PACKAGE_INVALIDATED'
+      WHEN INSTR(l_message, 'ORA-00001') > 0 THEN 'DUPLICATE_KEY'
+      WHEN INSTR(l_message, 'ORA-02290') > 0 THEN 'REPOSITORY_CONSTRAINT'
+      WHEN INSTR(l_message, 'ORA-274') > 0 THEN 'SCHEDULER_SUBMIT_FAILED'
+      ELSE 'ASTA_PKG'
+    END;
+  END classify_error_code;
+
   FUNCTION normalize_source_db_id(p_source_db_id IN VARCHAR2) RETURN VARCHAR2 IS
     l_id VARCHAR2(64) := UPPER(TRIM(NVL(p_source_db_id, C_DEFAULT_SOURCE_DB_ID)));
   BEGIN
@@ -767,6 +810,7 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
     l_response_json       CLOB;
     l_error_json          CLOB;
     l_error_message       VARCHAR2(4000);
+    l_failure_code        VARCHAR2(128);
     l_persist_error       VARCHAR2(4000);
     l_status              VARCHAR2(30) := 'COMPLETED';
   BEGIN
@@ -1192,7 +1236,8 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
     WHEN OTHERS THEN
       l_status := 'FAILED';
       l_error_message := SUBSTR(SQLERRM, 1, 4000);
-      l_error_json := error_json('ASTA_PKG', l_error_message);
+      l_failure_code := classify_error_code(l_error_message, SQLCODE);
+      l_error_json := error_json(l_failure_code, l_error_message);
       record_progress(l_run_id, 10, 'FINAL_REPORT', 'Final report synthesis', 'FAILED', SUBSTR(l_error_message, 1, 1000));
       l_progress_json := build_progress_array_json(l_run_id);
 
@@ -1229,7 +1274,7 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
         UPDATE asta_runs
         SET    status = l_status,
                completed_at = SYSTIMESTAMP,
-               error_code = 'ASTA_PKG',
+               error_code = l_failure_code,
                error_message = l_error_message,
                detailed_report_md = l_report_markdown,
                response_json = l_response_json
@@ -1331,7 +1376,12 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
       EXCEPTION WHEN OTHERS THEN NULL;
       END;
     END IF;
-    RETURN error_json('SUBMIT_RUN', l_submit_error);
+    RETURN TO_CLOB('{"run_id":') || json_str(l_run_id) ||
+      TO_CLOB(',"status":"FAILED","error_code":') ||
+      json_str(classify_error_code(l_submit_error, SQLCODE)) ||
+      TO_CLOB(',"error_message":') || json_str(l_submit_error) ||
+      TO_CLOB(',"error":') || error_json(classify_error_code(l_submit_error, SQLCODE), l_submit_error) ||
+      TO_CLOB('}');
   END submit_run;
 
   PROCEDURE execute_run(p_run_id IN VARCHAR2) IS
@@ -1399,11 +1449,13 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
     l_response CLOB;
     l_run_id   VARCHAR2(64);
     l_status   VARCHAR2(30);
+    l_error_code VARCHAR2(128);
+    l_error_message VARCHAR2(4000);
   BEGIN
     l_run_id := normalize_run_id(p_run_id);
 
-    SELECT status, response_json
-    INTO   l_status, l_response
+    SELECT status, response_json, error_code, error_message
+    INTO   l_status, l_response, l_error_code, l_error_message
     FROM   asta_runs
     WHERE  run_id = l_run_id;
 
@@ -1411,6 +1463,9 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
       l_response,
       TO_CLOB('{"run_id":') || json_str(l_run_id) ||
       TO_CLOB(',"status":') || json_str(l_status) ||
+      TO_CLOB(',"error_code":') || json_str(l_error_code) ||
+      TO_CLOB(',"error_message":') || json_str(l_error_message) ||
+      TO_CLOB(',"error":') || CASE WHEN l_error_code IS NULL AND l_error_message IS NULL THEN TO_CLOB('null') ELSE error_json(l_error_code, l_error_message) END ||
       TO_CLOB(',"source":"ADB_ORDS","architecture":"ADB_ORDS_PLSQL","contract_version":"asta.v1",') ||
       migration_boundary_json || TO_CLOB('}')
     );
@@ -1436,13 +1491,15 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
     l_status       VARCHAR2(30);
     l_started_at   TIMESTAMP;
     l_completed_at TIMESTAMP;
+    l_error_code    VARCHAR2(128);
+    l_error_message VARCHAR2(4000);
     l_out          CLOB;
     l_run_id       VARCHAR2(64);
   BEGIN
     l_run_id := normalize_run_id(p_run_id);
 
-    SELECT status, started_at, completed_at
-    INTO   l_status, l_started_at, l_completed_at
+    SELECT status, started_at, completed_at, error_code, error_message
+    INTO   l_status, l_started_at, l_completed_at, l_error_code, l_error_message
     FROM   asta_runs
     WHERE  run_id = l_run_id;
 
@@ -1459,6 +1516,14 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
     clob_app(l_out, json_ts(l_started_at));
     clob_app(l_out, ',"completed_at":');
     clob_app(l_out, json_ts(l_completed_at));
+    clob_app(l_out, ',"error_code":' || json_str(l_error_code));
+    clob_app(l_out, ',"error_message":' || json_str(l_error_message));
+    clob_app(l_out, ',"error":');
+    IF l_error_code IS NULL AND l_error_message IS NULL THEN
+      clob_app(l_out, 'null');
+    ELSE
+      clob_app_clob(l_out, error_json(l_error_code, l_error_message));
+    END IF;
     clob_app(l_out, '}');
     RETURN l_out;
   EXCEPTION
@@ -1484,11 +1549,13 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
     l_out    CLOB;
     l_run_id VARCHAR2(64);
     l_status VARCHAR2(30);
+    l_error_code VARCHAR2(128);
+    l_error_message VARCHAR2(4000);
   BEGIN
     l_run_id := normalize_run_id(p_run_id);
 
-    SELECT status, detailed_report_md
-    INTO   l_status, l_report
+    SELECT status, detailed_report_md, error_code, error_message
+    INTO   l_status, l_report, l_error_code, l_error_message
     FROM   asta_runs
     WHERE  run_id = l_run_id;
 
@@ -1497,6 +1564,14 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
     clob_app(l_out, json_str(l_run_id));
     clob_app(l_out, ',"status":' || json_str(l_status));
     clob_app(l_out, ',"report_ready":' || CASE WHEN l_report IS NULL THEN 'false' ELSE 'true' END);
+    clob_app(l_out, ',"error_code":' || json_str(l_error_code));
+    clob_app(l_out, ',"error_message":' || json_str(l_error_message));
+    clob_app(l_out, ',"error":');
+    IF l_error_code IS NULL AND l_error_message IS NULL THEN
+      clob_app(l_out, 'null');
+    ELSE
+      clob_app_clob(l_out, error_json(l_error_code, l_error_message));
+    END IF;
     clob_app(l_out, ',"source":"ADB_ORDS","architecture":"ADB_ORDS_PLSQL","contract_version":"asta.v1",');
     clob_app(l_out, migration_boundary_json);
     clob_app(l_out, ',"detailed_report_markdown":');
