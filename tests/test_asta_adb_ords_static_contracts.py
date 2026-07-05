@@ -572,7 +572,8 @@ def test_adb_reports_use_json_escaping_helpers_for_long_text_artifacts():
     for src in [main, report]:
         assert "PROCEDURE clob_app_json_str" in src
         assert "DBMS_LOB.SUBSTR(p_val, 100" in src or "DBMS_LOB.SUBSTR(p_val, 200" in src
-        assert "DBMS_LOB.SUBSTR(p_val, 32767, l_offset)" in src
+        assert "DBMS_LOB.SUBSTR(p_val, 8000, l_offset)" in src
+        assert "l_offset := l_offset + LENGTH(l_chunk)" in src
     assert "clob_app_json_str(l_out, p_report_markdown)" in report
     assert "JSON_VALUE(p_json, '$.advisor.report' RETURNING CLOB NULL ON ERROR)" in report
     assert "clob_app_json_str(l_advisor_fragment, l_advisor_report)" in _read("db/source/asta_source_pkg.sql")

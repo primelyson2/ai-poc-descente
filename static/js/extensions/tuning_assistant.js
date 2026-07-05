@@ -1156,6 +1156,11 @@ SELECT H.COMP_CD,
         return step;
       });
     }
+    if (["FAILED", "ERROR"].includes(overall)) {
+      // A terminal failure must not promote the next unexecuted PENDING step
+      // to RUNNING. Preserve the authoritative failed stage from ADB.
+      return byIndex;
+    }
     let firstPendingSeen = false;
     return byIndex.map((step) => {
       const status = String(step.status || "PENDING").toUpperCase();
@@ -1179,7 +1184,7 @@ SELECT H.COMP_CD,
     const completedSteps = steps.filter((step) => ["DONE", "COMPLETED"].includes(String(step.status || "").toUpperCase()));
     const isOverallComplete = ["COMPLETED", "DONE", "BASELINE_CAPTURED"].includes(overall);
     const isOverallFailed = ["FAILED", "ERROR"].includes(overall);
-    const current = isOverallComplete ? null : (running || failed || completedSteps[completedSteps.length - 1] || steps[0]);
+    const current = isOverallComplete ? null : (isOverallFailed ? (failed || running) : (running || failed)) || completedSteps[completedSteps.length - 1] || steps[0];
     const currentStatus = isOverallComplete ? "COMPLETED" : String(current?.status || overall || "PENDING").toUpperCase();
     const isRunning = currentStatus === "RUNNING";
     const isFailed = !isOverallComplete && (["FAILED", "ERROR"].includes(currentStatus) || isOverallFailed || progress?.stale_warning || progress?.observation_level === "STALE_OR_FAILED");
@@ -1319,7 +1324,14 @@ SELECT H.COMP_CD,
       renderProgressStack(progressTarget, { ...progress, totalDurationMs });
       const status = String(progress?.status || "").toUpperCase();
       if (["COMPLETED", "DONE", "FAILED"].includes(status)) {
-        if (status !== "FAILED") renderResult(resultTarget, await fetchReport(baseUrl, runId));
+        if (status === "FAILED") {
+          const failedStep = (progress?.progress || progress?.steps || []).find((step) => ["FAILED", "ERROR"].includes(String(step?.status || "").toUpperCase()));
+          const message = failedStep?.detail || progress?.error_message || progress?.error?.message || "ASTA 분석이 실패했습니다.";
+          const err = new Error(message);
+          err.progress = progress;
+          throw err;
+        }
+        renderResult(resultTarget, await fetchReport(baseUrl, runId));
         return progress;
       }
       await new Promise((resolve) => setTimeout(resolve, 1000));
@@ -1993,7 +2005,15 @@ SELECT H.COMP_CD,
         window.clearInterval(progressTimer);
         const failedAt = new Date();
         renderError(result, err);
-        renderProgressStack(progressTarget, buildClientProgress("FAILED", startedAt, stepIndex, stepStartedAt, failedAt, err.message));
+        if (err?.progress) {
+          renderProgressStack(progressTarget, {
+            ...err.progress,
+            status: "FAILED",
+            totalDurationMs: failedAt - startedAt,
+          });
+        } else {
+          renderProgressStack(progressTarget, buildClientProgress("FAILED", startedAt, stepIndex, stepStartedAt, failedAt, err.message));
+        }
         runButton.textContent = "실패";
         window.Toast?.show?.("ASTA 호출 실패: " + err.message, "error", 15000);
       } finally {

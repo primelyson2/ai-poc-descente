@@ -27,3 +27,13 @@ def test_submit_response_renders_run_id_before_polling():
     render_pos = branch.index("renderProgressStack(progressTarget, { ...data")
     poll_pos = branch.index("await pollRunProgress(baseUrl, data.run_id")
     assert render_pos < poll_pos
+
+
+def test_terminal_failure_keeps_authoritative_failed_stage_and_throws():
+    source = (ROOT / "static/js/extensions/tuning_assistant.js").read_text(encoding="utf-8")
+    assert 'if (["FAILED", "ERROR"].includes(overall))' in source
+    assert "return byIndex;" in source
+    assert "isOverallFailed ? (failed || running)" in source
+    assert 'if (status === "FAILED")' in source
+    assert "err.progress = progress" in source
+    assert "if (err?.progress)" in source
