@@ -248,6 +248,20 @@ def test_full_evidence_rewrites_dominant_correlated_exists_view_once():
     assert "leave every unrelated query block unchanged" in prompt
 
 
+def test_all_prompt_modes_isolate_dominant_asta_awr_01_not_exists_restart():
+    """The 8M-buffer wholesale anti-existence restart must not be blocked by unrelated SQL."""
+    llm = read("db/adb/asta_llm_pkg.sql")
+    prompt = llm[llm.index("FUNCTION build_tuning_prompt("):llm.index("END build_tuning_prompt;")]
+    contract = "Dominant correlated anti-existence restart"
+    assert contract in prompt
+    assert prompt.index(contract) < prompt.index("IF l_mode IN ('A', 'B') THEN")
+    assert "materialize one DISTINCT helper CTE containing only its original correlation keys and inner predicates" in prompt
+    assert "replace only that NOT EXISTS producer with an anti-existence check against the helper from the same immediate consumer" in prompt
+    assert "Preserve NOT EXISTS and NULL semantics verbatim" in prompt
+    assert "unrelated scalar aggregates, UNION ALL branches, and legacy (+) joins in other query blocks as out of scope" in prompt
+    assert "not as reasons to refuse this isolated rewrite" in prompt
+
+
 def test_long_asta_awr_01_prompt_allows_one_cross_block_repeated_access_rewrite():
     llm = read("db/adb/asta_llm_pkg.sql")
     prompt = llm[llm.index("FUNCTION build_tuning_prompt("):llm.index("END build_tuning_prompt;")]
