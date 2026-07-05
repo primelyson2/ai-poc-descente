@@ -130,6 +130,18 @@ def test_all_prompt_modes_prevent_asta_awr_01_invalid_set_projections():
     assert "After joining sources, qualify every referenced column with its source alias." in prompt
 
 
+def test_all_prompt_modes_preflight_asta_awr_01_set_branch_arity():
+    """The customer SQL must not repeat the latest ORA-01789 UNION rewrite."""
+    llm = read("db/adb/asta_llm_pkg.sql")
+    prompt = llm[llm.index("FUNCTION build_tuning_prompt("):llm.index("END build_tuning_prompt;")]
+    contract = "build an ordinal projection ledger for each set-operation branch after expanding every wildcard"
+    assert contract in prompt
+    assert prompt.index(contract) < prompt.index("IF l_mode IN ('A', 'B') THEN")
+    assert "every branch count exactly matches the first branch" in prompt
+    assert "this preflight must prevent ORA-01789" in prompt
+    assert "If the selected rewrite target is outside a set expression, copy that entire set expression verbatim" in prompt
+
+
 def test_all_prompt_modes_require_complete_and_resolvable_asta_awr_01_sql():
     llm = read("db/adb/asta_llm_pkg.sql")
     prompt = llm[llm.index("FUNCTION build_tuning_prompt("):llm.index("END build_tuning_prompt;")]
