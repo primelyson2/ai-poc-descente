@@ -1191,26 +1191,10 @@ SELECT H.COMP_CD,
     const isComplete = isOverallComplete;
     const ready = ["READY", "IDLE", "PENDING"].includes(overall) && !running && !failed && completedSteps.length === 0;
     const elapsed = !isOverallComplete && current?.elapsed_ms != null ? ` · ${formatDuration(current.elapsed_ms)}` : "";
-    const stageElapsedMs = Number(progress?.stage_elapsed_ms ?? current?.elapsed_ms);
-    const heartbeatAgeMs = Number(progress?.heartbeat_age_ms);
     const beforeEvidenceRunning = String(current?.code || "").toUpperCase() === "BEFORE_EVIDENCE" && isRunning;
-    const sourceObservation = progress?.source_observation || {};
-    const sourceStatus = String(sourceObservation.status || "").toUpperCase();
     let observationDetail = "";
     if (beforeEvidenceRunning) {
-      if (["ACTIVE", "WAITING"].includes(sourceStatus)) {
-        const safeParts = [`Source SQL ${sourceStatus}`];
-        if (sourceObservation.sql_id) safeParts.push(`SQL_ID ${String(sourceObservation.sql_id).slice(0, 32)}`);
-        if (sourceObservation.wait_event) safeParts.push(String(sourceObservation.wait_event).slice(0, 120));
-        observationDetail = safeParts.join(" · ");
-      } else if (progress?.stale_warning || progress?.observation_level === "STALE_OR_FAILED") {
-        observationDetail = "Worker heartbeat stale 또는 실행 실패 · Source DB 세션 관측 불가";
-      } else if (progress?.worker_alive === true) {
-        observationDetail = `ORDS 요청 처리 중 · Worker heartbeat ${Number.isFinite(heartbeatAgeMs) ? Math.floor(heartbeatAgeMs / 1000) : "?"}초 전 · Source SQL 진척은 직접 확인되지 않음 · Source DB 세션 관측 불가`;
-      } else {
-        observationDetail = "Source DB 세션 관측 불가 · Worker 상태 알 수 없음";
-      }
-      if (Number.isFinite(stageElapsedMs) && stageElapsedMs >= 240000) observationDetail += " · 장시간 실행 중";
+      observationDetail = "Source SQL 실행 요청 처리 중";
     }
     const totalElapsed = totalElapsedMs(progress, steps, isComplete);
     const totalElapsedText = !ready && totalElapsed != null ? `전체 ${formatDuration(totalElapsed)}` : "";

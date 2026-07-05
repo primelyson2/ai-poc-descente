@@ -37,3 +37,10 @@ def test_terminal_failure_keeps_authoritative_failed_stage_and_throws():
     assert 'if (status === "FAILED")' in source
     assert "err.progress = progress" in source
     assert "if (err?.progress)" in source
+
+
+def test_before_evidence_uses_single_unambiguous_message():
+    source = (ROOT / "static/js/extensions/tuning_assistant.js").read_text(encoding="utf-8")
+    assert 'observationDetail = "Source SQL 실행 요청 처리 중";' in source
+    assert "Source DB 세션 관측 불가" not in source
+    assert "Source SQL 진척은 직접 확인되지 않음" not in source
