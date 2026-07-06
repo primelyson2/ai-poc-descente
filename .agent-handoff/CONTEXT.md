@@ -390,3 +390,10 @@
 - 9건은 기존 정적 계약/프록시 기대값/누락 `reports/asta_source_contract_latest.md` 관련 기준선 실패다. 최초 `.venv/bin/python -m pytest -q`는 `.venv`에 pytest가 없어 실행되지 않았고, 로컬 uv cache를 사용해 재현했다.
 - `git diff --check`는 통과했다. 추적 예정 신규 파일의 credential 관련 문자열 검색 결과는 테스트/도구의 일반 보안 키워드뿐이며 `.secrets/`와 `reports/`는 계속 gitignore 대상이다.
 - 다음 단계: 현재 변경을 로컬 커밋으로 보존하고 `origin/ASTA`를 merge한다. 원격이 일부 ASTA 파일을 삭제한 반면 로컬은 해당 기능을 확장했으므로 ASTA 구현은 보존하고 원격의 main/persona 변경을 함께 통합한 뒤 회귀 재실행 및 push한다.
+
+## ASTA 소스 원격 통합 — 2026-07-06 완료
+
+- 로컬 ASTA 변경은 커밋 `fb5b5c3`(`Implement ASTA production quality gates and reporting`)으로 보존했다.
+- `origin/ASTA`의 8개 커밋을 merge commit `67f772f`로 통합했다. 충돌은 없었고 로컬 ASTA 구현은 유지하면서 원격의 persona analysis 라우터/UI와 관련 main 변경을 반영했다.
+- 병합 후 전체 회귀는 `398 passed, 9 failed in 1.19s`로 병합 전과 동일하며 신규 실패 0건이다. Python `compileall`, `tuning_assistant.js`, `asta_report_tabs.js`, `persona_analysis.js`의 Node syntax, `git diff --check`가 모두 통과했다.
+- push 직전 브랜치는 `origin/ASTA` 대비 48커밋 ahead, 작업 트리 clean이었다. 이 인계 갱신을 별도 커밋한 뒤 `ASTA` 브랜치를 push한다.
