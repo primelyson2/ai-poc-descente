@@ -17,7 +17,7 @@
   // 새 Chat설정 추가 시 기본 User Prompt (목업 예시 기준)
   const DEFAULT_USER_PROMPT =
     "[INSTRUCTION]\n" +
-    ">기준일: 20260629\n" +
+    ">기준일: ##기준일##\n" +
     ">결과형식\n" +
     "테이블 형태로 다음 컬럼을 추출\n" +
     "- ##조회할 컬럼##\n" +
@@ -126,6 +126,12 @@
     const main = document.getElementById("main");
     main.innerHTML = "";
 
+    const title = document.createElement("div");
+    title.className = "view-title";
+    title.innerHTML = `<h1>Select AI Test - Table list</h1>
+      <span class="sub">질문을 SQL 로 변환·실행해 표로 조회하고, 결과를 페르소나로 AI분석합니다.</span>`;
+    main.appendChild(title);
+
     const panel = document.createElement("div");
     panel.className = "stack";
     panel.innerHTML = `
@@ -151,6 +157,7 @@
         <span id="nl-timing" class="muted" style="font-size:var(--fs-sm);"></span>
         <div class="row" style="gap:var(--space-3); align-items:center;">
           <button class="btn btn-ai-test" id="nl-analyze" type="button" style="display:none;">AI분석</button>
+          <button class="btn btn-ai-test" id="nl-persona-manage" type="button" style="display:none;">페르소나 관리</button>
           <a id="nl-download" role="button" tabindex="0" style="color:#0066cc; text-decoration:underline; cursor:pointer; display:none;">Download</a>
         </div>
       </div>
@@ -208,6 +215,7 @@
     const timingEl = panel.querySelector("#nl-timing");
     const downloadLink = panel.querySelector("#nl-download");
     const analyzeBtn = panel.querySelector("#nl-analyze");
+    const personaBtn = panel.querySelector("#nl-persona-manage");
     panel.querySelector("#nl-run").addEventListener("click", async () => {
       const res = await runQuery(configSel, qInput, colInput, sortInput, sqlArea, resultArea);
       lastResult = res;
@@ -216,6 +224,7 @@
         timingEl.textContent = fmtTiming(res);
         const hasRows = (res.rows || []).length > 0;
         analyzeBtn.style.display = hasRows ? "" : "none";
+        personaBtn.style.display = hasRows ? "" : "none";
         downloadLink.style.display = hasRows ? "" : "none";
         downloadBar.style.display = "flex";
       } else {
@@ -226,6 +235,11 @@
     // AI분석 — 직전 생성 SQL 로 최대 100행을 조회해 페르소나 프롬프트와 함께 LLM 분석.
     analyzeBtn.addEventListener("click", () => {
       openAnalyzeModal(lastResult);
+    });
+
+    // 페르소나 관리 — AI분석 팝업을 열지 않고도 바로 페르소나 CRUD 팝업을 연다.
+    personaBtn.addEventListener("click", () => {
+      openPersonaManageModal(() => {});
     });
 
     // Download — 표시용 100행이 아니라 SQL 을 다시 실행해 전체 row 를 CSV 로 받는다.
@@ -400,9 +414,12 @@
             <textarea id="cfg-prompt" rows="10" style="font-family:var(--font-mono); font-size:var(--fs-sm);"></textarea>
           </div>
         </div>
-        <div class="modal-footer row end" style="gap:var(--space-2);">
-          <button class="btn" id="cfg-cancel" type="button">취소</button>
-          <button class="btn btn-primary" id="cfg-save" type="button">저장</button>
+        <div class="modal-footer row" style="justify-content:space-between; align-items:center; gap:var(--space-2);">
+          <a id="cfg-script" role="button" tabindex="0" style="color:#0066cc; text-decoration:underline; cursor:pointer; font-size:var(--fs-sm);">script 보기</a>
+          <div class="row" style="gap:var(--space-2);">
+            <button class="btn" id="cfg-cancel" type="button">취소</button>
+            <button class="btn btn-primary" id="cfg-save" type="button">저장</button>
+          </div>
         </div>
       </div>
     `;
@@ -446,6 +463,24 @@
 
     backdrop.querySelector("#cfg-close").addEventListener("click", close);
     backdrop.querySelector("#cfg-cancel").addEventListener("click", close);
+
+    // script 보기 — 이 Chat설정(Profile + User Prompt)으로 실행되는 DB 스크립트를 팝업으로.
+    backdrop.querySelector("#cfg-script").addEventListener("click", () => {
+      const profile = profileSel.value || "<AI Profile 미선택>";
+      const lit = (promptEl.value || "").replace(/'/g, "''");  // SQL 리터럴 이스케이프
+      const script =
+        "-- Select AI Test - Table list 실행 스크립트\n" +
+        "-- ##조회할 컬럼##, ##정렬기준##, ##메시지## 는 실행 시 화면 입력값으로 치환됩니다.\n" +
+        "-- ##기준일## 은 실행 시 오늘 날짜(YYYYMMDD)로 자동 치환됩니다.\n" +
+        "SELECT DBMS_CLOUD_AI.GENERATE(\n" +
+        "         prompt       => '" + lit + "',\n" +
+        "         profile_name => '" + profile + "',\n" +
+        "         action       => 'showsql'\n" +
+        "       ) AS r\n" +
+        "FROM dual;\n" +
+        "-- 위에서 생성된 SELECT 문을 앱이 실행해 결과(최대 100행)를 표시합니다.";
+      openScriptModal(script);
+    });
     backdrop.querySelector("#cfg-save").addEventListener("click", () => {
       const name = nameEl.value.trim();
       if (!name) { window.Toast.show("설정 이름을 입력하세요", "error"); nameEl.focus(); return; }
@@ -803,6 +838,37 @@
 
     backdrop.querySelector("#pm-close").addEventListener("click", close);
     backdrop.querySelector("#pm-close2").addEventListener("click", close);
+  }
+
+  // 실행 스크립트 미리보기 팝업 (Chat설정 팝업 위에 겹쳐 뜬다).
+  function openScriptModal(script) {
+    const backdrop = document.createElement("div");
+    backdrop.className = "modal-backdrop";
+    backdrop.innerHTML = `
+      <div class="modal" style="width:720px; max-width:92vw;">
+        <div class="modal-header">
+          <h2>실행 스크립트</h2>
+          <button class="btn btn-ghost" id="sc-close" type="button">✕</button>
+        </div>
+        <div class="modal-body">
+          <div style="position:relative;">
+            <button class="btn btn-mini" id="sc-copy" type="button" style="position:absolute; top:0; right:0;">Copy</button>
+            <pre id="sc-pre" style="white-space:pre-wrap; margin:0; font-family:var(--font-mono); font-size:var(--fs-sm);"></pre>
+          </div>
+        </div>
+      </div>`;
+    backdrop.querySelector("#sc-pre").textContent = script;
+    // Escape 는 이 팝업만 닫는다(capture + stopImmediatePropagation 으로 하위 Chat설정 모달 유지).
+    const close = () => { backdrop.remove(); document.removeEventListener("keydown", onKey, true); };
+    const onKey = (e) => { if (e.key === "Escape") { e.stopImmediatePropagation(); close(); } };
+    document.addEventListener("keydown", onKey, true);
+    document.body.appendChild(backdrop);
+    backdrop.querySelector("#sc-close").addEventListener("click", close);
+    backdrop.querySelector("#sc-copy").addEventListener("click", () => {
+      navigator.clipboard.writeText(script).then(
+        () => window.Toast.show("스크립트 복사됨", "success"),
+        () => window.Toast.show("복사 실패", "error"));
+    });
   }
 
   window.Views = window.Views || {};

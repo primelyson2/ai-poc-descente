@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -25,6 +26,7 @@ router = APIRouter(prefix="/nl2sql", tags=["nl2sql"])
 PH_MESSAGE = "##메시지##"
 PH_COLUMNS = "##조회할 컬럼##"
 PH_SORT = "##정렬기준##"
+PH_BASEDATE = "##기준일##"   # 실행 시 오늘 날짜(YYYYMMDD)로 치환
 
 ROW_LIMIT = 100
 
@@ -63,10 +65,12 @@ async def nl2sql_run(payload: dict, database: str = Depends(current_db)) -> dict
         )
 
     # 1) 템플릿 병합 — GENERATE 의 prompt 는 :p 바인드라 plain replace 로 안전.
+    #    ##기준일## 은 실행 시점의 오늘 날짜(YYYYMMDD)로 자동 치환한다(선택 자리표시자).
     merged = (
         user_prompt
         .replace(PH_COLUMNS, columns_in)
         .replace(PH_SORT, sort_by)
+        .replace(PH_BASEDATE, datetime.now().strftime("%Y%m%d"))
         .replace(PH_MESSAGE, message)
     )
 
