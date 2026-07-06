@@ -1954,6 +1954,9 @@ END;`;
               style="font-family:var(--font-mono); font-size:var(--fs-sm);"
               placeholder="[실행] 후 표시됩니다."></textarea>
           </div>
+          <div class="row" style="justify-content:flex-start;">
+            <a id="ptm-script" role="button" tabindex="0" style="color:#0066cc; text-decoration:underline; cursor:pointer; font-size:var(--fs-sm);">스크립트</a>
+          </div>
         </div>
       </div>
     `;
@@ -2077,6 +2080,28 @@ END;`;
         runBtn.disabled = false;
         runBtn.innerHTML = "▶ 실행";
       }
+    });
+
+    // [스크립트] — [실행] 이 내부적으로 수행하는 DBMS_CLOUD_AI.GENERATE 문을
+    // 현재 프롬프트·action 을 반영해 팝업으로 표시(복사 가능). 백엔드 _GENERATE_SQL 과 동일.
+    const showRunScript = () => {
+      const prompt = backdrop.querySelector("#ptm-prompt").value;
+      const action = backdrop.querySelector("#ptm-action").value;
+      if (!prompt.trim()) { window.Toast.show("프롬프트를 입력하세요", "warn"); return; }
+      const esc = (s) => String(s).replace(/'/g, "''");
+      const sql =
+        "-- AI Profile Test [실행] 이 수행하는 스크립트 (DBMS_CLOUD_AI.GENERATE)\n" +
+        "SELECT DBMS_CLOUD_AI.GENERATE(\n" +
+        "         prompt       => '" + esc(prompt) + "',\n" +
+        "         profile_name => '" + esc(profileName) + "',\n" +
+        "         action       => '" + esc(action) + "'\n" +
+        "       ) AS r\n" +
+        "FROM dual;";
+      showSqlModal(`실행 스크립트 — ${profileName}`, sql);
+    };
+    backdrop.querySelector("#ptm-script").addEventListener("click", showRunScript);
+    backdrop.querySelector("#ptm-script").addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); showRunScript(); }
     });
 
     document.body.appendChild(backdrop);
