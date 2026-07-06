@@ -1,5 +1,7 @@
 # ASTA 소스코드 실행 흐름
 
+> **주의:** 이 문서는 초기 동기식 구현의 상세 추적 기록을 포함한다. 현재 운영 계약과 실행 순서의 단일 기준은 `OADT2_ASTA_ARCHITECTURE.md`다. 현재 분석 제출은 `ASTA_PKG.SUBMIT_RUN → DBMS_SCHEDULER → ASTA_PKG.EXECUTE_RUN` 방식이며 아래의 `ANALYZE_SQL`/FastAPI BackgroundTasks 설명을 현재 구조로 사용하지 않는다.
+
 ## 1. 문서 목적
 
 이 문서는 OADT2 ASTA(AI SQL Tuning Assistant) 화면에서 사용자가 **AI 분석 실행**을 누른 뒤 어떤 소스 파일의 어떤 함수·프로시저가 순서대로 실행되는지 설명한다.

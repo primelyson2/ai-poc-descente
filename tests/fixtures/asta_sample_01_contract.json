@@ -1,0 +1,19 @@
+{
+  "id": "asta-awr-01",
+  "label": "SESL0640.selectList",
+  "sql_bytes": 26321,
+  "sql_sha256": "843c516404ddfdc3560010155ed2a5f4c1df435c97b6ff9e9ac3a51b0fafbe16",
+  "object_allowlist": [
+    "DSNT.TGP_STYDE_L",
+    "DSNT.TGP_STYLE_M",
+    "DSNT.TSE_DIV_L",
+    "DSNT.TSE_INOUT_S",
+    "DSNT.TSE_ISSU_D",
+    "DSNT.TSE_ORDER_S",
+    "DSNT.TSE_SALE_DAY_S",
+    "DSNT.TSE_SALE_MON_S",
+    "DSNT.TSE_SHOP_M",
+    "DSNT.VIF_WHOLESALE_S",
+    "DSNT.V_STYGRP_D"
+  ]
+}

@@ -122,11 +122,11 @@ def test_10sql_summary_and_verdict_aggregation_are_deterministic():
 
 
 def test_current_docs_describe_evidence_aware_workflow_and_links():
-    docs = ["OADT2_ASTA_ARCHITECTURE.md", "AI_SQL_TUNING_ASSISTANT_PROGRAM_SPEC.md",
-            "AI_SQL_TUNING_ASSISTANT_MANUAL.md", "README.md"]
+    docs = ["OADT2_ASTA_ARCHITECTURE.md", "AI_SQL_TUNING_ASSISTANT_MANUAL.md", "README.md"]
     texts = [(ROOT / "docs" / name).read_text(encoding="utf-8") for name in docs]
-    for text in texts:
-        assert "2026-07-03" in text
+    expected_dates = ["2026-07-06", "2026-07-06", "2026-07-06"]
+    for text, expected_date in zip(texts, expected_dates, strict=True):
+        assert expected_date in text
         assert "Vector" in text or "VECTOR_KB" in text
         assert "BEFORE_AFTER_COMPARE" in text
         assert "XPLAN" in text
@@ -137,3 +137,13 @@ def test_current_docs_describe_evidence_aware_workflow_and_links():
     for verdict in ["IMPROVED", "NOT_IMPROVED", "CANDIDATE_FAILED", "NON_EQUIVALENT", "NO_REWRITE"]:
         assert verdict in joined
     assert "LLM_FINAL_REVIEW` | AI Before/After" not in joined
+
+
+def test_architecture_is_the_single_internal_program_spec():
+    assert (ROOT / "docs" / "OADT2_ASTA_ARCHITECTURE.md").is_file()
+    assert not (ROOT / "docs" / "AI_SQL_TUNING_ASSISTANT_PROGRAM_SPEC.md").exists()
+    references = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (ROOT / "README.md", ROOT / "docs" / "README.md", ROOT / "docs" / "AI_SQL_TUNING_ASSISTANT_MANUAL.md")
+    )
+    assert "AI_SQL_TUNING_ASSISTANT_PROGRAM_SPEC.md" not in references

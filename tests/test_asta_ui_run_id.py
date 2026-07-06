@@ -31,10 +31,10 @@ def test_submit_response_renders_run_id_before_polling():
 
 def test_terminal_failure_keeps_authoritative_failed_stage_and_throws():
     source = (ROOT / "static/js/extensions/tuning_assistant.js").read_text(encoding="utf-8")
-    assert 'if (["FAILED", "ERROR"].includes(overall))' in source
+    assert 'if (["FAILED", "ERROR", "BLOCKED", "REJECTED"].includes(overall))' in source
     assert "return byIndex;" in source
     assert "isOverallFailed ? (failed || running)" in source
-    assert 'if (status === "FAILED")' in source
+    assert 'if (["FAILED", "BLOCKED", "REJECTED"].includes(status))' in source
     assert "err.progress = progress" in source
     assert "if (err?.progress)" in source
 

@@ -1,0 +1,16 @@
+{
+  "source": "reports/asta_customer_01_live/candidate_union_barrier_verify3.json",
+  "candidate_id": "NOT_EXISTS_UNION_DISTINCT_BARRIER",
+  "before_runs": [
+    {"run_id":"BEFORE-WARMUP","phase":"WARMUP","side":"BEFORE","status":"COMPLETED","elapsed_wall_ms":130000,"last_elapsed_time_us":130000000,"last_cr_buffer_gets":9159788,"row_count":100,"last_output_rows":100,"result_digest":"719d4b6d2ed50d039d9e8126abf214a61b0ec4bf0e656f87e44ebab753dbf522","fixture_control":true},
+    {"run_id":"ABC4E18ED9A6613B0","phase":"MEASURE","side":"BEFORE","status":"COMPLETED","elapsed_wall_ms":142641,"last_elapsed_time_us":142640389,"last_cr_buffer_gets":9158361,"row_count":100,"last_output_rows":100,"result_digest":"719d4b6d2ed50d039d9e8126abf214a61b0ec4bf0e656f87e44ebab753dbf522"},
+    {"run_id":"ABC4E18ED9A6613B1","phase":"MEASURE","side":"BEFORE","status":"COMPLETED","elapsed_wall_ms":124499,"last_elapsed_time_us":124498199,"last_cr_buffer_gets":9159788,"row_count":100,"last_output_rows":100,"result_digest":"719d4b6d2ed50d039d9e8126abf214a61b0ec4bf0e656f87e44ebab753dbf522"},
+    {"run_id":"ABC4E18ED9A6613B2","phase":"MEASURE","side":"BEFORE","status":"COMPLETED","elapsed_wall_ms":123916,"last_elapsed_time_us":123915378,"last_cr_buffer_gets":9159788,"row_count":100,"last_output_rows":100,"result_digest":"719d4b6d2ed50d039d9e8126abf214a61b0ec4bf0e656f87e44ebab753dbf522"}
+  ],
+  "after_runs": [
+    {"run_id":"AFTER-WARMUP","phase":"WARMUP","side":"AFTER","candidate_id":"NOT_EXISTS_UNION_DISTINCT_BARRIER","status":"COMPLETED","elapsed_wall_ms":1700,"last_elapsed_time_us":1700000,"last_cr_buffer_gets":1080000,"row_count":100,"last_output_rows":100,"result_digest":"719d4b6d2ed50d039d9e8126abf214a61b0ec4bf0e656f87e44ebab753dbf522","fixture_control":true},
+    {"run_id":"UNIONBARRIERF81846083D26","phase":"MEASURE","side":"AFTER","candidate_id":"NOT_EXISTS_UNION_DISTINCT_BARRIER","status":"COMPLETED","elapsed_wall_ms":1642,"last_elapsed_time_us":1641880,"last_cr_buffer_gets":1079325,"row_count":100,"last_output_rows":100,"result_digest":"719d4b6d2ed50d039d9e8126abf214a61b0ec4bf0e656f87e44ebab753dbf522"},
+    {"run_id":"UNIONBARRIERCC23C0FE9257","phase":"MEASURE","side":"AFTER","candidate_id":"NOT_EXISTS_UNION_DISTINCT_BARRIER","status":"COMPLETED","elapsed_wall_ms":1616,"last_elapsed_time_us":1615886,"last_cr_buffer_gets":1079324,"row_count":100,"last_output_rows":100,"result_digest":"719d4b6d2ed50d039d9e8126abf214a61b0ec4bf0e656f87e44ebab753dbf522"},
+    {"run_id":"UNIONBARRIER417109155D41","phase":"MEASURE","side":"AFTER","candidate_id":"NOT_EXISTS_UNION_DISTINCT_BARRIER","status":"COMPLETED","elapsed_wall_ms":1645,"last_elapsed_time_us":1644745,"last_cr_buffer_gets":1079323,"row_count":100,"last_output_rows":100,"result_digest":"719d4b6d2ed50d039d9e8126abf214a61b0ec4bf0e656f87e44ebab753dbf522"}
+  ]
+}

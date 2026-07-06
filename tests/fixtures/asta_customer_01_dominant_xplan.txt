@@ -1,0 +1,28 @@
+Plan hash value: 1663017477
+
+| Id  | Operation                                      | Name                    | Starts | E-Rows | A-Rows |   A-Time   | Buffers |
+------------------------------------------------------------------------------------------------------------------------------------------------
+|   0 | SELECT STATEMENT                               |                         |      1 |        |      1 |00:02:22.64 |    9158K|
+|  14 |      TEMP TABLE TRANSFORMATION                 |                         |      1 |        |    100 |00:02:22.63 |    9158K|
+|  15 |       LOAD AS SELECT (CURSOR DURATION MEMORY)  | SYS_TEMP_STYLE          |      1 |        |      0 |00:02:04.95 |    8091K|
+|  16 |        NESTED LOOPS ANTI                       |                         |      1 |      1 |    845 |00:02:05.70 |    8091K|
+|  17 |         NESTED LOOPS                           |                         |      1 |      1 |    845 |00:00:00.05 |    1027 |
+|  26 |          TABLE ACCESS BY INDEX ROWID           | TGP_STYLE_M             |    917 |      1 |    845 |00:00:00.01 |     770 |
+|  27 |           INDEX UNIQUE SCAN                    | TGP_STYLE_M_PK          |    917 |      1 |    917 |00:00:00.01 |     116 |
+|  28 |         VIEW                                    | VIF_WHOLESALE_S         |    845 |      1 |      0 |00:02:04.90 |    8090K|
+|  29 |          UNION-ALL                              |                         |    845 |        |     22M|00:01:36.92 |    8090K|
+|  34 |           HASH JOIN                             |                         |    845 |  11519 |     22M|00:01:33.00 |    8090K|
+|  35 |            HASH JOIN RIGHT ANTI                 |                         |    845 |   1341 |   2578K|00:00:03.49 |     399K|
+|  38 |            INDEX FAST FULL SCAN                 | TGP_STYDE_L_PK          |    845 |   1033K|    940M|00:01:34.66 |    7691K|
+|  39 |       SORT GROUP BY STOPKEY                     |                         |      1 |      1 |    100 |00:00:17.68 |    1066K|
+|  59 |                SORT GROUP BY                    |                         |      1 |      1 |   2837 |00:00:10.55 |    1012K|
+|  60 |                 NESTED LOOPS                    |                         |      1 |      1 |   7039 |00:00:10.61 |    1012K|
+|  64 |                     NESTED LOOPS                |                         |      1 |      1 |  13257 |00:00:12.57 |    1004K|
+|  69 |                        INLIST ITERATOR          |                         |    171K|        |    232K|00:00:02.35 |     836K|
+|  70 |                         INDEX RANGE SCAN        | TSE_ISSU_D_IE14         |    342K|      6 |    232K|00:00:02.27 |     836K|
+------------------------------------------------------------------------------------------------------------------------------------------------
+
+Predicate Information (identified by operation id):
+---------------------------------------------------
+
+  28 - filter("VWS"."STYLE_CD"="A"."STYLE_CD")

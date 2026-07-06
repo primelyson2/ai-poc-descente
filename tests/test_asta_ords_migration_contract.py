@@ -483,7 +483,8 @@ def test_analyze_response_uses_persisted_progress_rows():
     assert "p_progress_json        IN CLOB DEFAULT NULL" in report
     assert "IF p_progress_json IS NULL OR NVL(DBMS_LOB.GETLENGTH(p_progress_json), 0) = 0 THEN" in report
     assert "clob_app_clob(l_out, p_progress_json)" in report
-    assert main.count("p_progress_json        => l_progress_json") == 2
+    # Response JSON 2회 + persisted timing을 포함한 최종 보고서 2회.
+    assert main.count("p_progress_json        => l_progress_json") == 4
 
     final_done_pos = main.index("record_progress(l_run_id, 10, 'FINAL_REPORT', 'Final report synthesis', 'DONE')")
     vector_save_pos = main.index("l_vector_save_json := asta_vector_pkg.save_case(")
@@ -545,7 +546,8 @@ def test_adb_main_builds_canonical_before_after_comparison_in_plsql():
     assert "p_after_evidence_json  => l_after_json" in src
     assert "p_comparison_json      => l_comparison_json" in src
     assert "p_vector_save_json     => l_vector_save_json" in src
-    assert src.count("p_comparison_json      => l_comparison_json") == 4
+    # 성공 경로는 stage timing 주입을 위한 최종 보고서 재생성 1회를 포함한다.
+    assert src.count("p_comparison_json      => l_comparison_json") == 5
     assert '"report_source":"ADB_REPORT_PLSQL"' in report
     assert '"contract_version":"asta.v1"' in report
     assert '"contract_version":"asta.v1"' in report

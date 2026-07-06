@@ -1,4 +1,6 @@
 """OLTP/BATCH workload 선택의 UI→proxy→ADB 계약 회귀 테스트."""
+import hashlib
+import json
 from pathlib import Path
 import sys
 
@@ -6,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from app.routers.asta_proxy import _coerce_payload
+from tools.asta_sample_sql_verifier import load_samples
 
 
 def read(path: str) -> str:
@@ -26,11 +29,20 @@ def test_ui_exposes_and_propagates_workload_context_and_resets_oltp():
                   "OLTP — Buffer Reads 최소화", "배치 — Elapsed Time 최소화",
                   'workloadSelect.value = "OLTP"', "optimizationGoalForWorkload"]:
         assert token in ui
+    assert "채택 latency는 3초 이하, 기존 대비 증가는 300ms 이하" in ui
     assert ui.count("workload_type:") >= 2  # normal and hidden SQL-only payloads
     assert ui.count("optimization_goal:") >= 2
-    # The self-join demo must remain pathological but bounded enough to finish
-    # before the upstream ORDS gateway timeout.
-    assert "s2.time_id=s1.time_id" in ui
+    samples = load_samples()
+    contract = json.loads(read("tests/fixtures/asta_sample_01_contract.json"))
+    artifact = json.loads(read("reports/asta_sample_sqls_under_60s/verification.json"))
+    assert len(samples) == 15
+    assert hashlib.sha256(samples[0]["sql"].encode("utf-8")).hexdigest() == contract["sql_sha256"]
+    records = {item["sample_id"]: item for item in artifact["samples"]}
+    assert set(records) == {
+        f"asta-awr-{index:02d}" for index in range(2, 16)
+    }
+    for sample in samples[1:]:
+        assert hashlib.sha256(sample["sql"].encode("utf-8")).hexdigest() == records[sample["id"]]["sql_sha256"]
 
 
 def test_sql_only_prompt_is_workload_specific_and_artifact_preserves_goal():
@@ -66,7 +78,7 @@ def test_comparison_and_vector_metadata_are_workload_aware():
 
 def test_report_displays_workload_and_primary_metric():
     report = read("db/adb/asta_report_pkg.sql")
-    assert "Workload 유형" in report
+    assert "실행 유형" in report
     assert "Primary metric" in report
     assert "$.workload_type" in report
     assert "$.primary_metric" in report
@@ -97,6 +109,17 @@ def test_oltp_tradeoff_boundaries_and_report_wording():
     assert "OLTP_BUFFER_READS_IMPROVED_LATENCY_TRADEOFF_TOO_LARGE" in main
     assert "의미 있는 개선 - Buffer Gets 대폭 감소, 튜닝 SQL 적용 검토" in report
     assert "1초 미만으로 사용자 체감 영향 제한적" in report
-    assert "OLTP 부하 개선" in report
+    assert "동시 실행 시 DB 부하 개선" in report
     assert "OLTP 개선 성공" in report
     assert "고빈도·동시 실행에서 의미" in report
+
+
+def test_oltp_comparison_enforces_three_second_latency_target_before_buffer_win():
+    main = read("db/adb/asta_pkg.sql")
+    target = "l_after_elapsed > 3000000"
+    improvement = "l_after_elapsed <= l_before_elapsed AND l_gets_pct >= 5"
+    assert target in main
+    assert "OLTP_LATENCY_TARGET_NOT_MET" in main
+    assert "WHEN l_after_elapsed > 3000000 THEN 'HIGH'" in main
+    assert '\"oltp_latency_target_us\":3000000' in main
+    assert main.index(target) < main.index(improvement)

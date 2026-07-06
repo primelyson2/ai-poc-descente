@@ -64,8 +64,63 @@ def clob_to_str(v):
     return v.read() if hasattr(v, "read") else v
 
 
+def roadmap_runtime_action(action: str, backup_dir: Path) -> int:
+    """Back up or deploy only ASTA_SOURCE_PKG for the approved roadmap rollout."""
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    user, password, dsn = source_config()
+    conn = oracledb.connect(user=user, password=password, dsn=dsn)
+    cur = conn.cursor()
+    try:
+        if action == "backup":
+            for kind, suffix in (("PACKAGE", "spec"), ("PACKAGE_BODY", "body")):
+                cur.execute("select dbms_metadata.get_ddl(:k,'ASTA_SOURCE_PKG',user) from dual", k=kind)
+                (backup_dir / f"source_asta_source_pkg_{suffix}.sql").write_text(
+                    clob_to_str(cur.fetchone()[0]).rstrip() + "\n/\n", encoding="utf-8"
+                )
+        else:
+            if not (backup_dir / "source_asta_source_pkg_spec.sql").exists():
+                raise RuntimeError("roadmap deploy requires a preserved Source package backup")
+            for stmt in split_sqlplus_script((ROOT / "db/source/asta_source_pkg.sql").read_text()):
+                exec_stmt(cur, stmt)
+        cur.execute("select object_name,object_type,status,last_ddl_time from user_objects where object_name='ASTA_SOURCE_PKG' order by object_type")
+        objects = cur.fetchall()
+        cur.execute("select name,type,line,position,text from user_errors where name='ASTA_SOURCE_PKG' order by sequence")
+        errors = cur.fetchall()
+        if action == "deploy" and (errors or {row[2] for row in objects} != {"VALID"} or len(objects) != 2):
+            raise RuntimeError(f"ASTA_SOURCE_PKG validation failed; errors={len(errors)}")
+        smoke = None
+        if action == "deploy":
+            cur.execute("""select asta_source_pkg.run_evidence(
+              p_sql=>'select cast(null as number) n, ''ASTA'' v from dual',
+              p_run_id=>'ROADMAP08_SOURCE_SMOKE', p_fetch_rows=>10,
+              p_repeat_policy=>'ONCE', p_run_advisor=>'N', p_sqltune_time_sec=>60,
+              p_result_evidence_mode=>'FULL_RESULT', p_result_max_rows=>100) from dual""")
+            raw = json.loads(clob_to_str(cur.fetchone()[0]))
+            smoke = {key: raw.get(key) for key in (
+                "status", "result_digest_status", "result_digest_scope", "result_digest_mode",
+                "result_total_rows", "result_evidence_complete",
+            )}
+            child = raw.get("child_cursor_evidence") or {}
+            smoke["bind_coverage_status"] = child.get("bind_coverage_status")
+            smoke["bind_coverage_reason"] = child.get("bind_coverage_reason")
+            if smoke["status"] != "COMPLETED" or smoke["result_digest_status"] != "COMPLETED":
+                raise RuntimeError(f"Source smoke failed: {smoke}")
+        payload = {"action": action, "objects": objects, "error_count": len(errors), "smoke": smoke}
+        (backup_dir / f"source_{action}_status.json").write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8"
+        )
+        print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+        return 0
+    finally:
+        cur.close(); conn.close()
+
+
 def main():
     """명령행 인자를 읽어 ASTA 도구의 전체 작업 흐름을 실행한다."""
+    if len(sys.argv) == 3 and sys.argv[1] in {"--roadmap-backup", "--roadmap-deploy"}:
+        return roadmap_runtime_action(
+            "backup" if sys.argv[1] == "--roadmap-backup" else "deploy", Path(sys.argv[2])
+        )
     user, password, dsn = source_config()
     conn = oracledb.connect(user=user, password=password, dsn=dsn)
     cur = conn.cursor()

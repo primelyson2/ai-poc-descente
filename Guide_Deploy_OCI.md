@@ -271,7 +271,7 @@ Browser
 | Endpoint | 역할 | 내부 호출 |
 |---|---|---|
 | `GET /api/asta/profiles` | ASTA DBMS_CLOUD_AI profile 목록 | ORDS `/profiles` → `ASTA_PKG.LIST_PROFILES` |
-| `POST /api/asta/analyze` | SQL 튜닝 분석 실행 | ORDS `/analyze` → `ASTA_PKG.ANALYZE_SQL` |
+| `POST /api/asta/analyze` | SQL 튜닝 분석 비동기 제출 | ORDS `/analyze` → `ASTA_PKG.SUBMIT_RUN` |
 | `GET /api/asta/runs/{run_id}` | 저장된 run 전체 JSON 조회 | ORDS `/runs/:run_id` → `ASTA_PKG.GET_RUN` |
 | `GET /api/asta/runs/{run_id}/progress` | 수행 이력 조회 | ORDS `/runs/:run_id/progress` → `ASTA_PKG.GET_PROGRESS` |
 | `GET /api/asta/runs/{run_id}/report` | Markdown 결과서 조회 | ORDS `/runs/:run_id/report` → `ASTA_PKG.GET_REPORT` |

@@ -19,6 +19,10 @@
 
 CREATE OR REPLACE PACKAGE asta_source_pkg AUTHID CURRENT_USER AS
 
+  -- SQL engine adapter for full CLOB row hashing. Returns only SHA-256 hex;
+  -- callers never receive the row payload through this function.
+  FUNCTION sha256_clob(p_value IN CLOB) RETURN VARCHAR2;
+
   PROCEDURE run_advisor_job(
     p_run_id   IN VARCHAR2,
     p_sql_id   IN VARCHAR2,
@@ -42,7 +46,7 @@ CREATE OR REPLACE PACKAGE asta_source_pkg AUTHID CURRENT_USER AS
    *   p_sql              입력 SQL. SELECT 또는 WITH 문만 허용한다.
    *   p_run_id           실행 SQL에 표식으로 삽입할 고유 실행 ID.
    *   p_fetch_rows       실행 범위를 제한할 최대 행 수(1~10000). 기본값: 100.
-   *   p_repeat_policy    'AUTO'(워밍 실행 2회) | 'ONCE' | 'REPEAT:<n>'(n=1~5).
+   *   p_repeat_policy    'AUTO'(warm-up 1회 + 측정 3회) | 'ONCE' | 'REPEAT:<n>'(n=1~5).
    *   p_run_advisor      DBMS_SQLTUNE 실행은 'Y', 생략은 'N'. 기본값: 'N'.
    *   p_sqltune_time_sec DBMS_SQLTUNE 제한시간(초, 60~1800). 기본값: 1800.
    */
@@ -53,7 +57,9 @@ CREATE OR REPLACE PACKAGE asta_source_pkg AUTHID CURRENT_USER AS
     p_repeat_policy    IN VARCHAR2 DEFAULT 'AUTO',
     p_run_advisor      IN VARCHAR2 DEFAULT 'N',
     p_sqltune_time_sec IN NUMBER   DEFAULT 1800,
-    p_source_sql_id    IN VARCHAR2 DEFAULT NULL
+    p_source_sql_id    IN VARCHAR2 DEFAULT NULL,
+    p_result_evidence_mode IN VARCHAR2 DEFAULT 'BOUNDED',
+    p_result_max_rows  IN NUMBER DEFAULT 100000
   ) RETURN CLOB;
 
   FUNCTION run_evidence_store_vc(
@@ -63,7 +69,9 @@ CREATE OR REPLACE PACKAGE asta_source_pkg AUTHID CURRENT_USER AS
     p_repeat_policy    IN VARCHAR2 DEFAULT 'AUTO',
     p_run_advisor      IN VARCHAR2 DEFAULT 'N',
     p_sqltune_time_sec IN NUMBER   DEFAULT 1800,
-    p_source_sql_id    IN VARCHAR2 DEFAULT NULL
+    p_source_sql_id    IN VARCHAR2 DEFAULT NULL,
+    p_result_evidence_mode IN VARCHAR2 DEFAULT 'BOUNDED',
+    p_result_max_rows  IN NUMBER DEFAULT 100000
   ) RETURN VARCHAR2;
 
   PROCEDURE run_evidence_store_proc(
@@ -74,6 +82,8 @@ CREATE OR REPLACE PACKAGE asta_source_pkg AUTHID CURRENT_USER AS
     p_run_advisor      IN VARCHAR2 DEFAULT 'N',
     p_sqltune_time_sec IN NUMBER   DEFAULT 1800,
     p_source_sql_id    IN VARCHAR2 DEFAULT NULL,
+    p_result_evidence_mode IN VARCHAR2 DEFAULT 'BOUNDED',
+    p_result_max_rows  IN NUMBER DEFAULT 100000,
     p_status_json      OUT VARCHAR2
   );
 
@@ -93,6 +103,25 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
   C_MAX_REPEATS    CONSTANT PLS_INTEGER := 5;
   C_MAX_RUN_ID_CHARS CONSTANT PLS_INTEGER := 64;
   C_GUARD_POLICY   CONSTANT VARCHAR2(40) := 'SELECT_WITH_SINGLE_STATEMENT';
+
+  FUNCTION sha256_clob(p_value IN CLOB) RETURN VARCHAR2 IS
+    l_hash VARCHAR2(64) := RPAD('0', 64, '0');
+    l_chunk VARCHAR2(16000);
+    l_offset PLS_INTEGER := 1;
+    l_length PLS_INTEGER := NVL(DBMS_LOB.GETLENGTH(p_value), 0);
+  BEGIN
+    WHILE l_offset <= l_length LOOP
+      l_chunk := DBMS_LOB.SUBSTR(p_value, 8000, l_offset);
+      SELECT LOWER(RAWTOHEX(STANDARD_HASH(
+        l_hash || ':' || LENGTHB(l_chunk) || ':' || l_chunk, 'SHA256'
+      ))) INTO l_hash FROM dual;
+      l_offset := l_offset + LENGTH(l_chunk);
+    END LOOP;
+    SELECT LOWER(RAWTOHEX(STANDARD_HASH(
+      l_hash || ':chars=' || TO_CHAR(l_length), 'SHA256'
+    ))) INTO l_hash FROM dual;
+    RETURN l_hash;
+  END sha256_clob;
 
   -- =========================================================================
   -- JSON 처리 보조 함수
@@ -373,6 +402,159 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
     RETURN TO_CLOB(l_header) || p_sql || TO_CLOB(l_footer);
   END build_exec_sql;
 
+  -- 마지막 bounded 실행의 실제 결과 행을 원래 fetch 순서대로 JSON CLOB으로
+  -- 직렬화한다. NULL ON NULL과 JSON native scalar encoding으로 NULL/문자/숫자/
+  -- 날짜 의미를 보존한다. 지원하지 않는 결과 datatype은 호출부에서 digest
+  -- FAILED로 기록하며 row-count fallback을 동등성 증거로 사용하지 않는다.
+  FUNCTION build_digest_sql(
+    p_sql    IN CLOB,
+    p_run_id IN VARCHAR2,
+    p_rows   IN PLS_INTEGER
+  ) RETURN CLOB IS
+    l_header VARCHAR2(1000) :=
+      'SELECT /*+ gather_plan_statistics */ /* ASTA_RUN_ID=' || p_run_id || ' */ ' ||
+      'JSON_ARRAYAGG(row_doc FORMAT JSON ORDER BY row_no RETURNING CLOB), COUNT(*) FROM (' ||
+      'SELECT ROWNUM row_no, JSON_OBJECT(t.* NULL ON NULL RETURNING CLOB) row_doc FROM (';
+    l_footer VARCHAR2(100) := ') t WHERE ROWNUM <= ' || TO_CHAR(p_rows) || ')';
+  BEGIN
+    RETURN TO_CLOB(l_header) || p_sql || TO_CLOB(l_footer);
+  END build_digest_sql;
+
+  -- 전체 결과 증거는 성능 측정용 bounded wrapper와 분리하여 생성한다. 최종
+  -- ORDER BY가 없는 SQL은 row hash별 multiplicity를 정렬해 multiset 의미와
+  -- duplicate 수를 보존한다. ORDER BY가 있으면 실제 fetch 순서를 보존한다.
+  FUNCTION top_level_sql_text(p_sql IN CLOB) RETURN VARCHAR2 IS
+    l_sql VARCHAR2(32767) := DBMS_LOB.SUBSTR(p_sql, 32767, 1);
+    l_out VARCHAR2(32767);
+    l_pos PLS_INTEGER := 1;
+    l_len PLS_INTEGER := LENGTH(l_sql);
+    l_depth PLS_INTEGER := 0;
+    l_ch VARCHAR2(1);
+  BEGIN
+    WHILE l_pos <= l_len LOOP
+      IF SUBSTR(l_sql, l_pos, 2) = '/*' THEN
+        l_pos := NVL(NULLIF(INSTR(l_sql, '*/', l_pos + 2), 0), l_len) + 2;
+      ELSIF SUBSTR(l_sql, l_pos, 2) = '--' THEN
+        l_pos := NVL(NULLIF(INSTR(l_sql, CHR(10), l_pos + 2), 0), l_len) + 1;
+      ELSE
+        l_ch := SUBSTR(l_sql, l_pos, 1);
+        IF l_ch IN ('''', '"') THEN
+          DECLARE l_quote VARCHAR2(1) := l_ch; BEGIN
+            l_pos := l_pos + 1;
+            WHILE l_pos <= l_len LOOP
+              IF SUBSTR(l_sql, l_pos, 1) = l_quote THEN
+                IF SUBSTR(l_sql, l_pos + 1, 1) = l_quote THEN l_pos := l_pos + 2;
+                ELSE l_pos := l_pos + 1; EXIT; END IF;
+              ELSE l_pos := l_pos + 1; END IF;
+            END LOOP;
+          END;
+          l_out := l_out || ' ';
+        ELSIF l_ch = '(' THEN
+          l_depth := l_depth + 1; l_out := l_out || ' '; l_pos := l_pos + 1;
+        ELSIF l_ch = ')' THEN
+          l_depth := GREATEST(0, l_depth - 1); l_out := l_out || ' '; l_pos := l_pos + 1;
+        ELSE
+          l_out := l_out || CASE WHEN l_depth = 0 THEN UPPER(l_ch) ELSE ' ' END;
+          l_pos := l_pos + 1;
+        END IF;
+      END IF;
+    END LOOP;
+    RETURN l_out;
+  END top_level_sql_text;
+
+  FUNCTION detect_result_mode(p_sql IN CLOB) RETURN VARCHAR2 IS
+  BEGIN
+    RETURN CASE
+      WHEN REGEXP_LIKE(top_level_sql_text(p_sql), '(^|\W)ORDER[[:space:]]+BY(\W|$)')
+      THEN 'ORDERED_ROWS' ELSE 'UNORDERED_MULTISET' END;
+  END detect_result_mode;
+
+  FUNCTION build_full_count_sql(p_sql IN CLOB, p_run_id IN VARCHAR2) RETURN CLOB IS
+  BEGIN
+    RETURN TO_CLOB('SELECT /* ASTA_RUN_ID=' || p_run_id || '-FULLCOUNT */ COUNT(*) FROM (') ||
+      p_sql || TO_CLOB(')');
+  END build_full_count_sql;
+
+  FUNCTION build_full_digest_sql(
+    p_sql IN CLOB, p_run_id IN VARCHAR2, p_result_mode IN VARCHAR2
+  ) RETURN CLOB IS
+    l_hash_fn VARCHAR2(300) := DBMS_ASSERT.ENQUOTE_NAME(
+      SYS_CONTEXT('USERENV', 'SESSION_USER'), FALSE
+    ) || '.ASTA_SOURCE_PKG.SHA256_CLOB';
+  BEGIN
+    IF p_result_mode = 'ORDERED_ROWS' THEN
+      RETURN TO_CLOB(
+        'SELECT /* ASTA_RUN_ID=' || p_run_id || '-FULLDIGEST */ ' ||
+        'JSON_ARRAYAGG(row_doc FORMAT JSON ORDER BY row_no RETURNING CLOB) FROM (' ||
+        'SELECT ROWNUM row_no, JSON_OBJECT(t.* NULL ON NULL RETURNING CLOB) row_doc FROM ('
+      ) || p_sql || TO_CLOB(') t)');
+    END IF;
+    RETURN TO_CLOB(
+      'SELECT /* ASTA_RUN_ID=' || p_run_id || '-FULLDIGEST */ ' ||
+      'JSON_ARRAYAGG(JSON_OBJECT(''row_hash'' VALUE row_hash,''multiplicity'' VALUE row_multiplicity RETURNING CLOB) ' ||
+      'FORMAT JSON ORDER BY row_hash RETURNING CLOB) FROM (' ||
+      'SELECT ' || l_hash_fn || '(JSON_OBJECT(t.* NULL ON NULL RETURNING CLOB)) row_hash, ' ||
+      'COUNT(*) row_multiplicity FROM ('
+    ) || p_sql || TO_CLOB(
+      ') t GROUP BY ' || l_hash_fn || '(JSON_OBJECT(t.* NULL ON NULL RETURNING CLOB)))'
+    );
+  END build_full_digest_sql;
+
+  FUNCTION sha256_varchar(p_value IN VARCHAR2) RETURN VARCHAR2 IS
+    l_hash VARCHAR2(64);
+  BEGIN
+    SELECT LOWER(RAWTOHEX(STANDARD_HASH(p_value, 'SHA256')))
+    INTO   l_hash
+    FROM   dual;
+    RETURN l_hash;
+  END sha256_varchar;
+
+  FUNCTION result_metadata_hash(p_sql IN CLOB) RETURN VARCHAR2 IS
+    l_cursor INTEGER;
+    l_count  INTEGER;
+    l_desc   DBMS_SQL.DESC_TAB2;
+    l_meta   VARCHAR2(32767) := 'ASTA_RESULT_METADATA_V1';
+  BEGIN
+    l_cursor := DBMS_SQL.OPEN_CURSOR;
+    DBMS_SQL.PARSE(l_cursor, p_sql, DBMS_SQL.NATIVE);
+    DBMS_SQL.DESCRIBE_COLUMNS2(l_cursor, l_count, l_desc);
+    DBMS_SQL.CLOSE_CURSOR(l_cursor);
+    FOR i IN 1..l_count LOOP
+      l_meta := l_meta || '|' || TO_CHAR(i) || ':' || LENGTHB(l_desc(i).col_name) || ':' ||
+        l_desc(i).col_name || ':' || l_desc(i).col_type || ':' || l_desc(i).col_max_len || ':' ||
+        NVL(TO_CHAR(l_desc(i).col_precision), '-') || ':' || NVL(TO_CHAR(l_desc(i).col_scale), '-') || ':' ||
+        NVL(TO_CHAR(l_desc(i).col_charsetid), '-') || ':' || NVL(TO_CHAR(l_desc(i).col_charsetform), '-');
+      IF LENGTHB(l_meta) > 30000 THEN
+        RAISE_APPLICATION_ERROR(-20001, 'ASTA_RESULT_DIGEST: result metadata exceeds safe hash input');
+      END IF;
+    END LOOP;
+    RETURN sha256_varchar(l_meta);
+  EXCEPTION
+    WHEN OTHERS THEN
+      IF DBMS_SQL.IS_OPEN(l_cursor) THEN DBMS_SQL.CLOSE_CURSOR(l_cursor); END IF;
+      RAISE;
+  END result_metadata_hash;
+
+  FUNCTION ordered_result_digest(
+    p_result_json IN CLOB,
+    p_metadata_hash IN VARCHAR2,
+    p_row_count IN NUMBER
+  ) RETURN VARCHAR2 IS
+    l_hash   VARCHAR2(64) := p_metadata_hash;
+    l_chunk  VARCHAR2(16000);
+    l_offset PLS_INTEGER := 1;
+    l_length PLS_INTEGER := NVL(DBMS_LOB.GETLENGTH(p_result_json), 0);
+  BEGIN
+    WHILE l_offset <= l_length LOOP
+      l_chunk := DBMS_LOB.SUBSTR(p_result_json, 8000, l_offset);
+      l_hash := sha256_varchar(l_hash || ':' || LENGTHB(l_chunk) || ':' || l_chunk);
+      l_offset := l_offset + LENGTH(l_chunk);
+    END LOOP;
+    RETURN sha256_varchar(
+      l_hash || ':rows=' || NVL(TO_CHAR(p_row_count), 'null') || ':chars=' || TO_CHAR(l_length)
+    );
+  END ordered_result_digest;
+
   -- 동적 SQL을 만들기 전에 반복 정책을 정규화한다. 잘못된 값은
   -- run_evidence의 바깥쪽 예외 처리를 통해 구조화된 ASTA 오류로 반환한다.
   FUNCTION normalize_repeat_policy(p_repeat_policy IN VARCHAR2) RETURN VARCHAR2 IS
@@ -396,12 +578,57 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
     l_policy VARCHAR2(30) := normalize_repeat_policy(p_repeat_policy);
   BEGIN
     IF l_policy = 'AUTO' THEN
-      RETURN 2;
+      RETURN 4;
     ELSIF l_policy = 'ONCE' THEN
       RETURN 1;
     END IF;
     RETURN TO_NUMBER(SUBSTR(l_policy, 8));
   END normalize_repeat_count;
+
+  FUNCTION sql_bind_placeholder_count(p_sql IN CLOB) RETURN PLS_INTEGER IS
+    l_len       PLS_INTEGER := NVL(DBMS_LOB.GETLENGTH(p_sql), 0);
+    l_pos       PLS_INTEGER := 1;
+    l_count     PLS_INTEGER := 0;
+    l_state     VARCHAR2(20) := 'NORMAL';
+    l_char      VARCHAR2(1);
+    l_next      VARCHAR2(1);
+    l_q_close   VARCHAR2(1);
+  BEGIN
+    WHILE l_pos <= l_len LOOP
+      l_char := DBMS_LOB.SUBSTR(p_sql, 1, l_pos);
+      l_next := CASE WHEN l_pos < l_len THEN DBMS_LOB.SUBSTR(p_sql, 1, l_pos + 1) END;
+      IF l_state = 'LINE_COMMENT' THEN
+        IF l_char IN (CHR(10), CHR(13)) THEN l_state := 'NORMAL'; END IF;
+      ELSIF l_state = 'BLOCK_COMMENT' THEN
+        IF l_char = '*' AND l_next = '/' THEN l_state := 'NORMAL'; l_pos := l_pos + 1; END IF;
+      ELSIF l_state = 'SINGLE_QUOTE' THEN
+        IF l_char = '''' THEN
+          IF l_next = '''' THEN l_pos := l_pos + 1; ELSE l_state := 'NORMAL'; END IF;
+        END IF;
+      ELSIF l_state = 'DOUBLE_QUOTE' THEN
+        IF l_char = '"' THEN
+          IF l_next = '"' THEN l_pos := l_pos + 1; ELSE l_state := 'NORMAL'; END IF;
+        END IF;
+      ELSIF l_state = 'Q_QUOTE' THEN
+        IF l_char = l_q_close AND l_next = '''' THEN l_state := 'NORMAL'; l_pos := l_pos + 1; END IF;
+      ELSE
+        IF l_char = '-' AND l_next = '-' THEN l_state := 'LINE_COMMENT'; l_pos := l_pos + 1;
+        ELSIF l_char = '/' AND l_next = '*' THEN l_state := 'BLOCK_COMMENT'; l_pos := l_pos + 1;
+        ELSIF l_char = '''' THEN l_state := 'SINGLE_QUOTE';
+        ELSIF l_char = '"' THEN l_state := 'DOUBLE_QUOTE';
+        ELSIF UPPER(l_char) = 'Q' AND l_next = '''' AND l_pos + 2 <= l_len THEN
+          l_q_close := DBMS_LOB.SUBSTR(p_sql, 1, l_pos + 2);
+          l_q_close := CASE l_q_close WHEN '[' THEN ']' WHEN '(' THEN ')' WHEN '{' THEN '}' WHEN '<' THEN '>' ELSE l_q_close END;
+          l_state := 'Q_QUOTE'; l_pos := l_pos + 2;
+        ELSIF l_char = ':' AND l_next IS NOT NULL
+              AND REGEXP_LIKE(l_next, '[A-Za-z0-9_$#]') THEN
+          l_count := l_count + 1;
+        END IF;
+      END IF;
+      l_pos := l_pos + 1;
+    END LOOP;
+    RETURN l_count;
+  END sql_bind_placeholder_count;
 
   FUNCTION normalize_run_advisor(p_run_advisor IN VARCHAR2) RETURN VARCHAR2 IS
   BEGIN
@@ -482,6 +709,76 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
       p_plan_hash_value := NULL;
   END find_cursor;
 
+  -- Child cursor/ACS 관측은 원문 bind 값을 반환하지 않는다. 캡처 값은 Source
+  -- 안에서 SHA-256 fingerprint로만 변환하며, 대표 bind를 Before/After에 실제
+  -- 재적용하지 못한 현재 실행 경로는 반드시 coverage BLOCKED로 표시한다.
+  FUNCTION collect_child_cursor_evidence(
+    p_sql_id IN VARCHAR2,
+    p_bind_placeholder_count IN PLS_INTEGER
+  ) RETURN CLOB IS
+    l_out CLOB;
+    l_first BOOLEAN := TRUE;
+    l_bind_first BOOLEAN := TRUE;
+    l_bind_count PLS_INTEGER := 0;
+  BEGIN
+    DBMS_LOB.CREATETEMPORARY(l_out, TRUE);
+    clob_app(l_out, '{"status":"COMPLETED","source":"V$SQL_AND_V$SQL_BIND_CAPTURE"');
+    clob_app(l_out, ',"raw_bind_values_retained":false,"child_cursors":[');
+    FOR c IN (
+      SELECT child_number, plan_hash_value, executions,
+             is_bind_sensitive, is_bind_aware, is_shareable
+      FROM v$sql
+      WHERE sql_id = LOWER(TRIM(p_sql_id))
+      ORDER BY child_number
+    ) LOOP
+      IF NOT l_first THEN clob_app(l_out, ','); END IF;
+      l_first := FALSE;
+      clob_app(l_out, '{"child_number":' || json_num(c.child_number) ||
+        ',"plan_hash_value":' || json_num(c.plan_hash_value) ||
+        ',"executions":' || json_num(c.executions) ||
+        ',"is_bind_sensitive":' || json_str(c.is_bind_sensitive) ||
+        ',"is_bind_aware":' || json_str(c.is_bind_aware) ||
+        ',"is_shareable":' || json_str(c.is_shareable) || '}');
+    END LOOP;
+    clob_app(l_out, '],"bind_metadata":[');
+    FOR b IN (
+      SELECT name, position, datatype_string, was_captured, last_captured,
+             CASE WHEN value_string IS NULL THEN NULL
+                  ELSE LOWER(RAWTOHEX(STANDARD_HASH(value_string, 'SHA256'))) END value_fingerprint
+      FROM v$sql_bind_capture
+      WHERE sql_id = LOWER(TRIM(p_sql_id))
+      ORDER BY child_number, position
+    ) LOOP
+      l_bind_count := l_bind_count + 1;
+      IF NOT l_bind_first THEN clob_app(l_out, ','); END IF;
+      l_bind_first := FALSE;
+      clob_app(l_out, '{"name":' || json_str(b.name) ||
+        ',"position":' || json_num(b.position) ||
+        ',"oracle_type":' || json_str(b.datatype_string) ||
+        ',"was_captured":' || json_str(b.was_captured) ||
+        ',"last_captured":' || json_str(TO_CHAR(b.last_captured, 'YYYY-MM-DD"T"HH24:MI:SS')) ||
+        ',"value_fingerprint":' || json_str(
+          CASE WHEN b.value_fingerprint IS NULL THEN NULL ELSE 'sha256:' || b.value_fingerprint END
+        ) || '}');
+    END LOOP;
+    clob_app(l_out, '],"bind_placeholder_count":' || json_num(p_bind_placeholder_count));
+    IF NVL(p_bind_placeholder_count, 0) = 0 AND l_bind_count = 0 THEN
+      clob_app(l_out,
+        ',"bind_coverage_status":"NOT_APPLICABLE","bind_coverage_reason":"BIND_NOT_APPLICABLE"}');
+    ELSE
+      clob_app(l_out,
+        ',"bind_coverage_status":"BLOCKED","bind_coverage_reason":"BIND_REPLAY_NOT_PERFORMED"}');
+    END IF;
+    RETURN l_out;
+  EXCEPTION
+    WHEN OTHERS THEN
+      RETURN TO_CLOB(
+        '{"status":"BLOCKED","raw_bind_values_retained":false,"child_cursors":[],' ||
+        '"bind_metadata":[],"bind_coverage_status":"BLOCKED",' ||
+        '"bind_coverage_reason":"BIND_EVIDENCE_UNAVAILABLE"}'
+      );
+  END collect_child_cursor_evidence;
+
   -- =========================================================================
   -- 통계 수집: V$SQL_PLAN_STATISTICS_ALL의 LAST_* 값
   -- =========================================================================
@@ -518,6 +815,74 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
       p_disk_reads     := NULL;
       p_elapsed_us     := NULL;
   END collect_metrics;
+
+  FUNCTION collect_optimizer_intent_evidence(
+    p_sql_id       IN VARCHAR2,
+    p_child_number IN NUMBER
+  ) RETURN CLOB IS
+    l_out CLOB;
+    l_first BOOLEAN := TRUE;
+    l_object_name VARCHAR2(128);
+    l_object_owner VARCHAR2(128);
+    l_starts NUMBER;
+    l_buffers NUMBER;
+    l_anti_semi_count PLS_INTEGER := 0;
+  BEGIN
+    DBMS_LOB.CREATETEMPORARY(l_out, TRUE);
+    BEGIN
+      SELECT object_owner, object_name, last_starts, last_cr_buffer_gets
+      INTO l_object_owner, l_object_name, l_starts, l_buffers
+      FROM (
+        SELECT object_owner, object_name, last_starts, last_cr_buffer_gets
+        FROM v$sql_plan_statistics_all
+        WHERE sql_id = p_sql_id
+          AND child_number = p_child_number
+          AND object_name IS NOT NULL
+          AND NVL(last_starts, 0) > 1
+        ORDER BY NVL(last_cr_buffer_gets, 0) DESC, NVL(last_elapsed_time, 0) DESC, id
+      )
+      WHERE ROWNUM = 1;
+    EXCEPTION WHEN NO_DATA_FOUND THEN
+      l_object_owner := NULL; l_object_name := NULL; l_starts := NULL; l_buffers := NULL;
+    END;
+    SELECT COUNT(*)
+    INTO l_anti_semi_count
+    FROM v$sql_plan_statistics_all
+    WHERE sql_id = p_sql_id
+      AND child_number = p_child_number
+      AND (UPPER(operation || ' ' || options) LIKE '%ANTI%'
+           OR UPPER(operation || ' ' || options) LIKE '%SEMI%');
+
+    clob_app(l_out, '{"status":"COMPLETED","source":"V$SQL_PLAN_STATISTICS_ALL_LAST"');
+    clob_app(l_out, ',"dominant_repeated_owner":' || json_str(l_object_owner));
+    clob_app(l_out, ',"dominant_repeated_object":' || json_str(l_object_name));
+    clob_app(l_out, ',"dominant_repeated_starts":' || json_num(l_starts));
+    clob_app(l_out, ',"dominant_repeated_buffers":' || json_num(l_buffers));
+    clob_app(l_out, ',"anti_semi_present":' || CASE WHEN l_anti_semi_count > 0 THEN 'true' ELSE 'false' END);
+    clob_app(l_out, ',"nodes":[');
+    FOR n IN (
+      SELECT object_owner, object_name, operation, options, last_starts, last_cr_buffer_gets
+      FROM v$sql_plan_statistics_all
+      WHERE sql_id = p_sql_id
+        AND child_number = p_child_number
+        AND object_name IS NOT NULL
+        AND NVL(last_starts, 0) > 0
+      ORDER BY NVL(last_cr_buffer_gets, 0) DESC, id
+      FETCH FIRST 100 ROWS ONLY
+    ) LOOP
+      IF NOT l_first THEN clob_app(l_out, ','); END IF;
+      l_first := FALSE;
+      clob_app(l_out, '{"object_owner":' || json_str(n.object_owner) ||
+        ',"object_name":' || json_str(n.object_name) ||
+        ',"operation":' || json_str(TRIM(n.operation || ' ' || n.options)) ||
+        ',"starts":' || json_num(n.last_starts) ||
+        ',"buffers":' || json_num(n.last_cr_buffer_gets) || '}');
+    END LOOP;
+    clob_app(l_out, ']}');
+    RETURN l_out;
+  EXCEPTION WHEN OTHERS THEN
+    RETURN TO_CLOB('{"status":"BLOCKED","reason":"OPTIMIZER_INTENT_EVIDENCE_UNAVAILABLE"}');
+  END collect_optimizer_intent_evidence;
 
   -- =========================================================================
   -- 실행계획: DBMS_XPLAN.DISPLAY_CURSOR
@@ -706,6 +1071,72 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
   -- SQL Tuning Advisor(선택 사항)
   -- =========================================================================
 
+  -- run_evidence_store_vc가 직접 생성한 Scheduler job만 best-effort로 정리한다.
+  -- 실행 중인 job은 Advisor 결과를 훼손하지 않도록 중지/강제 삭제하지 않는다.
+  -- 정리 실패는 호출 결과를 덮어쓰지 않고 OUT 감사 상태로만 반환한다.
+  PROCEDURE cleanup_advisor_scheduler_job(
+    p_job_name       IN  VARCHAR2,
+    p_cleanup_status OUT VARCHAR2,
+    p_cleanup_detail OUT VARCHAR2
+  ) IS
+    l_running PLS_INTEGER := 0;
+    l_exists  PLS_INTEGER := 0;
+  BEGIN
+    p_cleanup_status := 'NOT_CREATED';
+    p_cleanup_detail := 'No Scheduler job was created.';
+    IF p_job_name IS NULL THEN
+      RETURN;
+    END IF;
+
+    BEGIN
+      SELECT COUNT(*) INTO l_running
+        FROM user_scheduler_running_jobs
+       WHERE job_name = UPPER(p_job_name);
+    EXCEPTION
+      WHEN OTHERS THEN
+        p_cleanup_status := 'CHECK_FAILED';
+        p_cleanup_detail := 'Unable to inspect Scheduler running state: ' || SUBSTR(SQLERRM, 1, 1800);
+        RETURN;
+    END;
+
+    IF l_running > 0 THEN
+      p_cleanup_status := 'SKIPPED_RUNNING';
+      p_cleanup_detail := 'Scheduler job is still RUNNING; it was left intact without STOP_JOB or force drop.';
+      RETURN;
+    END IF;
+
+    BEGIN
+      SELECT COUNT(*) INTO l_exists
+        FROM user_scheduler_jobs
+       WHERE job_name = UPPER(p_job_name);
+    EXCEPTION
+      WHEN OTHERS THEN
+        p_cleanup_status := 'CHECK_FAILED';
+        p_cleanup_detail := 'Unable to inspect Scheduler job state: ' || SUBSTR(SQLERRM, 1, 1800);
+        RETURN;
+    END;
+
+    IF l_exists = 0 THEN
+      p_cleanup_status := 'ALREADY_REMOVED';
+      p_cleanup_detail := 'Scheduler job was already removed, including possible auto_drop cleanup.';
+      RETURN;
+    END IF;
+
+    BEGIN
+      DBMS_SCHEDULER.DROP_JOB(job_name => p_job_name, force => FALSE);
+      p_cleanup_status := 'DROPPED';
+      p_cleanup_detail := 'Inactive Scheduler job was explicitly dropped.';
+    EXCEPTION
+      WHEN OTHERS THEN
+        p_cleanup_status := 'DROP_FAILED';
+        p_cleanup_detail := 'Scheduler DROP_JOB failed without changing the Advisor result: ' || SUBSTR(SQLERRM, 1, 1700);
+    END;
+  EXCEPTION
+    WHEN OTHERS THEN
+      p_cleanup_status := 'CLEANUP_FAILED';
+      p_cleanup_detail := 'Unexpected Scheduler cleanup failure: ' || SUBSTR(SQLERRM, 1, 1800);
+  END cleanup_advisor_scheduler_job;
+
   -- 지정한 sql_id로 DBMS_SQLTUNE을 실행한다(sql_id가 없으면 sql_text 사용).
   -- 잔여 작업이 남지 않도록 성공 또는 오류와 관계없이 종료 시 tuning task를 삭제한다.
   FUNCTION run_advisor_opt(
@@ -797,13 +1228,38 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
     p_repeat_policy    IN VARCHAR2 DEFAULT 'AUTO',
     p_run_advisor      IN VARCHAR2 DEFAULT 'N',
     p_sqltune_time_sec IN NUMBER   DEFAULT 1800,
-    p_source_sql_id    IN VARCHAR2 DEFAULT NULL
+    p_source_sql_id    IN VARCHAR2 DEFAULT NULL,
+    p_result_evidence_mode IN VARCHAR2 DEFAULT 'BOUNDED',
+    p_result_max_rows  IN NUMBER DEFAULT 100000
   ) RETURN CLOB IS
     -- 실행 변수
     l_exec_sql        CLOB;
+    l_digest_sql      CLOB;
+    l_result_rows_json CLOB;
+    l_result_digest   VARCHAR2(64);
+    l_digest_status   VARCHAR2(30) := 'PENDING';
+    l_digest_error    VARCHAR2(1000);
     l_row_count       NUMBER;
+    l_result_total_rows NUMBER;
+    l_result_mode     VARCHAR2(30);
+    l_result_scope    VARCHAR2(30) := 'BOUNDED_ORDERED_FIRST_N';
+    l_result_complete VARCHAR2(5) := 'false';
+    l_result_max_rows PLS_INTEGER;
+    l_evidence_mode   VARCHAR2(30);
     l_fetch_rows      PLS_INTEGER;
     l_repeats         PLS_INTEGER;
+    l_warmup_count    PLS_INTEGER := 0;
+    l_measurement_count PLS_INTEGER := 0;
+    l_completed_measurements PLS_INTEGER := 0;
+    l_bind_placeholder_count PLS_INTEGER := 0;
+    l_measurement_runs_json VARCHAR2(32767) := '[';
+    l_measurement_first BOOLEAN := TRUE;
+    l_median_elapsed_us NUMBER;
+    l_median_buffer_gets NUMBER;
+    l_median_disk_reads NUMBER;
+    l_elapsed_noise_pct NUMBER;
+    l_measurement_status VARCHAR2(30) := 'BLOCKED';
+    l_measurement_reason VARCHAR2(100) := 'MEASUREMENT_EVIDENCE_INCOMPLETE';
     l_start           TIMESTAMP;
     l_end             TIMESTAMP;
     l_elapsed_ms      NUMBER;
@@ -819,6 +1275,8 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
     -- 실행계획 원문, 오브젝트 메타데이터 및 Advisor
     l_plan_text       CLOB;
     l_object_info     CLOB;
+    l_child_cursor_evidence CLOB;
+    l_optimizer_intent_evidence CLOB;
     l_advisor_report  CLOB;
     l_advisor_status  VARCHAR2(30) := 'SKIPPED';
     -- 출력
@@ -841,8 +1299,17 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
     -- 3. 워밍 캐시 실행을 위한 반복 횟수를 결정한다.
     l_repeat_policy := normalize_repeat_policy(p_repeat_policy);
     l_repeats := normalize_repeat_count(l_repeat_policy);
+    l_warmup_count := CASE WHEN l_repeat_policy = 'AUTO' THEN 1 ELSE 0 END;
+    l_measurement_count := l_repeats - l_warmup_count;
+    l_bind_placeholder_count := sql_bind_placeholder_count(p_sql);
     l_run_advisor := normalize_run_advisor(p_run_advisor);
     l_sqltune_time_sec := normalize_sqltune_time_sec(p_sqltune_time_sec);
+    l_evidence_mode := UPPER(TRIM(NVL(p_result_evidence_mode, 'BOUNDED')));
+    IF l_evidence_mode NOT IN ('BOUNDED', 'FULL_RESULT') THEN
+      RAISE_APPLICATION_ERROR(-20001, 'ASTA_SOURCE: invalid result evidence mode');
+    END IF;
+    l_result_max_rows := LEAST(GREATEST(NVL(p_result_max_rows, 100000), 1), 1000000);
+    l_result_mode := detect_result_mode(p_sql);
 
     -- Reproduce the namespace used when the collected SQL was originally
     -- parsed. ALTER SESSION changes name resolution only; it grants no object
@@ -856,12 +1323,37 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
 
     -- 4. gather_plan_statistics 힌트와 실행 표식이 포함된 제한 실행 SQL을 생성한다.
     l_exec_sql := build_exec_sql(p_sql, l_run_id, l_fetch_rows);
+    l_digest_sql := build_digest_sql(p_sql, l_run_id, l_fetch_rows);
 
     -- 5. 실행한다(워밍 캐시 반복 루프).
     l_start := SYSTIMESTAMP;
     FOR i IN 1..l_repeats LOOP
+      l_output_rows := NULL;
+      l_cr_buffer_gets := NULL;
+      l_disk_reads := NULL;
+      l_elapsed_us := NULL;
       EXECUTE IMMEDIATE l_exec_sql INTO l_row_count;
+      find_cursor(l_run_id, l_sql_id, l_child_number, l_plan_hash_value);
+      IF l_sql_id IS NOT NULL THEN
+        collect_metrics(
+          l_sql_id, l_child_number,
+          l_output_rows, l_cr_buffer_gets, l_disk_reads, l_elapsed_us
+        );
+      END IF;
+      IF i > l_warmup_count THEN
+        IF NOT l_measurement_first THEN l_measurement_runs_json := l_measurement_runs_json || ','; END IF;
+        l_measurement_first := FALSE;
+        l_measurement_runs_json := l_measurement_runs_json ||
+          '{"phase":"MEASURE","status":"COMPLETED","sequence":' || TO_CHAR(i - l_warmup_count) ||
+          ',"last_elapsed_time_us":' || json_num(l_elapsed_us) ||
+          ',"last_cr_buffer_gets":' || json_num(l_cr_buffer_gets) ||
+          ',"last_disk_reads":' || json_num(l_disk_reads) || '}';
+        IF l_elapsed_us IS NOT NULL AND l_cr_buffer_gets IS NOT NULL THEN
+          l_completed_measurements := l_completed_measurements + 1;
+        END IF;
+      END IF;
     END LOOP;
+    l_measurement_runs_json := l_measurement_runs_json || ']';
     l_end := SYSTIMESTAMP;
 
     -- 경과 시간을 밀리초 단위로 계산한다(가능하면 마지막 실행, 아니면 전체 시간).
@@ -869,6 +1361,32 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
                     + EXTRACT(HOUR   FROM (l_end - l_start)) * 3600000
                     + EXTRACT(MINUTE FROM (l_end - l_start)) * 60000
                     + EXTRACT(SECOND FROM (l_end - l_start)) * 1000;
+
+    BEGIN
+      SELECT MEDIAN(elapsed_us), MEDIAN(buffer_gets), MEDIAN(disk_reads),
+             CASE WHEN MEDIAN(elapsed_us) > 0
+                  THEN ROUND((MAX(elapsed_us) - MIN(elapsed_us)) * 100 / MEDIAN(elapsed_us), 3)
+             END
+      INTO l_median_elapsed_us, l_median_buffer_gets, l_median_disk_reads, l_elapsed_noise_pct
+      FROM JSON_TABLE(l_measurement_runs_json, '$[*]'
+        COLUMNS(
+          elapsed_us NUMBER PATH '$.last_elapsed_time_us' NULL ON ERROR,
+          buffer_gets NUMBER PATH '$.last_cr_buffer_gets' NULL ON ERROR,
+          disk_reads NUMBER PATH '$.last_disk_reads' NULL ON ERROR
+        ));
+    EXCEPTION WHEN OTHERS THEN
+      l_median_elapsed_us := NULL; l_median_buffer_gets := NULL;
+      l_median_disk_reads := NULL; l_elapsed_noise_pct := NULL;
+    END;
+    IF l_warmup_count = 1 AND l_measurement_count = 3
+       AND l_completed_measurements = 3
+       AND l_elapsed_noise_pct IS NOT NULL AND l_elapsed_noise_pct <= 20 THEN
+      l_measurement_status := 'ACCEPTED';
+      l_measurement_reason := 'MEASUREMENT_ACCEPTED';
+    ELSIF l_completed_measurements = 3
+          AND l_elapsed_noise_pct IS NOT NULL AND l_elapsed_noise_pct > 20 THEN
+      l_measurement_reason := 'MEASUREMENT_NOISE_TOO_HIGH';
+    END IF;
 
     -- 6. sql_text의 ASTA_RUN_ID 표식으로 V$SQL에서 커서를 찾는다.
     find_cursor(l_run_id, l_sql_id, l_child_number, l_plan_hash_value);
@@ -893,6 +1411,47 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
       );
       l_object_info := TO_CLOB('{"status":"SKIPPED","source":"PLAN_OBJECTS","table_stats":[],"message":"Cursor not found; object metadata unavailable"}');
     END IF;
+    l_child_cursor_evidence := collect_child_cursor_evidence(
+      COALESCE(LOWER(TRIM(p_source_sql_id)), l_sql_id),
+      l_bind_placeholder_count
+    );
+    l_optimizer_intent_evidence := collect_optimizer_intent_evidence(l_sql_id, l_child_number);
+
+    -- Performance/XPLAN evidence above remains the bounded execution. Full
+    -- result evidence is a separate fail-closed pass and never overwrites the
+    -- measured cursor metrics.
+    BEGIN
+      IF l_evidence_mode = 'FULL_RESULT' THEN
+        EXECUTE IMMEDIATE build_full_count_sql(p_sql, l_run_id) INTO l_result_total_rows;
+        l_result_scope := 'FULL_RESULT';
+        IF l_result_total_rows > l_result_max_rows THEN
+          l_digest_status := 'BLOCKED';
+          l_digest_error := 'EQUIVALENCE_BUDGET_EXCEEDED';
+        ELSE
+          EXECUTE IMMEDIATE build_full_digest_sql(p_sql, l_run_id, l_result_mode)
+            INTO l_result_rows_json;
+          IF l_result_rows_json IS NULL THEN l_result_rows_json := TO_CLOB('[]'); END IF;
+          l_result_digest := ordered_result_digest(
+            l_result_rows_json, result_metadata_hash(p_sql), l_result_total_rows
+          );
+          l_digest_status := 'COMPLETED';
+          l_result_complete := 'true';
+        END IF;
+      ELSE
+        EXECUTE IMMEDIATE l_digest_sql INTO l_result_rows_json, l_result_total_rows;
+        IF l_result_rows_json IS NULL THEN l_result_rows_json := TO_CLOB('[]'); END IF;
+        l_result_digest := ordered_result_digest(
+          l_result_rows_json, result_metadata_hash(p_sql), l_result_total_rows
+        );
+        l_digest_status := 'COMPLETED';
+      END IF;
+    EXCEPTION
+      WHEN OTHERS THEN
+        l_digest_status := 'FAILED';
+        l_digest_error := SUBSTR(SQLERRM, 1, 1000);
+        l_result_digest := NULL;
+        l_result_complete := 'false';
+    END;
 
     -- 9. 선택적으로 SQL Tuning Advisor를 실행한다.
     IF l_run_advisor = 'Y' THEN
@@ -912,7 +1471,8 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
       ',"contract_version":"asta.v1"' ||
       ',"execution_boundary":"SOURCE_BASEDB_DBLINK_ONLY"' ||
       ',"guard_policy":'         || json_str(C_GUARD_POLICY)       ||
-      ',"evidence_method":"BOUNDED_COUNT_GATHER_PLAN_STATS"' ||
+      ',"evidence_method":"BOUNDED_ORDERED_JSON_GATHER_PLAN_STATS"' ||
+      ',"result_evidence_method":"FULL_RESULT_ORACLE_JSON_DIGEST_V2"' ||
       ',"metrics_source":"V$SQL_PLAN_STATISTICS_ALL_LAST"' ||
       ',"run_id":'               || json_str(l_run_id)              ||
       ',"source_sql_id":'        || json_str(LOWER(TRIM(p_source_sql_id))) ||
@@ -923,9 +1483,31 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
       ',"fetch_rows_limit":'     || json_num(l_fetch_rows)          ||
       ',"repeat_count":'         || json_num(l_repeats)             ||
       ',"repeat_policy":'        || json_str(l_repeat_policy)       ||
+      ',"warmup_count":'         || json_num(l_warmup_count)       ||
+      ',"measurement_count":'    || json_num(l_measurement_count)  ||
+      ',"completed_measurement_count":' || json_num(l_completed_measurements) ||
+      ',"measurement_status":'   || json_str(l_measurement_status) ||
+      ',"measurement_reason":'   || json_str(l_measurement_reason) ||
+      ',"median_elapsed_time_us":' || json_num(l_median_elapsed_us) ||
+      ',"median_buffer_gets":'   || json_num(l_median_buffer_gets) ||
+      ',"median_disk_reads":'    || json_num(l_median_disk_reads) ||
+      ',"elapsed_noise_pct":'    || json_num(l_elapsed_noise_pct) ||
       ',"advisor_requested":'    || CASE WHEN l_run_advisor = 'Y' THEN 'true' ELSE 'false' END ||
       ',"sqltune_time_limit_sec":' || json_num(l_sqltune_time_sec)   ||
       ',"row_count":'            || json_num(l_row_count)           ||
+      ',"result_digest":'        || json_str(l_result_digest)       ||
+      ',"result_digest_status":' || json_str(l_digest_status)       ||
+      ',"result_digest_algorithm":' || json_str(CASE WHEN l_result_scope = 'FULL_RESULT'
+        THEN 'SHA256_ORACLE_JSON_RESULT_V2' ELSE 'SHA256_CHAINED_ORDERED_JSON_V1' END) ||
+      ',"result_digest_scope":' || json_str(l_result_scope) ||
+      ',"result_digest_mode":' || json_str(l_result_mode) ||
+      ',"result_metadata_digest":' || json_str(CASE WHEN l_result_digest IS NOT NULL THEN result_metadata_hash(p_sql) END) ||
+      ',"result_total_rows":' || json_num(l_result_total_rows) ||
+      ',"result_digest_rows":'   || json_num(CASE WHEN l_digest_status = 'COMPLETED' THEN l_result_total_rows END) ||
+      ',"result_chunks_complete":' || l_result_complete ||
+      ',"result_evidence_complete":' || l_result_complete ||
+      ',"result_truncated":false' ||
+      ',"result_digest_error":'  || json_str(l_digest_error)        ||
       ',"timing_scope":"repeat_loop_total"' ||
       ',"elapsed_wall_ms":'      || json_num(ROUND(l_elapsed_ms))   ||
       ',"elapsed_wall_ms_per_exec":' || json_num(ROUND(l_elapsed_ms / l_repeats)) ||
@@ -945,6 +1527,16 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
     ELSE
       clob_app_clob(l_result, l_object_info);
     END IF;
+
+    clob_app(l_result, ',"child_cursor_evidence":');
+    clob_app_clob(l_result, NVL(l_child_cursor_evidence,
+      TO_CLOB('{"status":"BLOCKED","bind_coverage_status":"BLOCKED","bind_coverage_reason":"BIND_EVIDENCE_UNAVAILABLE"}')));
+
+    clob_app(l_result, ',"optimizer_intent_evidence":');
+    clob_app_clob(l_result, NVL(l_optimizer_intent_evidence,
+      TO_CLOB('{"status":"BLOCKED","reason":"OPTIMIZER_INTENT_EVIDENCE_UNAVAILABLE"}')));
+    clob_app(l_result, ',"measurement_runs":');
+    clob_app(l_result, l_measurement_runs_json);
 
     -- Advisor 하위 객체
     clob_app(l_result,
@@ -979,7 +1571,8 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
         ',"contract_version":"asta.v1"' ||
         ',"execution_boundary":"SOURCE_BASEDB_DBLINK_ONLY"' ||
         ',"guard_policy":' || json_str(C_GUARD_POLICY) ||
-        ',"evidence_method":"BOUNDED_COUNT_GATHER_PLAN_STATS"' ||
+        ',"evidence_method":"BOUNDED_ORDERED_JSON_GATHER_PLAN_STATS"' ||
+        ',"result_evidence_method":"FULL_RESULT_ORACLE_JSON_DIGEST_V2"' ||
         ',"metrics_source":"V$SQL_PLAN_STATISTICS_ALL_LAST"' ||
         ',"run_id":'               || json_str(p_run_id) ||
         ',"source_sql_id":'        || json_str(LOWER(TRIM(p_source_sql_id))) ||
@@ -987,7 +1580,14 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
         ',"sql_id":null,"child_number":null,"plan_hash_value":null' ||
         ',"fetch_rows_limit":null,"repeat_count":null,"repeat_policy":' ||
         json_str(SUBSTR(UPPER(TRIM(p_repeat_policy)), 1, 30)) ||
-        ',"advisor_requested":null,"sqltune_time_limit_sec":null,"row_count":null,"timing_scope":"repeat_loop_total","elapsed_wall_ms":null,"elapsed_wall_ms_per_exec":null' ||
+        ',"advisor_requested":null,"sqltune_time_limit_sec":null,"row_count":null' ||
+        ',"result_digest":null,"result_digest_status":"FAILED"' ||
+        ',"result_digest_algorithm":"SHA256_CHAINED_ORDERED_JSON_V1"' ||
+        ',"result_digest_scope":' || json_str(CASE WHEN UPPER(TRIM(p_result_evidence_mode)) = 'FULL_RESULT' THEN 'FULL_RESULT' ELSE 'BOUNDED_ORDERED_FIRST_N' END) ||
+        ',"result_digest_mode":null,"result_metadata_digest":null,"result_total_rows":null,"result_digest_rows":null' ||
+        ',"result_chunks_complete":false,"result_evidence_complete":false,"result_truncated":false' ||
+        ',"result_digest_error":' || json_str(l_error_message) ||
+        ',"timing_scope":"repeat_loop_total","elapsed_wall_ms":null,"elapsed_wall_ms_per_exec":null' ||
         ',"last_output_rows":null,"last_cr_buffer_gets":null' ||
         ',"last_disk_reads":null,"last_elapsed_time_us":null' ||
         ',"plan_text":null' ||
@@ -1006,7 +1606,9 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
     p_repeat_policy    IN VARCHAR2 DEFAULT 'AUTO',
     p_run_advisor      IN VARCHAR2 DEFAULT 'N',
     p_sqltune_time_sec IN NUMBER   DEFAULT 1800,
-    p_source_sql_id    IN VARCHAR2 DEFAULT NULL
+    p_source_sql_id    IN VARCHAR2 DEFAULT NULL,
+    p_result_evidence_mode IN VARCHAR2 DEFAULT 'BOUNDED',
+    p_result_max_rows  IN NUMBER DEFAULT 100000
   ) RETURN VARCHAR2 IS
     PRAGMA AUTONOMOUS_TRANSACTION;
     l_result CLOB;
@@ -1020,6 +1622,11 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
     l_sleep_count PLS_INTEGER := 0;
     l_advisor_fragment CLOB;
     l_source_logins VARCHAR2(30);
+    l_cleanup_status VARCHAR2(30) := 'NOT_CREATED';
+    l_cleanup_detail VARCHAR2(2000) := 'No Scheduler job was created.';
+    l_advisor_error_message VARCHAR2(2000);
+    l_outer_error_code NUMBER;
+    l_outer_error_message VARCHAR2(4000);
   BEGIN
     l_result := run_evidence(
       p_sql              => TO_CLOB(p_sql),
@@ -1028,7 +1635,9 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
       p_repeat_policy    => p_repeat_policy,
       p_run_advisor      => 'N',
       p_sqltune_time_sec => p_sqltune_time_sec,
-      p_source_sql_id    => p_source_sql_id
+      p_source_sql_id    => p_source_sql_id,
+      p_result_evidence_mode => p_result_evidence_mode,
+      p_result_max_rows  => p_result_max_rows
     );
 
     IF UPPER(NVL(p_run_advisor, 'N')) = 'Y' THEN
@@ -1102,10 +1711,13 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
             l_advisor_report := TO_CLOB('SQLTUNE_ERROR: advisor scheduler job did not finish before timeout');
           END IF;
         END IF;
+        cleanup_advisor_scheduler_job(l_job_name, l_cleanup_status, l_cleanup_detail);
         DBMS_LOB.CREATETEMPORARY(l_advisor_fragment, TRUE);
         clob_app(l_advisor_fragment, ',"advisor":{"status":' || json_str(l_advisor_status) || ',"report":');
         clob_app_json_str(l_advisor_fragment, l_advisor_report);
-        clob_app(l_advisor_fragment, '}');
+        clob_app(l_advisor_fragment,
+          ',"cleanup_status":' || json_str(l_cleanup_status) ||
+          ',"cleanup_detail":' || json_str(l_cleanup_detail) || '}');
         l_result := REPLACE(
           l_result,
           ',"advisor":{"status":"SKIPPED","report":null}',
@@ -1114,10 +1726,14 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
         l_result := REPLACE(l_result, '"advisor_requested":false', '"advisor_requested":true');
       EXCEPTION
         WHEN OTHERS THEN
+          l_advisor_error_message := SUBSTR(SQLERRM, 1, 2000);
+          cleanup_advisor_scheduler_job(l_job_name, l_cleanup_status, l_cleanup_detail);
           DBMS_LOB.CREATETEMPORARY(l_advisor_fragment, TRUE);
           clob_app(l_advisor_fragment, ',"advisor":{"status":"FAILED","report":');
-          clob_app_json_str(l_advisor_fragment, TO_CLOB('SQLTUNE_ERROR: ' || SUBSTR(SQLERRM, 1, 2000)));
-          clob_app(l_advisor_fragment, '}');
+          clob_app_json_str(l_advisor_fragment, TO_CLOB('SQLTUNE_ERROR: ' || l_advisor_error_message));
+          clob_app(l_advisor_fragment,
+            ',"cleanup_status":' || json_str(l_cleanup_status) ||
+            ',"cleanup_detail":' || json_str(l_cleanup_detail) || '}');
           l_result := REPLACE(l_result, ',"advisor":{"status":"SKIPPED","report":null}', l_advisor_fragment);
           l_result := REPLACE(l_result, '"advisor_requested":false', '"advisor_requested":true');
       END;
@@ -1132,10 +1748,16 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
            json_str(p_run_id) || ',"length":' || json_num(l_len) || '}';
   EXCEPTION
     WHEN OTHERS THEN
+      l_outer_error_code := SQLCODE;
+      l_outer_error_message := SUBSTR(SQLERRM, 1, 4000);
       ROLLBACK;
+      cleanup_advisor_scheduler_job(l_job_name, l_cleanup_status, l_cleanup_detail);
       RETURN '{"status":"FAILED","contract_version":"asta.v1","run_id":' ||
-             json_str(p_run_id) || ',"error":{"code":' || TO_CHAR(SQLCODE) ||
-             ',"message":' || json_str(SUBSTR(SQLERRM, 1, 4000)) || '}}';
+             json_str(p_run_id) ||
+             ',"advisor_job_cleanup":{"status":' || json_str(l_cleanup_status) ||
+             ',"detail":' || json_str(l_cleanup_detail) || '}' ||
+             ',"error":{"code":' || TO_CHAR(l_outer_error_code) ||
+             ',"message":' || json_str(l_outer_error_message) || '}}';
   END run_evidence_store_vc;
 
   PROCEDURE run_evidence_store_proc(
@@ -1146,6 +1768,8 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
     p_run_advisor      IN VARCHAR2 DEFAULT 'N',
     p_sqltune_time_sec IN NUMBER   DEFAULT 1800,
     p_source_sql_id    IN VARCHAR2 DEFAULT NULL,
+    p_result_evidence_mode IN VARCHAR2 DEFAULT 'BOUNDED',
+    p_result_max_rows  IN NUMBER DEFAULT 100000,
     p_status_json      OUT VARCHAR2
   ) IS
   BEGIN
@@ -1156,7 +1780,9 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
       p_repeat_policy    => p_repeat_policy,
       p_run_advisor      => p_run_advisor,
       p_sqltune_time_sec => p_sqltune_time_sec,
-      p_source_sql_id    => p_source_sql_id
+      p_source_sql_id    => p_source_sql_id,
+      p_result_evidence_mode => p_result_evidence_mode,
+      p_result_max_rows  => p_result_max_rows
     );
   END run_evidence_store_proc;
 

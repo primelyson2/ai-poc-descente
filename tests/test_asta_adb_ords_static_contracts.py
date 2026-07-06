@@ -444,8 +444,8 @@ def test_report_elapsed_judgement_and_original_rerun_xplan_wording():
     assert "l_elapsed_delta IS NOT NULL AND l_elapsed_delta < 0" in report
     assert "l_buffer_reduction_num IS NOT NULL AND l_buffer_reduction_num <= 0" in report
     assert "개선실패 - Buffer Gets와 수행시간이 모두 개선되지 않아 원본 SQL 유지 권장" in report
-    assert "WHEN l_elapsed_delta > 0 THEN '개선'" in report
-    assert "WHEN l_elapsed_delta < 0 THEN '개선실패/증가'" in report
+    assert "WHEN l_elapsed_delta > 0 THEN '빨라짐'" in report
+    assert "WHEN l_elapsed_delta < 0 THEN '느려짐'" in report
     assert "ELSE '동일'" in report
     assert "- SQL 변경 내용: " in report
     assert "- 변경 위치: " in report
@@ -832,8 +832,10 @@ def test_vector_save_metadata_and_semantic_chunks_cover_all_verdicts():
                  "$.after_elapsed_time_us", "$.before_plan_hash_value",
                  "$.after_plan_hash_value", "$.rewrite_type"]:
         assert path in vector
-    for chunk in ["STRUCTURE", "VERDICT", "ADVISOR", "FAILURE_REASON"]:
+    for chunk in ["VERIFIED_OUTCOME", "PLAN_EVIDENCE", "METRICS", "REJECTED_OBSERVATION", "REJECTION_REASON"]:
         assert f"'{chunk}'" in vector
+    assert "'POSITIVE_VERIFIED'" in vector
+    assert "$.learning_class" in vector
     assert "build_vector_metadata(" in main
     assert "p_metadata_json   => l_vector_metadata_json" in main
 

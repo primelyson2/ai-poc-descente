@@ -346,6 +346,7 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
     l_with_pos   PLS_INTEGER;
     l_start      PLS_INTEGER;
     l_comment_end PLS_INTEGER;
+    l_header     VARCHAR2(32767);
   BEGIN
     IF p_response IS NULL OR NVL(DBMS_LOB.GETLENGTH(p_response), 0) > 32767 THEN
       RETURN p_response;
@@ -363,19 +364,30 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
     -- "with" or "select". Never mistake a keyword inside that comment for
     -- the executable SQL start.
     l_comment_end := CASE WHEN SUBSTR(l_text, 1, 2) = '/*' THEN INSTR(l_text, '*/', 3) ELSE 0 END;
-    l_select_pos := REGEXP_INSTR(l_text, '(^|[[:space:]])SELECT[[:space:]]',
+    l_select_pos := REGEXP_INSTR(l_text, '(^|' || CHR(10) || ')[[:space:]]*SELECT[[:space:]]',
                                  CASE WHEN l_comment_end > 0 THEN l_comment_end + 2 ELSE 1 END,
                                  1, 0, 'i');
-    l_with_pos := REGEXP_INSTR(l_text, '(^|[[:space:]])WITH[[:space:]]',
+    l_with_pos := REGEXP_INSTR(l_text, '(^|' || CHR(10) || ')[[:space:]]*WITH[[:space:]]',
                                CASE WHEN l_comment_end > 0 THEN l_comment_end + 2 ELSE 1 END,
                                1, 0, 'i');
+    IF l_select_pos = 0 AND l_with_pos = 0 THEN
+      l_select_pos := REGEXP_INSTR(l_text, '(^|[[:space:]])SELECT[[:space:]]',
+                                   CASE WHEN l_comment_end > 0 THEN l_comment_end + 2 ELSE 1 END,
+                                   1, 0, 'i');
+      l_with_pos := REGEXP_INSTR(l_text, '(^|[[:space:]])WITH[[:space:]]',
+                                 CASE WHEN l_comment_end > 0 THEN l_comment_end + 2 ELSE 1 END,
+                                 1, 0, 'i');
+    END IF;
     IF l_with_pos > 0 AND (l_select_pos = 0 OR l_with_pos < l_select_pos) THEN
       l_start := l_with_pos;
     ELSE
       l_start := l_select_pos;
     END IF;
     IF l_comment_end > 0 AND l_start > l_comment_end THEN
-      l_start := 1; -- preserve the validated leading change annotation
+      -- preserve the validated leading change annotation, but drop non-SQL prose between the validated header and executable SQL.
+      l_header := RTRIM(SUBSTR(l_text, 1, l_comment_end));
+      l_text := l_header || CHR(10) || LTRIM(SUBSTR(l_text, l_start));
+      l_start := 1;
     END IF;
     IF l_start > 1 THEN l_text := LTRIM(SUBSTR(l_text, l_start)); END IF;
     IF SUBSTR(RTRIM(l_text), -1) = ';' THEN
@@ -1134,6 +1146,7 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
     clob_app(l_prompt, '### Vector 유사 사례' || CHR(10));
     clob_app(l_prompt, '### Oracle SQL Tuning Advisor 요약' || CHR(10));
     clob_app(l_prompt, '### DBA 검토 사항' || CHR(10));
+    clob_app(l_prompt, 'DBA 검토 사항 must not be generic boilerplate. Use only supplied advisor status/recommendation type, comparison verdict/equivalence/actual metrics, and object stats/index evidence. For each recommended physical change state the prechecks, impact scope, DBA approval, test, and rollback conditions. State that automatic application was not performed. If evidence is absent, say it is unavailable; do not invent it. Do not dump the raw Advisor report.' || CHR(10));
     clob_app(l_prompt, '## 작업 수행 이력' || CHR(10));
     clob_app(l_prompt, 'Use actual before/after SQL, XPLAN, metrics, object metadata, vector/advisor status, and progress details when present. Do not invent missing runtime metrics. If candidate SQL was rejected or equivalence failed, say 후보 SQL rejected/원본 SQL 유지.' || CHR(10));
     clob_app(l_prompt, 'If compact JSON includes user_notes, include subsection ### 사용자 참고사항 반영 and explain whether/how the notes affected the tuning recommendation. If no user_notes were supplied, say 별도 참고사항 없음.' || CHR(10));

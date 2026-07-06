@@ -401,6 +401,58 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
     l_after_reads      NUMBER;
     l_before_elapsed   NUMBER;
     l_after_elapsed    NUMBER;
+    l_before_digest    VARCHAR2(64);
+    l_after_digest     VARCHAR2(64);
+    l_before_digest_status VARCHAR2(30);
+    l_after_digest_status  VARCHAR2(30);
+    l_before_digest_scope VARCHAR2(30);
+    l_after_digest_scope  VARCHAR2(30);
+    l_before_digest_mode VARCHAR2(30);
+    l_after_digest_mode  VARCHAR2(30);
+    l_before_metadata_digest VARCHAR2(64);
+    l_after_metadata_digest VARCHAR2(64);
+    l_before_total_rows NUMBER;
+    l_after_total_rows NUMBER;
+    l_before_digest_rows NUMBER;
+    l_after_digest_rows NUMBER;
+    l_before_complete VARCHAR2(10);
+    l_after_complete VARCHAR2(10);
+    l_before_bind_coverage_status VARCHAR2(30);
+    l_after_bind_coverage_status VARCHAR2(30);
+    l_before_bind_coverage_reason VARCHAR2(100);
+    l_after_bind_coverage_reason VARCHAR2(100);
+    l_bind_coverage_status VARCHAR2(30);
+    l_bind_coverage_reason VARCHAR2(100);
+    l_optimizer_intent_status VARCHAR2(30);
+    l_optimizer_intent_reason VARCHAR2(100);
+    l_intent_object VARCHAR2(128);
+    l_before_target_starts NUMBER;
+    l_after_target_starts NUMBER;
+    l_before_target_buffers NUMBER;
+    l_after_target_buffers NUMBER;
+    l_after_anti_semi VARCHAR2(10);
+    l_before_plan_hash NUMBER;
+    l_after_plan_hash NUMBER;
+    l_before_measurement_status VARCHAR2(30);
+    l_after_measurement_status VARCHAR2(30);
+    l_before_measurement_reason VARCHAR2(100);
+    l_after_measurement_reason VARCHAR2(100);
+    l_before_measurement_count NUMBER;
+    l_after_measurement_count NUMBER;
+    l_before_median_elapsed NUMBER;
+    l_after_median_elapsed NUMBER;
+    l_before_median_gets NUMBER;
+    l_after_median_gets NUMBER;
+    l_before_median_reads NUMBER;
+    l_after_median_reads NUMBER;
+    l_before_noise_pct NUMBER;
+    l_after_noise_pct NUMBER;
+    l_before_repeat_count NUMBER;
+    l_after_repeat_count NUMBER;
+    l_before_elapsed_wall_ms NUMBER;
+    l_after_elapsed_wall_ms NUMBER;
+    l_measurement_status VARCHAR2(30);
+    l_measurement_reason VARCHAR2(100);
     l_row_match        VARCHAR2(5);
     l_output_match     VARCHAR2(5);
     l_gets_delta       NUMBER;
@@ -444,7 +496,27 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
            JSON_VALUE(p_before_json, '$.last_disk_reads' RETURNING NUMBER NULL ON ERROR),
            JSON_VALUE(p_after_json, '$.last_disk_reads' RETURNING NUMBER NULL ON ERROR),
            JSON_VALUE(p_before_json, '$.last_elapsed_time_us' RETURNING NUMBER NULL ON ERROR),
-           JSON_VALUE(p_after_json, '$.last_elapsed_time_us' RETURNING NUMBER NULL ON ERROR)
+           JSON_VALUE(p_after_json, '$.last_elapsed_time_us' RETURNING NUMBER NULL ON ERROR),
+           JSON_VALUE(p_before_json, '$.result_digest' RETURNING VARCHAR2(64) NULL ON ERROR),
+           JSON_VALUE(p_after_json, '$.result_digest' RETURNING VARCHAR2(64) NULL ON ERROR),
+           JSON_VALUE(p_before_json, '$.result_digest_status' RETURNING VARCHAR2(30) NULL ON ERROR),
+           JSON_VALUE(p_after_json, '$.result_digest_status' RETURNING VARCHAR2(30) NULL ON ERROR),
+           JSON_VALUE(p_before_json, '$.result_digest_scope' RETURNING VARCHAR2(30) NULL ON ERROR),
+           JSON_VALUE(p_after_json, '$.result_digest_scope' RETURNING VARCHAR2(30) NULL ON ERROR),
+           JSON_VALUE(p_before_json, '$.result_digest_mode' RETURNING VARCHAR2(30) NULL ON ERROR),
+           JSON_VALUE(p_after_json, '$.result_digest_mode' RETURNING VARCHAR2(30) NULL ON ERROR),
+           JSON_VALUE(p_before_json, '$.result_metadata_digest' RETURNING VARCHAR2(64) NULL ON ERROR),
+           JSON_VALUE(p_after_json, '$.result_metadata_digest' RETURNING VARCHAR2(64) NULL ON ERROR),
+           JSON_VALUE(p_before_json, '$.result_total_rows' RETURNING NUMBER NULL ON ERROR),
+           JSON_VALUE(p_after_json, '$.result_total_rows' RETURNING NUMBER NULL ON ERROR),
+           JSON_VALUE(p_before_json, '$.result_digest_rows' RETURNING NUMBER NULL ON ERROR),
+           JSON_VALUE(p_after_json, '$.result_digest_rows' RETURNING NUMBER NULL ON ERROR),
+           JSON_VALUE(p_before_json, '$.result_evidence_complete' RETURNING VARCHAR2(10) NULL ON ERROR),
+           JSON_VALUE(p_after_json, '$.result_evidence_complete' RETURNING VARCHAR2(10) NULL ON ERROR),
+           JSON_VALUE(p_before_json, '$.child_cursor_evidence.bind_coverage_status' RETURNING VARCHAR2(30) NULL ON ERROR),
+           JSON_VALUE(p_after_json, '$.child_cursor_evidence.bind_coverage_status' RETURNING VARCHAR2(30) NULL ON ERROR),
+           JSON_VALUE(p_before_json, '$.child_cursor_evidence.bind_coverage_reason' RETURNING VARCHAR2(100) NULL ON ERROR),
+           JSON_VALUE(p_after_json, '$.child_cursor_evidence.bind_coverage_reason' RETURNING VARCHAR2(100) NULL ON ERROR)
     INTO   l_before_status,
            l_after_status,
            l_before_error,
@@ -458,8 +530,193 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
            l_before_reads,
            l_after_reads,
            l_before_elapsed,
-           l_after_elapsed
+           l_after_elapsed,
+           l_before_digest,
+           l_after_digest,
+           l_before_digest_status,
+           l_after_digest_status,
+           l_before_digest_scope,
+           l_after_digest_scope,
+           l_before_digest_mode,
+           l_after_digest_mode,
+           l_before_metadata_digest,
+           l_after_metadata_digest,
+           l_before_total_rows,
+           l_after_total_rows,
+           l_before_digest_rows,
+           l_after_digest_rows,
+           l_before_complete,
+           l_after_complete,
+           l_before_bind_coverage_status,
+           l_after_bind_coverage_status,
+           l_before_bind_coverage_reason,
+           l_after_bind_coverage_reason
     FROM   dual;
+
+    IF UPPER(NVL(l_before_bind_coverage_status, 'BLOCKED')) = 'NOT_APPLICABLE'
+       AND UPPER(NVL(l_after_bind_coverage_status, 'BLOCKED')) = 'NOT_APPLICABLE' THEN
+      l_bind_coverage_status := 'NOT_APPLICABLE';
+      l_bind_coverage_reason := 'BIND_NOT_APPLICABLE';
+    ELSIF UPPER(NVL(l_before_bind_coverage_status, 'BLOCKED')) = 'VERIFIED'
+          AND UPPER(NVL(l_after_bind_coverage_status, 'BLOCKED')) = 'VERIFIED' THEN
+      l_bind_coverage_status := 'VERIFIED';
+      l_bind_coverage_reason := 'REPRESENTATIVE_BIND_COVERAGE_VERIFIED';
+    ELSE
+      l_bind_coverage_status := 'BLOCKED';
+      l_bind_coverage_reason := COALESCE(
+        NULLIF(l_after_bind_coverage_reason, 'BIND_NOT_APPLICABLE'),
+        NULLIF(l_before_bind_coverage_reason, 'BIND_NOT_APPLICABLE'),
+        'BIND_COVERAGE_INSUFFICIENT'
+      );
+    END IF;
+
+    SELECT JSON_VALUE(p_before_json, '$.measurement_status' RETURNING VARCHAR2(30) NULL ON ERROR),
+           JSON_VALUE(p_after_json, '$.measurement_status' RETURNING VARCHAR2(30) NULL ON ERROR),
+           JSON_VALUE(p_before_json, '$.measurement_reason' RETURNING VARCHAR2(100) NULL ON ERROR),
+           JSON_VALUE(p_after_json, '$.measurement_reason' RETURNING VARCHAR2(100) NULL ON ERROR),
+           JSON_VALUE(p_before_json, '$.measurement_count' RETURNING NUMBER NULL ON ERROR),
+           JSON_VALUE(p_after_json, '$.measurement_count' RETURNING NUMBER NULL ON ERROR),
+           JSON_VALUE(p_before_json, '$.median_elapsed_time_us' RETURNING NUMBER NULL ON ERROR),
+           JSON_VALUE(p_after_json, '$.median_elapsed_time_us' RETURNING NUMBER NULL ON ERROR),
+           JSON_VALUE(p_before_json, '$.median_buffer_gets' RETURNING NUMBER NULL ON ERROR),
+           JSON_VALUE(p_after_json, '$.median_buffer_gets' RETURNING NUMBER NULL ON ERROR),
+           JSON_VALUE(p_before_json, '$.median_disk_reads' RETURNING NUMBER NULL ON ERROR),
+           JSON_VALUE(p_after_json, '$.median_disk_reads' RETURNING NUMBER NULL ON ERROR),
+           JSON_VALUE(p_before_json, '$.elapsed_noise_pct' RETURNING NUMBER NULL ON ERROR),
+           JSON_VALUE(p_after_json, '$.elapsed_noise_pct' RETURNING NUMBER NULL ON ERROR),
+           JSON_VALUE(p_before_json, '$.repeat_count' RETURNING NUMBER NULL ON ERROR),
+           JSON_VALUE(p_after_json, '$.repeat_count' RETURNING NUMBER NULL ON ERROR),
+           JSON_VALUE(p_before_json, '$.elapsed_wall_ms' RETURNING NUMBER NULL ON ERROR),
+           JSON_VALUE(p_after_json, '$.elapsed_wall_ms' RETURNING NUMBER NULL ON ERROR)
+    INTO   l_before_measurement_status, l_after_measurement_status,
+           l_before_measurement_reason, l_after_measurement_reason,
+           l_before_measurement_count, l_after_measurement_count,
+           l_before_median_elapsed, l_after_median_elapsed,
+           l_before_median_gets, l_after_median_gets,
+           l_before_median_reads, l_after_median_reads,
+           l_before_noise_pct, l_after_noise_pct,
+           l_before_repeat_count, l_after_repeat_count,
+           l_before_elapsed_wall_ms, l_after_elapsed_wall_ms
+    FROM dual;
+
+    l_intent_object := JSON_VALUE(
+      p_before_json,
+      '$.optimizer_intent_evidence.dominant_repeated_object' RETURNING VARCHAR2(128) NULL ON ERROR
+    );
+    l_before_target_starts := JSON_VALUE(
+      p_before_json,
+      '$.optimizer_intent_evidence.dominant_repeated_starts' RETURNING NUMBER NULL ON ERROR
+    );
+    l_after_anti_semi := JSON_VALUE(
+      p_after_json,
+      '$.optimizer_intent_evidence.anti_semi_present' RETURNING VARCHAR2(10) NULL ON ERROR
+    );
+    l_before_plan_hash := JSON_VALUE(p_before_json, '$.plan_hash_value' RETURNING NUMBER NULL ON ERROR);
+    l_after_plan_hash := JSON_VALUE(p_after_json, '$.plan_hash_value' RETURNING NUMBER NULL ON ERROR);
+    IF l_intent_object IS NULL THEN
+      BEGIN
+        SELECT b.object_name, b.starts, b.buffers
+        INTO l_intent_object, l_before_target_starts, l_before_target_buffers
+        FROM JSON_TABLE(p_before_json, '$.optimizer_intent_evidence.nodes[*]'
+          COLUMNS(
+            object_name VARCHAR2(128) PATH '$.object_name' NULL ON ERROR,
+            starts NUMBER PATH '$.starts' NULL ON ERROR,
+            buffers NUMBER PATH '$.buffers' NULL ON ERROR
+          )) b
+        JOIN JSON_TABLE(p_after_json, '$.optimizer_intent_evidence.nodes[*]'
+          COLUMNS(object_name VARCHAR2(128) PATH '$.object_name' NULL ON ERROR)) a
+          ON UPPER(a.object_name) = UPPER(b.object_name)
+        WHERE b.object_name IS NOT NULL AND b.buffers IS NOT NULL
+        ORDER BY b.buffers DESC
+        FETCH FIRST 1 ROW ONLY;
+      EXCEPTION WHEN OTHERS THEN
+        BEGIN
+          SELECT object_name, starts, buffers
+          INTO l_intent_object, l_before_target_starts, l_before_target_buffers
+          FROM JSON_TABLE(p_before_json, '$.optimizer_intent_evidence.nodes[*]'
+            COLUMNS(
+              object_name VARCHAR2(128) PATH '$.object_name' NULL ON ERROR,
+              starts NUMBER PATH '$.starts' NULL ON ERROR,
+              buffers NUMBER PATH '$.buffers' NULL ON ERROR
+            ))
+          WHERE object_name IS NOT NULL AND buffers IS NOT NULL
+          ORDER BY buffers DESC
+          FETCH FIRST 1 ROW ONLY;
+        EXCEPTION WHEN OTHERS THEN NULL;
+        END;
+      END;
+    ELSE
+      SELECT MAX(buffers)
+      INTO l_before_target_buffers
+      FROM JSON_TABLE(p_before_json, '$.optimizer_intent_evidence.nodes[*]'
+        COLUMNS(
+          object_name VARCHAR2(128) PATH '$.object_name' NULL ON ERROR,
+          buffers NUMBER PATH '$.buffers' NULL ON ERROR
+        ))
+      WHERE UPPER(object_name) = UPPER(l_intent_object);
+    END IF;
+    BEGIN
+      SELECT MAX(starts), MAX(buffers)
+      INTO l_after_target_starts, l_after_target_buffers
+      FROM JSON_TABLE(p_after_json, '$.optimizer_intent_evidence.nodes[*]'
+        COLUMNS(
+          object_name VARCHAR2(128) PATH '$.object_name' NULL ON ERROR,
+          starts NUMBER PATH '$.starts' NULL ON ERROR,
+          buffers NUMBER PATH '$.buffers' NULL ON ERROR
+        ))
+      WHERE UPPER(object_name) = UPPER(l_intent_object);
+    EXCEPTION WHEN OTHERS THEN l_after_target_starts := NULL;
+    END;
+    IF l_intent_object IS NOT NULL
+       AND (
+         (l_before_target_starts > 1 AND l_after_target_starts IS NOT NULL AND l_after_target_starts <= 1)
+         OR
+         (l_before_target_buffers > 0 AND l_after_target_buffers IS NOT NULL
+          AND l_after_target_buffers <= l_before_target_buffers * 0.8)
+         OR
+         (l_before_target_buffers > 0 AND l_after_target_buffers IS NULL
+          AND l_before_gets > 0 AND l_after_gets <= l_before_gets * 0.8)
+         OR
+         (l_before_plan_hash IS NOT NULL AND l_after_plan_hash IS NOT NULL
+          AND l_before_plan_hash <> l_after_plan_hash
+          AND l_before_gets > 0 AND l_after_gets <= l_before_gets * 0.8)
+       ) THEN
+      l_optimizer_intent_status := 'VERIFIED';
+      l_optimizer_intent_reason := CASE
+        WHEN LOWER(NVL(l_after_anti_semi, 'false')) = 'true'
+          THEN 'OPTIMIZER_INTENT_VERIFIED'
+        WHEN l_before_target_starts > 1 AND l_after_target_starts <= 1
+          THEN 'REPEATED_PRODUCER_ELIMINATED'
+        WHEN l_after_target_buffers IS NULL
+          THEN 'TARGET_OPERATION_ELIMINATED'
+        WHEN l_before_plan_hash <> l_after_plan_hash
+          THEN 'PLAN_SHAPE_BUFFER_REDUCTION_VERIFIED'
+        ELSE 'TARGET_ACCESS_PATH_BUFFERS_REDUCED'
+      END;
+    ELSE
+      l_optimizer_intent_status := 'BLOCKED';
+      l_optimizer_intent_reason := 'OPTIMIZER_INTENT_EVIDENCE_INCOMPLETE';
+    END IF;
+
+    IF UPPER(NVL(l_before_measurement_status, 'BLOCKED')) = 'ACCEPTED'
+       AND UPPER(NVL(l_after_measurement_status, 'BLOCKED')) = 'ACCEPTED'
+       AND l_before_measurement_count = 3 AND l_after_measurement_count = 3 THEN
+      l_measurement_status := 'ACCEPTED';
+      l_measurement_reason := 'MEASUREMENT_ACCEPTED';
+      l_before_elapsed := l_before_median_elapsed;
+      l_after_elapsed := l_after_median_elapsed;
+      l_before_gets := l_before_median_gets;
+      l_after_gets := l_after_median_gets;
+      l_before_reads := l_before_median_reads;
+      l_after_reads := l_after_median_reads;
+    ELSE
+      l_measurement_status := 'BLOCKED';
+      l_measurement_reason := COALESCE(
+        NULLIF(l_after_measurement_reason, 'MEASUREMENT_ACCEPTED'),
+        NULLIF(l_before_measurement_reason, 'MEASUREMENT_ACCEPTED'),
+        'MEASUREMENT_EVIDENCE_INCOMPLETE'
+      );
+    END IF;
 
     IF UPPER(NVL(l_before_status, 'COMPLETED')) = 'FAILED'
        OR UPPER(NVL(l_after_status, 'COMPLETED')) = 'FAILED'
@@ -503,30 +760,58 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
     END;
     l_after_under_1s := CASE WHEN l_after_elapsed IS NOT NULL AND l_after_elapsed <= 1000000 THEN 'true' ELSE 'false' END;
     l_latency_risk := CASE
+      WHEN l_after_elapsed > 3000000 THEN 'HIGH'
       WHEN l_after_elapsed <= l_before_elapsed THEN 'LOW'
       WHEN l_after_elapsed <= 1000000 OR (l_after_elapsed - l_before_elapsed) <= 300000 THEN 'LIMITED'
       ELSE 'HIGH'
     END;
 
-    IF l_row_match = 'false' OR l_output_match = 'false' THEN
+    IF l_optimizer_intent_status <> 'VERIFIED' THEN
+      l_verdict := 'INSUFFICIENT_EVIDENCE'; l_verdict_reason := l_optimizer_intent_reason; l_equivalence := 'UNKNOWN';
+    ELSIF l_before_digest_scope <> 'FULL_RESULT' OR l_after_digest_scope <> 'FULL_RESULT' THEN
+      l_verdict := 'INSUFFICIENT_EVIDENCE'; l_verdict_reason := 'FULL_RESULT_EVIDENCE_REQUIRED'; l_equivalence := 'UNKNOWN';
+    ELSIF l_before_digest_mode IS NULL OR l_after_digest_mode IS NULL OR l_before_digest_mode <> l_after_digest_mode THEN
+      l_verdict := 'INSUFFICIENT_EVIDENCE'; l_verdict_reason := 'RESULT_DIGEST_MODE_MISMATCH'; l_equivalence := 'UNKNOWN';
+    ELSIF l_before_metadata_digest IS NULL OR l_after_metadata_digest IS NULL
+          OR l_before_metadata_digest <> l_after_metadata_digest THEN
+      l_verdict := 'NON_EQUIVALENT'; l_verdict_reason := 'RESULT_METADATA_MISMATCH'; l_equivalence := 'NON_EQUIVALENT';
+    ELSIF LOWER(NVL(l_before_complete, 'false')) <> 'true'
+          OR LOWER(NVL(l_after_complete, 'false')) <> 'true'
+          OR l_before_total_rows IS NULL OR l_after_total_rows IS NULL
+          OR l_before_digest_rows <> l_before_total_rows
+          OR l_after_digest_rows <> l_after_total_rows THEN
+      l_verdict := 'INSUFFICIENT_EVIDENCE'; l_verdict_reason := 'RESULT_EVIDENCE_INCOMPLETE'; l_equivalence := 'UNKNOWN';
+    ELSIF UPPER(NVL(l_before_digest_status, 'MISSING')) <> 'COMPLETED'
+       OR UPPER(NVL(l_after_digest_status, 'MISSING')) <> 'COMPLETED'
+       OR l_before_digest IS NULL OR l_after_digest IS NULL THEN
+      l_verdict := 'INSUFFICIENT_EVIDENCE'; l_verdict_reason := 'RESULT_DIGEST_REQUIRED'; l_equivalence := 'UNKNOWN';
+    ELSIF l_before_digest <> l_after_digest THEN
+      l_verdict := 'NON_EQUIVALENT'; l_verdict_reason := 'RESULT_DIGEST_MISMATCH'; l_equivalence := 'NON_EQUIVALENT';
+    ELSIF l_row_match = 'false' OR l_output_match = 'false' THEN
       l_verdict := 'NON_EQUIVALENT'; l_verdict_reason := 'Result equivalence signals differ'; l_equivalence := 'NON_EQUIVALENT';
     ELSIF l_row_match = 'null' OR l_output_match = 'null' OR l_before_elapsed IS NULL OR l_after_elapsed IS NULL THEN
       l_verdict := 'INSUFFICIENT_EVIDENCE'; l_verdict_reason := 'Required comparison evidence is missing'; l_equivalence := 'UNKNOWN';
+    ELSIF UPPER(NVL(l_bind_coverage_status, 'BLOCKED')) NOT IN ('VERIFIED', 'NOT_APPLICABLE') THEN
+      l_verdict := 'INSUFFICIENT_EVIDENCE'; l_verdict_reason := NVL(l_bind_coverage_reason, 'BIND_COVERAGE_INSUFFICIENT'); l_equivalence := 'VERIFIED';
+    ELSIF l_measurement_status <> 'ACCEPTED' THEN
+      l_verdict := 'INSUFFICIENT_EVIDENCE'; l_verdict_reason := l_measurement_reason; l_equivalence := 'VERIFIED';
     ELSIF l_workload_type = 'BATCH' AND l_after_elapsed >= l_before_elapsed THEN
-      l_verdict := 'NOT_IMPROVED'; l_verdict_reason := 'BATCH_ELAPSED_TIME_NOT_IMPROVED'; l_equivalence := 'EQUIVALENT';
+      l_verdict := 'NOT_IMPROVED'; l_verdict_reason := 'BATCH_ELAPSED_TIME_NOT_IMPROVED'; l_equivalence := 'VERIFIED';
     ELSIF l_workload_type = 'BATCH' THEN
-      l_verdict := 'IMPROVED'; l_verdict_reason := 'BATCH_ELAPSED_TIME_IMPROVED'; l_equivalence := 'EQUIVALENT';
+      l_verdict := 'IMPROVED'; l_verdict_reason := 'BATCH_ELAPSED_TIME_IMPROVED'; l_equivalence := 'VERIFIED';
     ELSIF l_before_gets IS NULL OR l_after_gets IS NULL OR l_before_gets = 0 THEN
       l_verdict := 'INSUFFICIENT_EVIDENCE'; l_verdict_reason := 'OLTP buffer gets evidence is missing'; l_equivalence := 'UNKNOWN';
+    ELSIF l_after_elapsed > 3000000 THEN
+      l_verdict := 'NOT_IMPROVED'; l_verdict_reason := 'OLTP_LATENCY_TARGET_NOT_MET'; l_equivalence := 'VERIFIED';
     ELSIF l_after_elapsed <= l_before_elapsed AND l_gets_pct >= 5 THEN
-      l_verdict := 'IMPROVED'; l_verdict_reason := 'OLTP_BUFFER_READS_IMPROVED'; l_equivalence := 'EQUIVALENT';
+      l_verdict := 'IMPROVED'; l_verdict_reason := 'OLTP_BUFFER_READS_IMPROVED'; l_equivalence := 'VERIFIED';
     ELSIF l_gets_pct >= 20 AND l_after_elapsed > l_before_elapsed
           AND (l_after_elapsed <= 1000000 OR (l_after_elapsed - l_before_elapsed) <= 300000) THEN
-      l_verdict := 'IMPROVED'; l_verdict_reason := 'OLTP_BUFFER_READS_MEANINGFUL_IMPROVEMENT'; l_equivalence := 'EQUIVALENT';
+      l_verdict := 'IMPROVED'; l_verdict_reason := 'OLTP_BUFFER_READS_MEANINGFUL_IMPROVEMENT'; l_equivalence := 'VERIFIED';
     ELSIF l_gets_pct >= 20 AND l_after_elapsed > l_before_elapsed THEN
-      l_verdict := 'NOT_IMPROVED'; l_verdict_reason := 'OLTP_BUFFER_READS_IMPROVED_LATENCY_TRADEOFF_TOO_LARGE'; l_equivalence := 'EQUIVALENT';
+      l_verdict := 'NOT_IMPROVED'; l_verdict_reason := 'OLTP_BUFFER_READS_IMPROVED_LATENCY_TRADEOFF_TOO_LARGE'; l_equivalence := 'VERIFIED';
     ELSE
-      l_verdict := 'NOT_IMPROVED'; l_verdict_reason := 'OLTP_BUFFER_READS_NOT_IMPROVED'; l_equivalence := 'EQUIVALENT';
+      l_verdict := 'NOT_IMPROVED'; l_verdict_reason := 'OLTP_BUFFER_READS_NOT_IMPROVED'; l_equivalence := 'VERIFIED';
     END IF;
     l_retain_original := CASE WHEN l_verdict = 'IMPROVED' THEN 'false' ELSE 'true' END;
 
@@ -538,6 +823,28 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
       ',"optimization_goal":' || json_str(l_optimization_goal) ||
       ',"verdict_reason":' || json_str(l_verdict_reason) ||
       ',"equivalence_status":' || json_str(l_equivalence) ||
+      ',"equivalence_reason":' || json_str(CASE WHEN l_equivalence = 'VERIFIED' THEN 'RESULT_EQUIVALENCE_VERIFIED' ELSE l_verdict_reason END) ||
+      ',"equivalence_strength":' || json_str(CASE WHEN l_equivalence = 'VERIFIED' THEN 'FULL_RESULT_DIGEST' ELSE 'NONE' END) ||
+      ',"optimizer_intent_status":' || json_str(l_optimizer_intent_status) ||
+      ',"optimizer_intent_reason":' || json_str(l_optimizer_intent_reason) ||
+      ',"optimizer_intent_object":' || json_str(l_intent_object) ||
+      ',"producer_starts_before":' || json_num(l_before_target_starts) ||
+      ',"producer_starts_after":' || json_num(l_after_target_starts) ||
+      ',"result_digest_scope":' || json_str(l_after_digest_scope) ||
+      ',"result_digest_mode":' || json_str(l_after_digest_mode) ||
+      ',"bind_stability_status":' || json_str(UPPER(NVL(l_bind_coverage_status, 'BLOCKED'))) ||
+      ',"bind_stability_reason":' || json_str(NVL(l_bind_coverage_reason, 'BIND_COVERAGE_INSUFFICIENT')) ||
+      ',"all_representative_binds_passed":' || CASE WHEN UPPER(NVL(l_bind_coverage_status, 'BLOCKED')) IN ('VERIFIED', 'NOT_APPLICABLE') THEN 'true' ELSE 'false' END ||
+      ',"measurement_status":' || json_str(l_measurement_status) ||
+      ',"measurement_reason":' || json_str(l_measurement_reason) ||
+      ',"measurement_count":' || json_num(LEAST(l_before_measurement_count, l_after_measurement_count)) ||
+      ',"before_median_elapsed_us":' || json_num(l_before_median_elapsed) ||
+      ',"after_median_elapsed_us":' || json_num(l_after_median_elapsed) ||
+      ',"before_median_buffer_gets":' || json_num(l_before_median_gets) ||
+      ',"after_median_buffer_gets":' || json_num(l_after_median_gets) ||
+      ',"before_elapsed_noise_pct":' || json_num(l_before_noise_pct) ||
+      ',"after_elapsed_noise_pct":' || json_num(l_after_noise_pct) ||
+      ',"noise_pct":' || json_num(GREATEST(l_before_noise_pct, l_after_noise_pct)) ||
       ',"retain_original_sql":' || l_retain_original ||
       ',"row_count_matches":'          || l_row_match ||
       ',"output_rows_match":'          || l_output_match ||
@@ -545,6 +852,9 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
       ',"after_row_count":'            || json_num(l_after_rows) ||
       ',"before_output_rows":'         || json_num(l_before_output) ||
       ',"after_output_rows":'          || json_num(l_after_output) ||
+      ',"before_result_digest":'       || json_str(l_before_digest) ||
+      ',"after_result_digest":'        || json_str(l_after_digest) ||
+      ',"result_digest_matches":'      || CASE WHEN l_before_digest IS NOT NULL AND l_before_digest = l_after_digest THEN 'true' ELSE 'false' END ||
       ',"before_buffer_gets":'         || json_num(l_before_gets) ||
       ',"after_buffer_gets":'          || json_num(l_after_gets) ||
       ',"buffer_gets_delta":'          || json_num(l_gets_delta) ||
@@ -557,6 +867,8 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
       ',"elapsed_time_us_delta":'      || json_num(l_elapsed_delta) ||
       ',"elapsed_delta_us":'           || json_num(l_elapsed_increase) ||
       ',"after_elapsed_under_1s":'      || l_after_under_1s ||
+      ',"oltp_latency_target_us":3000000' ||
+      ',"oltp_latency_target_met":' || CASE WHEN l_after_elapsed IS NOT NULL AND l_after_elapsed <= 3000000 THEN 'true' ELSE 'false' END ||
       ',"user_perceptible_latency_risk":' || json_str(l_latency_risk) ||
       '}'
     );
@@ -593,10 +905,26 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
     l_inline_summary := inline_change_summary(p_llm_json);
     SELECT JSON_OBJECT(
       'verdict' VALUE JSON_VALUE(p_comparison_json, '$.verdict' NULL ON ERROR),
+      'learning_class' VALUE CASE
+        WHEN JSON_VALUE(p_comparison_json, '$.verdict' RETURNING VARCHAR2(30) NULL ON ERROR) = 'IMPROVED'
+         AND JSON_VALUE(p_comparison_json, '$.optimizer_intent_status' RETURNING VARCHAR2(30) NULL ON ERROR) = 'VERIFIED'
+         AND JSON_VALUE(p_comparison_json, '$.result_digest_scope' RETURNING VARCHAR2(30) NULL ON ERROR) = 'FULL_RESULT'
+         AND JSON_VALUE(p_comparison_json, '$.equivalence_status' RETURNING VARCHAR2(30) NULL ON ERROR) = 'VERIFIED'
+         AND JSON_VALUE(p_comparison_json, '$.bind_stability_status' RETURNING VARCHAR2(30) NULL ON ERROR) IN ('VERIFIED', 'NOT_APPLICABLE')
+         AND JSON_VALUE(p_comparison_json, '$.all_representative_binds_passed' RETURNING VARCHAR2(10) NULL ON ERROR) = 'true'
+         AND JSON_VALUE(p_comparison_json, '$.measurement_status' RETURNING VARCHAR2(30) NULL ON ERROR) = 'ACCEPTED'
+        THEN 'POSITIVE_VERIFIED'
+        ELSE 'REJECTED_OBSERVATION'
+      END,
       'workload_type' VALUE JSON_VALUE(p_comparison_json, '$.workload_type' NULL ON ERROR),
       'primary_metric' VALUE JSON_VALUE(p_comparison_json, '$.primary_metric' NULL ON ERROR),
       'verdict_reason' VALUE JSON_VALUE(p_comparison_json, '$.verdict_reason' NULL ON ERROR),
       'equivalence_status' VALUE JSON_VALUE(p_comparison_json, '$.equivalence_status' NULL ON ERROR),
+      'optimizer_intent_status' VALUE JSON_VALUE(p_comparison_json, '$.optimizer_intent_status' NULL ON ERROR),
+      'result_digest_scope' VALUE JSON_VALUE(p_comparison_json, '$.result_digest_scope' NULL ON ERROR),
+      'bind_stability_status' VALUE JSON_VALUE(p_comparison_json, '$.bind_stability_status' NULL ON ERROR),
+      'all_representative_binds_passed' VALUE JSON_VALUE(p_comparison_json, '$.all_representative_binds_passed' NULL ON ERROR),
+      'measurement_status' VALUE JSON_VALUE(p_comparison_json, '$.measurement_status' NULL ON ERROR),
       'before_buffer_gets' VALUE JSON_VALUE(p_comparison_json, '$.before_buffer_gets' RETURNING NUMBER NULL ON ERROR),
       'after_buffer_gets' VALUE JSON_VALUE(p_comparison_json, '$.after_buffer_gets' RETURNING NUMBER NULL ON ERROR),
       'before_elapsed_time_us' VALUE JSON_VALUE(p_comparison_json, '$.before_elapsed_time_us' RETURNING NUMBER NULL ON ERROR),
@@ -690,7 +1018,9 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
   PROCEDURE enforce_candidate_timeout(p_run_id IN VARCHAR2) IS
     l_run_id VARCHAR2(64);
     l_parent_job VARCHAR2(128);
-    l_detail VARCHAR2(4000) := 'Candidate execution exceeded the adaptive runtime limit; original SQL retained';
+    l_detail VARCHAR2(4000) :=
+      '후보 SQL 검증 시간이 초과되었습니다. 원본 SQL은 변경되지 않았습니다. ' ||
+      '같은 테스트를 바로 반복하지 말고 Run ID를 담당자에게 전달해 주세요.';
   BEGIN
     l_run_id := normalize_run_id(p_run_id);
     SELECT job_name INTO l_parent_job
@@ -772,6 +1102,7 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
     l_sql_vc              VARCHAR2(32767);
     l_sql                 CLOB;
     l_tuned_sql           CLOB;
+    l_validation_candidate_sql CLOB;
     l_llm_profile         VARCHAR2(128);
     l_source_db_id        VARCHAR2(64);
     l_source_sql_id       VARCHAR2(13);
@@ -807,6 +1138,8 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
     l_vector_metadata_json CLOB;
     l_report_markdown     CLOB;
     l_progress_json       CLOB;
+    l_pipeline_elapsed_ms NUMBER;
+    l_run_started_at      TIMESTAMP;
     l_response_json       CLOB;
     l_error_json          CLOB;
     l_error_message       VARCHAR2(4000);
@@ -821,6 +1154,16 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
       'OADT2-ASTA-' || LOWER(RAWTOHEX(SYS_GUID()))
     );
     l_run_id := normalize_run_id(l_run_id);
+
+    SELECT JSON_VALUE(
+             p_body_json,
+             '$.validation_candidate_sql' RETURNING CLOB NULL ON ERROR
+           )
+    INTO l_validation_candidate_sql
+    FROM dual;
+    IF l_validation_candidate_sql IS NOT NULL THEN
+      asta_sql_guard_pkg.assert_safe_select(l_validation_candidate_sql);
+    END IF;
 
     record_progress(l_run_id, 1, 'REQUEST_RECEIVED', 'OADT2 request received', 'DONE');
     record_progress(l_run_id, 2, 'ORDS_DISPATCH', 'ADB ORDS analyze call', 'DONE');
@@ -977,16 +1320,22 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
     record_progress(l_run_id, 9, 'VECTOR_KB', 'ADB Vector KB search for LLM evidence', progress_status_from_json(l_vector_json));
 
     record_progress(l_run_id, 6, 'LLM_REWRITE', 'Evidence-aware structural rewrite', 'RUNNING');
-    l_llm_json := asta_llm_pkg.generate_sql_only_tuning(
-      p_sql                  => l_sql,
-      p_llm_profile          => l_llm_profile,
-      p_workload_type        => l_workload_type,
-      p_source_evidence_json => l_source_json,
-      p_vector_json          => l_vector_json,
-      p_tuning_context_json  => l_context_json,
-      p_use_llm              => l_use_llm,
-      p_run_id               => l_run_id
-    );
+    IF l_validation_candidate_sql IS NOT NULL THEN
+      l_llm_json := llm_original_fallback_json(
+        l_validation_candidate_sql, NULL, NULL, NULL, 'VALIDATION_CANDIDATE'
+      );
+    ELSE
+      l_llm_json := asta_llm_pkg.generate_sql_only_tuning(
+        p_sql                  => l_sql,
+        p_llm_profile          => l_llm_profile,
+        p_workload_type        => l_workload_type,
+        p_source_evidence_json => l_source_json,
+        p_vector_json          => l_vector_json,
+        p_tuning_context_json  => l_context_json,
+        p_use_llm              => l_use_llm,
+        p_run_id               => l_run_id
+      );
+    END IF;
     record_progress(l_run_id, 6, 'LLM_REWRITE', 'Evidence-aware structural rewrite', progress_status_from_json(l_llm_json));
 
     BEGIN
@@ -1207,6 +1556,31 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
     record_progress(l_run_id, 10, 'FINAL_REPORT', 'Final report synthesis', 'DONE');
     l_progress_json := build_progress_array_json(l_run_id);
 
+    SELECT started_at
+    INTO   l_run_started_at
+    FROM   asta_runs
+    WHERE  run_id = l_run_id;
+    l_pipeline_elapsed_ms := elapsed_ms_between(l_run_started_at, SYSTIMESTAMP);
+
+    -- Rebuild with the terminal stage-10/11 rows.  The first pass above is
+    -- what stage 10 measures; this pass only injects those persisted timings.
+    l_report_markdown :=
+      asta_report_pkg.build_report(
+        p_run_id               => l_run_id,
+        p_input_sql            => l_sql,
+        p_source_evidence_json => l_source_json,
+        p_after_evidence_json  => l_after_json,
+        p_comparison_json      => l_comparison_json,
+        p_vector_json          => l_vector_json,
+        p_vector_save_json     => l_vector_save_json,
+        p_llm_json             => l_llm_json,
+        p_status               => l_status,
+        p_error_json           => NULL,
+        p_final_review_json    => l_final_review_json,
+        p_progress_json        => l_progress_json,
+        p_pipeline_elapsed_ms  => l_pipeline_elapsed_ms
+      );
+
     l_response_json := asta_report_pkg.build_response_json(
       p_run_id               => l_run_id,
       p_status               => l_status,
@@ -1241,6 +1615,17 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
       record_progress(l_run_id, 10, 'FINAL_REPORT', 'Final report synthesis', 'FAILED', SUBSTR(l_error_message, 1, 1000));
       l_progress_json := build_progress_array_json(l_run_id);
 
+      BEGIN
+        SELECT started_at
+        INTO   l_run_started_at
+        FROM   asta_runs
+        WHERE  run_id = l_run_id;
+        l_pipeline_elapsed_ms := elapsed_ms_between(l_run_started_at, SYSTIMESTAMP);
+      EXCEPTION
+        WHEN OTHERS THEN
+          l_pipeline_elapsed_ms := NULL;
+      END;
+
       l_report_markdown := asta_report_pkg.build_report(
         p_run_id               => l_run_id,
         p_input_sql            => l_sql,
@@ -1252,7 +1637,9 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
         p_llm_json             => l_llm_json,
         p_status               => l_status,
         p_error_json           => l_error_json,
-        p_final_review_json    => l_final_review_json
+        p_final_review_json    => l_final_review_json,
+        p_progress_json        => l_progress_json,
+        p_pipeline_elapsed_ms  => l_pipeline_elapsed_ms
       );
 
       l_response_json := asta_report_pkg.build_response_json(

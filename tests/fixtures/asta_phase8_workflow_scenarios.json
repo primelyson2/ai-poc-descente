@@ -1,0 +1,38 @@
+{
+  "accepted": [
+    {"sequence": 1, "stage": "OPTIMIZER_INTENT", "status": "VERIFIED", "reason_code": "OPTIMIZER_INTENT_VERIFIED", "evidence": {"producer_starts": 1}},
+    {"sequence": 2, "stage": "FULL_RESULT_EQUIVALENCE", "status": "VERIFIED", "reason_code": "RESULT_EQUIVALENCE_VERIFIED", "evidence": {"result_digest_scope": "FULL_RESULT", "result_digest_mode": "UNORDERED_MULTISET"}},
+    {"sequence": 3, "stage": "BIND_PLAN_STABILITY", "status": "VERIFIED", "reason_code": "BIND_PLAN_STABILITY_VERIFIED", "evidence": {"bind_case_count": 3, "successful_bind_count": 3, "observed_plan_families": ["SET_OPERATION_BARRIER", "ANTI_SINGLE_PRODUCER"]}},
+    {"sequence": 4, "stage": "EXECUTION_MEASUREMENT", "status": "ACCEPTED", "reason_code": "MEASUREMENT_ACCEPTED", "evidence": {"median_elapsed_us": 1641880, "buffer_reduction_pct": 88.2167, "noise_pct": 1.758, "budget_status": "WITHIN_BUDGET"}},
+    {"sequence": 5, "stage": "FINAL_DECISION", "status": "ACCEPTED", "reason_code": "ALL_GATES_VERIFIED", "evidence": {"workload": "OLTP"}}
+  ],
+  "intent_rejected": [
+    {"sequence": 1, "stage": "OPTIMIZER_INTENT", "status": "REJECTED", "reason_code": "OPTIMIZER_INTENT_NOT_MET", "error": "repeated subtree remains"},
+    {"sequence": 2, "stage": "FULL_RESULT_EQUIVALENCE", "status": "VERIFIED", "reason_code": "RESULT_EQUIVALENCE_VERIFIED"}
+  ],
+  "bounded_digest": [
+    {"sequence": 1, "stage": "OPTIMIZER_INTENT", "status": "VERIFIED", "reason_code": "OPTIMIZER_INTENT_VERIFIED"},
+    {"sequence": 2, "stage": "FULL_RESULT_EQUIVALENCE", "status": "BLOCKED", "reason_code": "FULL_RESULT_EVIDENCE_REQUIRED", "evidence": {"result_digest_scope": "BOUNDED_ORDERED_FIRST_N"}}
+  ],
+  "bind_unstable": [
+    {"sequence": 1, "stage": "OPTIMIZER_INTENT", "status": "VERIFIED", "reason_code": "OPTIMIZER_INTENT_VERIFIED"},
+    {"sequence": 2, "stage": "FULL_RESULT_EQUIVALENCE", "status": "VERIFIED", "reason_code": "RESULT_EQUIVALENCE_VERIFIED", "evidence": {"result_digest_scope": "FULL_RESULT"}},
+    {"sequence": 3, "stage": "BIND_PLAN_STABILITY", "status": "BLOCKED", "reason_code": "PLAN_FLIP_DETECTED", "evidence": {"failed_bind_case_id": "STYLE_SELECTIVE"}}
+  ],
+  "timeout": [
+    {"sequence": 1, "stage": "OPTIMIZER_INTENT", "status": "VERIFIED", "reason_code": "OPTIMIZER_INTENT_VERIFIED"},
+    {"sequence": 2, "stage": "FULL_RESULT_EQUIVALENCE", "status": "VERIFIED", "reason_code": "RESULT_EQUIVALENCE_VERIFIED", "evidence": {"result_digest_scope": "FULL_RESULT"}},
+    {"sequence": 3, "stage": "BIND_PLAN_STABILITY", "status": "VERIFIED", "reason_code": "BIND_PLAN_STABILITY_VERIFIED"},
+    {"sequence": 4, "stage": "EXECUTION_MEASUREMENT", "status": "FAILED", "reason_code": "RUN_TIMEOUT", "error": "ORA-01013: user requested cancel of current operation"}
+  ],
+  "no_candidate": [
+    {"sequence": 1, "stage": "OPTIMIZER_INTENT", "status": "BLOCKED", "reason_code": "NO_REWRITE_CANDIDATE", "error": "구조 재작성 후보 없음"}
+  ],
+  "oracle_error": [
+    {"sequence": 1, "stage": "OPTIMIZER_INTENT", "status": "FAILED", "reason_code": "CANDIDATE_ORACLE_ERROR", "error": "ORA-00933: SQL command not properly ended"}
+  ],
+  "non_equivalent": [
+    {"sequence": 1, "stage": "OPTIMIZER_INTENT", "status": "VERIFIED", "reason_code": "OPTIMIZER_INTENT_VERIFIED"},
+    {"sequence": 2, "stage": "FULL_RESULT_EQUIVALENCE", "status": "REJECTED", "reason_code": "RESULT_DIGEST_MISMATCH", "evidence": {"result_digest_scope": "FULL_RESULT"}}
+  ]
+}

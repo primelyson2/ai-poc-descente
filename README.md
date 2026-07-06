@@ -72,10 +72,12 @@ Oracle Autonomous Database 23ai 의 **SELECT AI** (`DBMS_CLOUD_AI.GENERATE`), **
 - 구현·운영 세부는 별도 내부 문서 `Guide_Security_info.md` 참조(저장소 미포함).
 
 ### [확장 메뉴] AI SQL Tuning Assistant
-- OADT2의 독립 extension 화면으로, SQL을 입력하면 ADB ORDS `ASTA_PKG.ANALYZE_SQL`을 호출해 상세 SQL 튜닝 결과서를 생성합니다.
+- OADT2의 독립 extension 화면으로, SQL을 입력하면 ADB ORDS `ASTA_PKG.SUBMIT_RUN`으로 비동기 분석을 제출해 상세 SQL 튜닝 결과서를 생성합니다.
 - 브라우저는 외부 ORDS/ASTA 주소를 직접 호출하지 않고 OADT2 same-origin API를 사용합니다.
-  - `POST /api/asta/analyze` → ADB ORDS `ASTA_PKG.ANALYZE_SQL` 호출 결과 pass-through (Python-local SQL 실행 없음)
+  - `POST /api/asta/analyze` → ADB ORDS `ASTA_PKG.SUBMIT_RUN`으로 `QUEUED`/Run ID 반환 (Python-local SQL 실행 없음)
   - `GET /api/asta/profiles` → ADB ORDS `ASTA_PKG.LIST_PROFILES` 호출 결과 pass-through
+  - `GET /api/asta/runs/{run_id}/progress` → ADB 진행 상태 조회
+  - `GET /api/asta/runs/{run_id}/report` → 최종 Markdown 결과서 조회
 - 사용자는 endpoint/source DB를 선택하지 않습니다. Source DB는 ADB의 `ASTA_SOURCE_CONNECTIONS` 허용 목록에서 조회됩니다.
 - ADB PL/SQL package(`ASTA_PKG`)가 SQL Guard, Source evidence 수집(DB Link → Source helper package), SQL Tuning Advisor, Vector KB 검색/저장, LLM 튜닝, 보고서 생성을 담당합니다.
 - Source BaseDB 실제 XPLAN/metrics는 Source helper package(`db/source/asta_source_pkg.sql`)를 ADB DB Link로 호출해 수집합니다.
@@ -96,7 +98,7 @@ Oracle Autonomous Database 23ai 의 **SELECT AI** (`DBMS_CLOUD_AI.GENERATE`), **
 | DB 드라이버 | `python-oracledb` **Thin mode** + Wallet (mTLS, Instant Client 불필요) |
 | 다중 DB | `config.yaml` 의 `databases:` 리스트 + `X-Database` 헤더 |
 | 패키지 관리 | `uv` |
-| ASTA 연동 | ADB ORDS `ASTA_PKG.ANALYZE_SQL` — FastAPI는 same-origin thin proxy, Python-local SQL/XPLAN/LLM 실행 없음 |
+| ASTA 연동 | ADB ORDS `ASTA_PKG.SUBMIT_RUN/GET_PROGRESS/GET_REPORT` — FastAPI는 same-origin thin proxy, Python-local SQL/XPLAN/LLM 실행 없음 |
 
 ---
 
@@ -140,13 +142,14 @@ ASTA/SQL Tuning Assistant는 **ADB ORDS/PL/SQL** 경로로 실행됩니다.
 ```text
 브라우저 → POST /api/asta/analyze
          → FastAPI thin proxy (same-origin CORS 우회만 수행)
-         → ADB ORDS ASTA_PKG.ANALYZE_SQL
+         → ADB ORDS ASTA_PKG.SUBMIT_RUN
+         → ADB Scheduler ASTA_PKG.EXECUTE_RUN
          → Source BaseDB helper package via ADB DB Link
 ```
 
 FastAPI `/api/asta/*` 라우터는 same-origin thin proxy 역할만 합니다. Python에서 SQL을 직접 실행하거나 XPLAN/metrics를 수집하거나 Vector/LLM/SQLTUNE 워크플로를 수행하지 않습니다.
 
-SQL Guard, Source evidence 수집(`ASTA_SOURCE_PKG.RUN_EVIDENCE` via DB Link), SQL Tuning Advisor, Vector KB, LLM 튜닝, 보고서 생성은 ADB PL/SQL package(`db/adb/asta_pkg.sql` 등)가 담당합니다.
+SQL Guard, Source evidence 수집(`ASTA_SOURCE_PKG.RUN_EVIDENCE` via DB Link), 선택적 SQL Tuning Advisor, Vector KB, LLM 튜닝, deterministic 비교와 보고서 생성은 ADB PL/SQL package(`db/adb/asta_pkg.sql` 등)가 담당합니다. UI는 Run ID로 progress를 조회한 뒤 terminal 상태에서 결과서를 가져옵니다.
 
 ADB package 설치 위치: `db/adb/`, Source helper 설치 위치: `db/source/`, ORDS module: `db/ords/`.
 

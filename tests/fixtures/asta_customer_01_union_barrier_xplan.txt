@@ -1,0 +1,20 @@
+-- Source: reports/asta_customer_01_live/candidate_union_barrier_smoke.json plan_text
+-- Measured successful UNION DISTINCT barrier candidate; relevant ALLSTATS LAST subtree preserved verbatim.
+Plan hash value: 101251183
+
+--------------------------------------------------------------------------------------------------------------------------
+| Id  | Operation                                     | Name              | Starts | E-Rows | A-Rows |   A-Time   | Buffers |
+--------------------------------------------------------------------------------------------------------------------------
+|   0 | SELECT STATEMENT                              |                   |      1 |        |      1 |00:00:01.64 |    1079K|
+|  16 |        NESTED LOOPS ANTI                      |                   |      1 |      1 |    845 |00:00:00.35 |   10604 |
+|* 28 |         VIEW                                  |                   |    845 |      1 |      0 |00:00:00.32 |    9577 |
+|  29 |          SORT UNIQUE                          |                   |    845 |  11521 |   2316K|00:00:00.33 |    9577 |
+|  30 |           UNION-ALL                           |                   |      1 |        |  26764 |00:00:00.08 |    9577 |
+|  31 |            VIEW                               | VIF_WHOLESALE_S   |      1 |  11520 |  26764 |00:00:00.08 |    9577 |
+|  32 |             UNION-ALL                         |                   |      1 |        |  26764 |00:00:00.08 |    9577 |
+|* 41 |              INDEX FAST FULL SCAN             | TGP_STYDE_L_PK    |      1 |   1033K|   1112K|00:00:00.08 |    9102 |
+|* 42 |            FILTER                             |                   |      1 |        |      0 |00:00:00.01 |       0 |
+|  43 |             VIEW                              | VIF_WHOLESALE_S   |      0 |  11520 |      0 |00:00:00.01 |       0 |
+|  44 |              UNION-ALL                        |                   |      0 |        |      0 |00:00:00.01 |       0 |
+|* 53 |                INDEX FAST FULL SCAN           | TGP_STYDE_L_PK    |      0 |   1033K|      0 |00:00:00.01 |       0 |
+--------------------------------------------------------------------------------------------------------------------------

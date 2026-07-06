@@ -32,16 +32,17 @@ live DB changes by themselves.
 
 ## Public Contract
 
-ORDS calls `ASTA.ASTA_PKG.ANALYZE_SQL(:body_text)` for `POST /asta/analyze`.
-The package returns JSON with `run_id`, `status`, `architecture`,
-`progress`, and `detailed_report_markdown`.
+ORDS calls `ASTA.ASTA_PKG.SUBMIT_RUN(:body_text)` for `POST /asta/analyze`.
+The package stores the request, schedules `ASTA_PKG.EXECUTE_RUN(run_id)`, and
+immediately returns `QUEUED` JSON with the `run_id`. Consumers poll progress
+and fetch the complete run or report only after a terminal status.
 
 `GET /asta/runs/:run_id/progress` calls `ASTA.ASTA_PKG.GET_PROGRESS(:run_id)`
 and returns the canonical 11-step progress array used by the UI.
 Progress rows store `elapsed_ms` when a step moves from `RUNNING` to a terminal
-state. `ANALYZE_SQL` also persists the same progress array into the run
-response JSON, so immediate analyze responses and later progress polling use
-the same source of truth.
+state. `EXECUTE_RUN` persists the same progress array into the final run
+response JSON, so progress polling and terminal lookup use the same source of
+truth.
 Public run lookup endpoints validate `run_id` before repository access and
 return structured JSON failures for invalid or missing runs. Profile, progress,
 and report responses include the same `migration_boundary` metadata used by the

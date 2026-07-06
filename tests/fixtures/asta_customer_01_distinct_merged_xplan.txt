@@ -1,0 +1,14 @@
+-- Source: reports/asta_customer_01_live/asta-awr-01_C_dominant_not_exists.json after_runs[0].plan_text
+-- Measured failed DISTINCT CTE candidate; relevant ALLSTATS LAST subtree preserved verbatim.
+Plan hash value: 1663017477
+
+--------------------------------------------------------------------------------------------------------------------------
+| Id  | Operation                                     | Name              | Starts | E-Rows | A-Rows |   A-Time   | Buffers |
+--------------------------------------------------------------------------------------------------------------------------
+|   0 | SELECT STATEMENT                              |                   |      1 |        |      1 |00:02:06.85 |    9159K|
+|  16 |        NESTED LOOPS ANTI                      |                   |      1 |      1 |    845 |00:02:05.86 |    8091K|
+|* 28 |         VIEW                                  | VIF_WHOLESALE_S   |    845 |      1 |      0 |00:02:05.48 |    8090K|
+|  29 |          UNION-ALL                            |                   |    845 |        |     22M|00:01:38.01 |    8090K|
+|* 34 |           HASH JOIN                           |                   |    845 |  11519 |     22M|00:01:34.15 |    8090K|
+|* 38 |            INDEX FAST FULL SCAN               | TGP_STYDE_L_PK    |    845 |   1033K|    940M|00:01:32.19 |    7690K|
+--------------------------------------------------------------------------------------------------------------------------

@@ -19,7 +19,7 @@
       id: "asta-awr-01",
       sqlId: "7rcw6d3us86r7",
       label: "SESL0640.selectList",
-      workload: "BATCH",
+      workload: "OLTP",
       sql: `/*  SESL0640.selectList  */
 
 WITH STYLE
@@ -505,310 +505,151 @@ ORDER BY SRC.COMP_CD, SRC.BRAND_CD, SRC.ITEM_CD`,
     },
     {
       id: "asta-awr-02",
-      label: "SESL0640 스타일별 반복 집계",
-      workload: "BATCH",
-      sql: `/* ASTA intentionally inefficient sample 02: repeated correlated aggregates */
-SELECT S.COMP_CD,
-       S.BRAND_CD,
-       S.STYLE_CD,
-       S.ITEM_CD,
-       S.STYLE_NM,
-       (SELECT NVL(SUM(O.ORD_QTY), 0)
-          FROM DSNT.TSE_ORDER_S O
-         WHERE O.COMP_CD = S.COMP_CD
-           AND O.BRAND_CD = S.BRAND_CD
-           AND SUBSTR(O.STYLE_CD, 1, LENGTH(S.STYLE_CD)) = S.STYLE_CD
-           AND O.SALE_KIND_CD = '1') AS ORD_QTY,
-       (SELECT NVL(SUM(I.RECP_QTY), 0)
-          FROM DSNT.TSE_INOUT_S I
-         WHERE I.COMP_CD = S.COMP_CD
-           AND I.BRAND_CD = S.BRAND_CD
-           AND SUBSTR(I.STYLE_CD, 1, LENGTH(S.STYLE_CD)) = S.STYLE_CD
-           AND I.SALE_STD_CD = '3') AS RECP_QTY,
-       (SELECT NVL(SUM(M.SALE_QTY), 0)
-          FROM DSNT.TSE_SALE_MON_S M
-         WHERE M.COMP_CD = S.COMP_CD
-           AND M.BRAND_CD = S.BRAND_CD
-           AND SUBSTR(M.STYLE_CD, 1, LENGTH(S.STYLE_CD)) = S.STYLE_CD
-           AND M.SALE_STD_CD = '3') AS SALE_QTY
-  FROM DSNT.TGP_STYLE_M S
- WHERE NVL(S.COMP_CD, '-') = '01'
-   AND NVL(S.BRAND_CD, '-') = 'M'
-   AND S.STYLE_CD BETWEEN 'MP111MET21' AND 'MR222LTS52'
-   AND S.NOR_CLS_CD = '1'
-   AND S.YEAR_CD IN ('P', 'Q', 'R')`,
+      label: "02 · 상관 EXISTS 반복",
+      pattern: "CORRELATED_EXISTS_COUNT",
+      workload: "OLTP",
+      sql: `WITH B AS (SELECT S.COMP_CD,S.BRAND_CD,S.STYLE_CD,S.ITEM_CD FROM DSNT.TGP_STYLE_M S WHERE S.COMP_CD='01' AND S.BRAND_CD='M' AND S.STYLE_CD BETWEEN 'MP111MET21' AND 'MR222LTS52' AND ROWNUM<=120) SELECT B.COMP_CD,B.BRAND_CD,B.STYLE_CD,B.ITEM_CD FROM B WHERE EXISTS (SELECT 1 FROM DSNT.V_STYGRP_D G WHERE G.COMP_CD=B.COMP_CD AND G.BRAND_CD=B.BRAND_CD AND TRIM(G.STYLE_CD)=TRIM(B.STYLE_CD))`,
     },
     {
       id: "asta-awr-03",
-      label: "SESL0640 발주 상관 서브쿼리",
-      workload: "BATCH",
-      sql: `/* ASTA intentionally inefficient sample 03: correlated HAVING and ORDER BY */
-SELECT O.COMP_CD,
-       O.BRAND_CD,
-       O.STYLE_CD,
-       O.COLOR_CD,
-       O.SIZE_CD,
-       SUM(O.ORD_QTY) AS ORD_QTY,
-       SUM(DECODE(O.RE_ORDR, 1, O.ORD_QTY, 0)) AS FIRS_ORD_QTY
-  FROM DSNT.TSE_ORDER_S O
- WHERE O.COMP_CD || '' = '01'
-   AND UPPER(O.BRAND_CD) = 'M'
-   AND O.STYLE_CD BETWEEN 'MP111MET21' AND 'MR222LTS52'
-   AND O.SALE_KIND_CD = '1'
- GROUP BY O.COMP_CD, O.BRAND_CD, O.STYLE_CD, O.COLOR_CD, O.SIZE_CD
-HAVING (SELECT COUNT(*)
-          FROM DSNT.TGP_STYLE_M S
-         WHERE S.COMP_CD = O.COMP_CD
-           AND S.BRAND_CD = O.BRAND_CD
-           AND TRIM(S.STYLE_CD) = TRIM(O.STYLE_CD)
-           AND S.NOR_CLS_CD = '1') > 0
- ORDER BY (SELECT MAX(S.STYLE_NM)
-             FROM DSNT.TGP_STYLE_M S
-            WHERE S.COMP_CD = O.COMP_CD
-              AND S.BRAND_CD = O.BRAND_CD
-              AND TRIM(S.STYLE_CD) = TRIM(O.STYLE_CD))`,
+      label: "03 · 상관 NOT EXISTS 반복",
+      pattern: "CORRELATED_NOT_EXISTS",
+      workload: "OLTP",
+      sql: `WITH B AS (SELECT S.COMP_CD,S.BRAND_CD,S.STYLE_CD,S.STYLE_NM FROM DSNT.TGP_STYLE_M S WHERE S.COMP_CD='01' AND S.BRAND_CD='M' AND S.STYLE_CD BETWEEN 'MP111MET21' AND 'MR222LTS52' AND ROWNUM<=80) SELECT B.COMP_CD,B.BRAND_CD,B.STYLE_CD,B.STYLE_NM FROM B WHERE NOT EXISTS (SELECT 1 FROM DSNT.VIF_WHOLESALE_S W WHERE W.COMP_CD=B.COMP_CD AND TRIM(W.STYLE_CD)=TRIM(B.STYLE_CD))`,
     },
     {
       id: "asta-awr-04",
-      label: "SESL0640 입출고 DISTINCT 분석함수",
-      workload: "BATCH",
-      sql: `/* ASTA intentionally inefficient sample 04: DISTINCT over analytic aggregation */
-SELECT DISTINCT
-       I.COMP_CD,
-       I.BRAND_CD,
-       I.STYLE_CD,
-       S.ITEM_CD,
-       I.COLOR_CD,
-       I.SIZE_CD,
-       SUM(I.RECP_QTY) OVER (PARTITION BY I.COMP_CD, I.BRAND_CD, I.STYLE_CD) AS RECP_QTY,
-       SUM(I.ISSU_QTY) OVER (PARTITION BY I.COMP_CD, I.BRAND_CD, I.STYLE_CD) AS ISSU_QTY
-  FROM DSNT.TSE_INOUT_S I,
-       DSNT.TGP_STYLE_M S
- WHERE NVL(I.COMP_CD, '-') = NVL(S.COMP_CD, '-')
-   AND NVL(I.BRAND_CD, '-') = NVL(S.BRAND_CD, '-')
-   AND TRIM(I.STYLE_CD) = TRIM(S.STYLE_CD)
-   AND I.COMP_CD = '01'
-   AND I.BRAND_CD = 'M'
-   AND I.STYLE_CD BETWEEN 'MP111MET21' AND 'MR222LTS52'
-   AND I.SALE_STD_CD = '3'
-   AND I.BSAL_CLS_CD IN ('2', '3')
-   AND I.SALE_KIND_CD = '1'
-   AND I.ETC_YN = 'N'
- ORDER BY I.COMP_CD, I.BRAND_CD, I.STYLE_CD, I.COLOR_CD, I.SIZE_CD`,
+      label: "04 · 제외키 상관 반복",
+      pattern: "CORRELATED_EXCLUSION_KEYS",
+      workload: "OLTP",
+      sql: `WITH B AS (SELECT S.COMP_CD,S.BRAND_CD,S.STYLE_CD,S.ITEM_CD FROM DSNT.TGP_STYLE_M S WHERE S.COMP_CD='01' AND S.BRAND_CD='M' AND S.STYLE_CD BETWEEN 'MP111MET21' AND 'MR222LTS52' AND ROWNUM<=70) SELECT B.COMP_CD,B.BRAND_CD,B.STYLE_CD,B.ITEM_CD FROM B WHERE NOT EXISTS (SELECT 1 FROM DSNT.VIF_WHOLESALE_S W WHERE W.COMP_CD=B.COMP_CD AND TRIM(W.STYLE_CD)=TRIM(B.STYLE_CD))`,
     },
     {
       id: "asta-awr-05",
-      label: "SESL0640 월판매 UNION 중복 제거",
-      workload: "BATCH",
-      sql: `/* ASTA intentionally inefficient sample 05: UNION sort over the same table */
-SELECT X.COMP_CD,
-       X.BRAND_CD,
-       X.STYLE_CD,
-       X.COLOR_CD,
-       X.SIZE_CD,
-       SUM(X.SALE_QTY) AS SALE_QTY
-  FROM (SELECT M.COMP_CD, M.BRAND_CD, M.STYLE_CD, M.COLOR_CD, M.SIZE_CD, M.SALE_QTY
-          FROM DSNT.TSE_SALE_MON_S M
-         WHERE M.COMP_CD = '01'
-           AND M.BRAND_CD = 'M'
-           AND M.STYLE_CD BETWEEN 'MP111MET21' AND 'MR222LTS52'
-           AND M.SALE_STD_CD = '3'
-           AND M.BSAL_CLS_CD = '2'
-        UNION
-        SELECT M.COMP_CD, M.BRAND_CD, M.STYLE_CD, M.COLOR_CD, M.SIZE_CD, M.SALE_QTY
-          FROM DSNT.TSE_SALE_MON_S M
-         WHERE M.COMP_CD = '01'
-           AND M.BRAND_CD = 'M'
-           AND M.STYLE_CD BETWEEN 'MP111MET21' AND 'MR222LTS52'
-           AND M.SALE_STD_CD = '3'
-           AND M.BSAL_CLS_CD = '3') X
- WHERE EXISTS (SELECT 1
-                 FROM DSNT.TGP_STYLE_M S
-                WHERE S.COMP_CD = X.COMP_CD
-                  AND S.BRAND_CD = X.BRAND_CD
-                  AND UPPER(S.STYLE_CD) = UPPER(X.STYLE_CD))
- GROUP BY X.COMP_CD, X.BRAND_CD, X.STYLE_CD, X.COLOR_CD, X.SIZE_CD
- ORDER BY X.STYLE_CD, X.COLOR_CD, X.SIZE_CD`,
+      label: "05 · 중복 CTE 이중 스캔",
+      pattern: "DUPLICATE_CTE_SCAN",
+      workload: "OLTP",
+      sql: `WITH R AS (SELECT I.COMP_CD,I.BRAND_CD,I.STYLE_CD,SUM(I.RECP_QTY) Q FROM DSNT.TSE_INOUT_S I WHERE I.COMP_CD='01' AND I.BRAND_CD='M' AND I.STYLE_CD BETWEEN 'MP111MET21' AND 'MR222LTS52' GROUP BY I.COMP_CD,I.BRAND_CD,I.STYLE_CD),X AS (SELECT I.COMP_CD,I.BRAND_CD,I.STYLE_CD,SUM(I.ISSU_QTY) Q FROM DSNT.TSE_INOUT_S I WHERE I.COMP_CD='01' AND I.BRAND_CD='M' AND I.STYLE_CD BETWEEN 'MP111MET21' AND 'MR222LTS52' GROUP BY I.COMP_CD,I.BRAND_CD,I.STYLE_CD) SELECT R.COMP_CD,R.BRAND_CD,R.STYLE_CD,CAST(R.Q AS NUMBER) RECP_QTY,CAST(X.Q AS NUMBER) ISSU_QTY FROM R JOIN X ON X.COMP_CD=R.COMP_CD AND X.BRAND_CD=R.BRAND_CD AND X.STYLE_CD=R.STYLE_CD`,
     },
     {
       id: "asta-awr-06",
-      label: "SESL0640 출고 복합 IN 재조회",
-      workload: "BATCH",
-      sql: `/* ASTA intentionally inefficient sample 06: composite correlated IN */
-SELECT A.COMP_CD,
-       A.BRAND_CD,
-       A.STYLE_CD,
-       A.COLOR_CD,
-       A.SIZE_CD,
-       SUM(A.ISSU_QTY) * -1 AS WH_MOV_QTY
-  FROM DSNT.TSE_ISSU_D A
- WHERE A.COMP_CD = '01'
-   AND A.BRAND_CD = 'M'
-   AND A.ISSU_TYPE_CD = '6'
-   AND A.SHOP_CD = 'M9999'
-   AND A.WH_CD = 'A12111'
-   AND A.STYLE_CD BETWEEN 'MP111MET21' AND 'MR222LTS52'
-   AND (A.COMP_CD, A.BRAND_CD, A.ISSU_DE, A.SHOP_CD,
-        A.ISSU_SLIP_NO, A.ISSU_SLIP_SN, A.ISSU_SLIP_SEQ) IN
-       (SELECT B.COMP_CD, B.BRAND_CD, B.TRGT_ISSU_DE, B.TRGT_SHOP_CD,
-               B.TRGT_SLIP_NO, B.TRGT_SLIP_SN, B.TRGT_SLIP_SEQ
-          FROM DSNT.TSE_ISSU_D B
-         WHERE B.COMP_CD = A.COMP_CD
-           AND B.BRAND_CD = A.BRAND_CD
-           AND B.SHOP_CD = 'M9999'
-           AND B.ISSU_TYPE_CD = '6'
-           AND B.WH_CD IN ('A11111', 'B1ZZ32')
-           AND EXISTS (SELECT 1
-                         FROM DSNT.TGP_STYLE_M S
-                        WHERE S.COMP_CD = B.COMP_CD
-                          AND S.BRAND_CD = B.BRAND_CD
-                          AND TRIM(S.STYLE_CD) = TRIM(B.STYLE_CD)))
- GROUP BY A.COMP_CD, A.BRAND_CD, A.STYLE_CD, A.COLOR_CD, A.SIZE_CD`,
+      label: "06 · 함수 적용 조건",
+      pattern: "FUNCTION_PREDICATE",
+      workload: "OLTP",
+      sql: `SELECT S.COMP_CD,S.BRAND_CD,S.STYLE_CD,S.ITEM_CD FROM DSNT.TGP_STYLE_M S WHERE S.COMP_CD='01' AND NVL(S.COMP_CD,'-')='01' AND UPPER(NVL(S.BRAND_CD,'-'))='M' AND TRIM(S.STYLE_CD) BETWEEN 'MP111MET21' AND 'MR222LTS52' AND SUBSTR(S.STYLE_CD,1,2) IN ('MP','MQ','MR') AND ROWNUM<=200`,
     },
     {
       id: "asta-awr-07",
-      label: "SESL0640 일판매 분석함수 중복",
-      workload: "BATCH",
-      sql: `/* ASTA intentionally inefficient sample 07: function joins plus DISTINCT analytics */
-SELECT DISTINCT
-       D.COMP_CD,
-       D.BRAND_CD,
-       D.SALE_DE,
-       S.ITEM_CD,
-       SUM(D.SALE_QTY) OVER (PARTITION BY D.COMP_CD, D.BRAND_CD, S.ITEM_CD) AS PROD_SALE_QTY,
-       SUM(D.REAL_SALE_AMT) OVER (PARTITION BY D.COMP_CD, D.BRAND_CD, S.ITEM_CD) AS PROD_SALE_AMT,
-       SUM(D.SALE_AMT) OVER (PARTITION BY D.COMP_CD, D.BRAND_CD, S.ITEM_CD) AS PROD_CSM_AMT
-  FROM DSNT.TSE_SALE_DAY_S D,
-       DSNT.TGP_STYLE_M S
- WHERE D.COMP_CD = S.COMP_CD
-   AND D.BRAND_CD = S.BRAND_CD
-   AND SUBSTR(D.STYLE_CD, 1, LENGTH(S.STYLE_CD)) = S.STYLE_CD
-   AND D.COMP_CD = '01'
-   AND D.BRAND_CD = 'M'
-   AND D.SALE_STD_CD = '3'
-   AND D.BSAL_CLS_CD IN ('2', '3')
-   AND D.SALE_KIND_CD = '1'
-   AND D.STYLE_CD BETWEEN 'MP111MET21' AND 'MR222LTS52'
-   AND TO_DATE(D.SALE_DE, 'YYYYMMDD') BETWEEN TO_DATE('20260604', 'YYYYMMDD')
-                                               AND TO_DATE('20260615', 'YYYYMMDD')
-   AND EXISTS (SELECT 1
-                 FROM DSNT.TSE_SALE_MON_S M
-                WHERE M.COMP_CD = D.COMP_CD
-                  AND M.BRAND_CD = D.BRAND_CD
-                  AND UPPER(M.STYLE_CD) = UPPER(D.STYLE_CD))
- ORDER BY D.COMP_CD, D.BRAND_CD, S.ITEM_CD, D.SALE_DE`,
+      label: "07 · DISTINCT와 GROUP BY 중복",
+      pattern: "REDUNDANT_DISTINCT_GROUP",
+      workload: "OLTP",
+      sql: `WITH B AS (SELECT S.COMP_CD,S.BRAND_CD,S.STYLE_CD,S.ITEM_CD FROM DSNT.TGP_STYLE_M S WHERE S.COMP_CD='01' AND S.BRAND_CD='M' AND S.STYLE_CD BETWEEN 'MP111MET21' AND 'MR222LTS52' AND ROWNUM<=100) SELECT DISTINCT B.COMP_CD,B.BRAND_CD,B.STYLE_CD,B.ITEM_CD FROM B WHERE EXISTS (SELECT 1 FROM DSNT.V_STYGRP_D G WHERE G.COMP_CD=B.COMP_CD AND G.BRAND_CD=B.BRAND_CD AND TRIM(G.STYLE_CD)=TRIM(B.STYLE_CD))`,
     },
     {
       id: "asta-awr-08",
-      label: "SESL0640 최초입출고 반복 조회",
-      workload: "BATCH",
-      sql: `/* ASTA intentionally inefficient sample 08: scalar subquery per division row */
-SELECT D.COMP_CD,
-       D.BRAND_CD,
-       D.STYLE_CD,
-       D.COLOR_CD,
-       D.SIZE_CD,
-       MIN(D.WH_IS_DE) AS FIRS_OUT_DE,
-       (SELECT MIN(L.FIRS_IN_DE)
-          FROM DSNT.TGP_STYDE_L L
-         WHERE L.COMP_CD = D.COMP_CD
-           AND L.STYLE_CD = D.STYLE_CD
-           AND DECODE(D.COLOR_CD, '-', L.COLOR_CD, D.COLOR_CD) = L.COLOR_CD
-           AND DECODE(D.SIZE_CD, '-', L.SIZE_CD, D.SIZE_CD) = L.SIZE_CD
-           AND L.FIRS_IN_DE IS NOT NULL
-           AND L.USE_YN = 'Y') AS FIRS_IN_DE
-  FROM DSNT.TSE_DIV_L D
- WHERE D.COMP_CD = '01'
-   AND D.BRAND_CD = 'M'
-   AND D.STYLE_CD BETWEEN 'MP111MET21' AND 'MR222LTS52'
-   AND D.SALE_STD_CD = '3'
-   AND D.DEL_YN = 'N'
-   AND EXISTS (SELECT 1
-                 FROM DSNT.TGP_STYLE_M S
-                WHERE NVL(S.COMP_CD, '-') = NVL(D.COMP_CD, '-')
-                  AND NVL(S.BRAND_CD, '-') = NVL(D.BRAND_CD, '-')
-                  AND TRIM(S.STYLE_CD) = TRIM(D.STYLE_CD))
- GROUP BY D.COMP_CD, D.BRAND_CD, D.STYLE_CD, D.COLOR_CD, D.SIZE_CD`,
+      label: "08 · UNION 중복 제거",
+      pattern: "UNION_DUPLICATE_ELIMINATION",
+      workload: "OLTP",
+      sql: `WITH B AS (SELECT S.COMP_CD,S.BRAND_CD,S.STYLE_CD,S.ITEM_CD FROM DSNT.TGP_STYLE_M S WHERE S.COMP_CD='01' AND S.BRAND_CD='M' AND S.STYLE_CD BETWEEN 'MP111MET21' AND 'MR222LTS52' AND ROWNUM<=75) SELECT B.COMP_CD,B.BRAND_CD,B.STYLE_CD,B.ITEM_CD FROM B WHERE EXISTS (SELECT G.COMP_CD,G.BRAND_CD,TRIM(G.STYLE_CD) STYLE_CD FROM DSNT.V_STYGRP_D G WHERE G.COMP_CD=B.COMP_CD AND G.BRAND_CD=B.BRAND_CD AND TRIM(G.STYLE_CD)=TRIM(B.STYLE_CD) UNION SELECT G.COMP_CD,G.BRAND_CD,TRIM(G.STYLE_CD) FROM DSNT.V_STYGRP_D G WHERE 1=0)`,
     },
     {
       id: "asta-awr-09",
-      label: "SESL0640 스타일상세 상관 집계",
-      workload: "BATCH",
-      sql: `/* ASTA intentionally inefficient sample 09: repeated issue lookup by style detail */
-SELECT L.COMP_CD,
-       L.STYLE_CD,
-       L.COLOR_CD,
-       L.SIZE_CD,
-       MIN(L.FIRS_IN_DE) AS FIRS_IN_DE,
-       (SELECT NVL(SUM(I.ISSU_QTY), 0)
-          FROM DSNT.TSE_ISSU_D I
-         WHERE I.COMP_CD = L.COMP_CD
-           AND UPPER(I.STYLE_CD) = UPPER(L.STYLE_CD)
-           AND DECODE(L.COLOR_CD, '-', I.COLOR_CD, L.COLOR_CD) = I.COLOR_CD
-           AND DECODE(L.SIZE_CD, '-', I.SIZE_CD, L.SIZE_CD) = I.SIZE_CD
-           AND I.DEL_YN = 'N') AS ISSU_QTY
-  FROM DSNT.TGP_STYDE_L L
- WHERE L.COMP_CD = '01'
-   AND L.STYLE_CD BETWEEN 'MP111MET21' AND 'MR222LTS52'
-   AND L.FIRS_IN_DE IS NOT NULL
-   AND L.USE_YN = 'Y'
-   AND EXISTS (SELECT 1
-                 FROM DSNT.TGP_STYLE_M S
-                WHERE S.COMP_CD = L.COMP_CD
-                  AND TRIM(S.STYLE_CD) = TRIM(L.STYLE_CD)
-                  AND S.BRAND_CD = 'M')
- GROUP BY L.COMP_CD, L.STYLE_CD, L.COLOR_CD, L.SIZE_CD`,
+      label: "09 · 복합키 EXISTS 재조회",
+      pattern: "COMPOSITE_EXISTS_RESCAN",
+      workload: "OLTP",
+      sql: `WITH B AS (SELECT S.COMP_CD,S.BRAND_CD,S.STYLE_CD,S.ITEM_CD FROM DSNT.TGP_STYLE_M S WHERE S.COMP_CD='01' AND S.BRAND_CD='M' AND S.STYLE_CD BETWEEN 'MP111MET21' AND 'MR222LTS52' AND ROWNUM<=90) SELECT B.COMP_CD,B.BRAND_CD,B.STYLE_CD,B.ITEM_CD FROM B WHERE EXISTS (SELECT 1 FROM DSNT.V_STYGRP_D G WHERE G.COMP_CD=B.COMP_CD AND G.BRAND_CD=B.BRAND_CD AND TRIM(G.STYLE_CD)=TRIM(B.STYLE_CD))`,
     },
     {
       id: "asta-awr-10",
-      label: "SESL0640 매장별 반복 판매집계",
-      workload: "BATCH",
-      sql: `/* ASTA intentionally inefficient sample 10: repeated broad aggregates per shop */
-SELECT H.COMP_CD,
-       H.BRAND_CD,
-       H.SHOP_CD,
-       (SELECT NVL(SUM(I.ISSU_QTY), 0)
-          FROM DSNT.TSE_ISSU_D I
-         WHERE I.COMP_CD = H.COMP_CD
-           AND I.BRAND_CD = H.BRAND_CD
-           AND I.SHOP_CD = H.SHOP_CD
-           AND I.ISSU_TYPE_CD = '2'
-           AND I.ISSU_CLS_CD = '24'
-           AND I.DEL_YN = 'N') AS SHOP_MOV_QTY,
-       (SELECT NVL(SUM(M.SALE_QTY), 0)
-          FROM DSNT.TSE_SALE_MON_S M
-         WHERE M.COMP_CD = H.COMP_CD
-           AND M.BRAND_CD = H.BRAND_CD
-           AND M.STYLE_CD BETWEEN 'MP111MET21' AND 'MR222LTS52'
-           AND M.SALE_STD_CD = '3'
-           AND M.SALE_KIND_CD = '1') AS BRAND_SALE_QTY,
-       (SELECT COUNT(*)
-          FROM DSNT.TGP_STYLE_M S
-         WHERE S.COMP_CD = H.COMP_CD
-           AND S.BRAND_CD = H.BRAND_CD
-           AND S.STYLE_CD BETWEEN 'MP111MET21' AND 'MR222LTS52'
-           AND S.NOR_CLS_CD = '1'
-           AND S.YEAR_CD IN ('P', 'Q', 'R')) AS STYLE_CNT
-  FROM DSNT.TSE_SHOP_M H
- WHERE H.COMP_CD = '01'
-   AND H.BRAND_CD = 'M'
-   AND H.CHL_CFG_CD = '6'
- ORDER BY H.COMP_CD, H.BRAND_CD, H.SHOP_CD`,
+      label: "10 · 이중 EXISTS 연쇄",
+      pattern: "DUAL_EXISTS_CHAIN",
+      workload: "OLTP",
+      sql: `WITH B AS (SELECT S.COMP_CD,S.BRAND_CD,S.STYLE_CD,S.ITEM_CD FROM DSNT.TGP_STYLE_M S WHERE S.COMP_CD='01' AND S.BRAND_CD='M' AND S.STYLE_CD BETWEEN 'MP111MET21' AND 'MR222LTS52' AND ROWNUM<=60) SELECT B.COMP_CD,B.BRAND_CD,B.STYLE_CD,B.ITEM_CD FROM B WHERE EXISTS (SELECT 1 FROM DSNT.V_STYGRP_D G WHERE G.COMP_CD=B.COMP_CD AND G.BRAND_CD=B.BRAND_CD AND TRIM(G.STYLE_CD)=TRIM(B.STYLE_CD)) AND EXISTS (SELECT 1 FROM DSNT.VIF_WHOLESALE_S W WHERE W.COMP_CD=B.COMP_CD AND TRIM(W.STYLE_CD)=TRIM(B.STYLE_CD))`,
+    },
+    {
+      id: "asta-awr-11",
+      label: "11 · SEMI/ANTI 혼합 반복",
+      pattern: "SEMI_ANTI_MIXED",
+      workload: "OLTP",
+      sql: `WITH B AS (SELECT S.COMP_CD,S.BRAND_CD,S.STYLE_CD,S.ITEM_CD FROM DSNT.TGP_STYLE_M S WHERE S.COMP_CD='01' AND S.BRAND_CD='M' AND S.STYLE_CD BETWEEN 'MP111MET21' AND 'MR222LTS52' AND ROWNUM<=55) SELECT B.COMP_CD,B.BRAND_CD,B.STYLE_CD,B.ITEM_CD FROM B WHERE EXISTS (SELECT 1 FROM DSNT.V_STYGRP_D G WHERE G.COMP_CD=B.COMP_CD AND G.BRAND_CD=B.BRAND_CD AND TRIM(G.STYLE_CD)=TRIM(B.STYLE_CD)) AND NOT EXISTS (SELECT 1 FROM DSNT.VIF_WHOLESALE_S W WHERE W.COMP_CD=B.COMP_CD AND TRIM(W.STYLE_CD)=TRIM(B.STYLE_CD))`,
+    },
+    {
+      id: "asta-awr-12",
+      label: "12 · 인라인 집계 중복",
+      pattern: "DUPLICATE_INLINE_AGGREGATE",
+      workload: "OLTP",
+      sql: `SELECT A.COMP_CD,A.BRAND_CD,A.STYLE_CD,CAST(A.QTY AS NUMBER) QTY,CAST(B.FIRST_QTY AS NUMBER) FIRST_QTY FROM (SELECT O.COMP_CD,O.BRAND_CD,O.STYLE_CD,SUM(O.ORD_QTY) QTY FROM DSNT.TSE_ORDER_S O WHERE O.COMP_CD='01' AND O.BRAND_CD='M' AND O.STYLE_CD BETWEEN 'MP111MET21' AND 'MR222LTS52' GROUP BY O.COMP_CD,O.BRAND_CD,O.STYLE_CD) A JOIN (SELECT O.COMP_CD,O.BRAND_CD,O.STYLE_CD,SUM(DECODE(O.RE_ORDR,1,O.ORD_QTY,0)) FIRST_QTY FROM DSNT.TSE_ORDER_S O WHERE O.COMP_CD='01' AND O.BRAND_CD='M' AND O.STYLE_CD BETWEEN 'MP111MET21' AND 'MR222LTS52' GROUP BY O.COMP_CD,O.BRAND_CD,O.STYLE_CD) B ON B.COMP_CD=A.COMP_CD AND B.BRAND_CD=A.BRAND_CD AND B.STYLE_CD=A.STYLE_CD`,
+    },
+    {
+      id: "asta-awr-13",
+      label: "13 · EXISTS와 NOT EXISTS 연쇄",
+      pattern: "EXISTS_NOT_EXISTS_CHAIN",
+      workload: "OLTP",
+      sql: `WITH B AS (SELECT S.COMP_CD,S.BRAND_CD,S.STYLE_CD,S.ITEM_CD FROM DSNT.TGP_STYLE_M S WHERE S.COMP_CD='01' AND S.BRAND_CD='M' AND S.STYLE_CD BETWEEN 'MP111MET21' AND 'MR222LTS52' AND ROWNUM<=60) SELECT B.* FROM B WHERE EXISTS (SELECT 1 FROM DSNT.V_STYGRP_D G WHERE G.COMP_CD=B.COMP_CD AND G.BRAND_CD=B.BRAND_CD AND TRIM(G.STYLE_CD)=TRIM(B.STYLE_CD)) AND NOT EXISTS (SELECT 1 FROM DSNT.VIF_WHOLESALE_S W WHERE W.COMP_CD=B.COMP_CD AND TRIM(W.STYLE_CD)=TRIM(B.STYLE_CD))`,
+    },
+    {
+      id: "asta-awr-14",
+      label: "14 · 월판매 GROUP BY 반복",
+      pattern: "REPEATED_GROUP_BY_CTE",
+      workload: "OLTP",
+      sql: `WITH Q AS (SELECT M.COMP_CD,M.BRAND_CD,M.STYLE_CD,SUM(M.SALE_QTY) QTY FROM DSNT.TSE_SALE_MON_S M WHERE M.COMP_CD='01' AND M.BRAND_CD='M' AND M.STYLE_CD BETWEEN 'MP111MET21' AND 'MR222LTS52' GROUP BY M.COMP_CD,M.BRAND_CD,M.STYLE_CD),R AS (SELECT M.COMP_CD,M.BRAND_CD,M.STYLE_CD,COUNT(*) CNT FROM DSNT.TSE_SALE_MON_S M WHERE M.COMP_CD='01' AND M.BRAND_CD='M' AND M.STYLE_CD BETWEEN 'MP111MET21' AND 'MR222LTS52' GROUP BY M.COMP_CD,M.BRAND_CD,M.STYLE_CD) SELECT Q.COMP_CD,Q.BRAND_CD,Q.STYLE_CD,CAST(Q.QTY AS NUMBER) QTY,CAST(R.CNT AS NUMBER) CNT FROM Q JOIN R ON R.COMP_CD=Q.COMP_CD AND R.BRAND_CD=Q.BRAND_CD AND R.STYLE_CD=Q.STYLE_CD`,
+    },
+    {
+      id: "asta-awr-15",
+      label: "15 · 중복 함수 조건",
+      pattern: "REDUNDANT_FUNCTION_FILTER",
+      workload: "OLTP",
+      sql: `WITH B AS (SELECT S.COMP_CD,S.BRAND_CD,S.STYLE_CD,S.ITEM_CD FROM DSNT.TGP_STYLE_M S WHERE S.COMP_CD='01' AND S.BRAND_CD='M' AND S.STYLE_CD BETWEEN 'MP111MET21' AND 'MR222LTS52' AND ROWNUM<=65) SELECT B.COMP_CD,B.BRAND_CD,B.STYLE_CD,B.ITEM_CD FROM B WHERE EXISTS (SELECT 1 FROM DSNT.V_STYGRP_D G WHERE NVL(G.COMP_CD,'-')=NVL(B.COMP_CD,'-') AND UPPER(NVL(G.BRAND_CD,'-'))=UPPER(NVL(B.BRAND_CD,'-')) AND TRIM(G.STYLE_CD)=TRIM(B.STYLE_CD))`,
     },
   ];
   const DEFAULT_STEPS = [
     { seq: 1, code: "REQUEST_RECEIVED", label: "요청 수신", status: "PENDING" },
-    { seq: 2, code: "ORDS_DISPATCH", label: "ADB ORDS 분석 호출", status: "PENDING" },
-    { seq: 3, code: "SQL_GUARD", label: "SQL 안전성 검사", status: "PENDING" },
-    { seq: 4, code: "BEFORE_EVIDENCE", label: "원본 SQL Evidence 수집", status: "PENDING" },
-    { seq: 5, code: "SQL_TUNING_ADVISOR", label: "Tuning Advisor 수행", status: "PENDING" },
-    { seq: 6, code: "LLM_REWRITE", label: "SQL-only 구조 재작성", status: "PENDING" },
-    { seq: 7, code: "AFTER_EVIDENCE", label: "후보 SQL Evidence 수집", status: "PENDING" },
-    { seq: 8, code: "BEFORE_AFTER_COMPARE", label: "결정론적 Before/After 비교", status: "PENDING" },
-    { seq: 9, code: "VECTOR_KB", label: "검증 후 유사 결과서 조회", status: "PENDING" },
-    { seq: 10, code: "FINAL_REPORT", label: "최종 보고서 생성", status: "PENDING" },
-    { seq: 11, code: "VECTOR_SAVE", label: "ADB Vector KB 결과서 저장", status: "PENDING" },
+    { seq: 2, code: "ORDS_DISPATCH", label: "분석 서버 연결", status: "PENDING" },
+    { seq: 3, code: "SQL_GUARD", label: "입력 SQL 확인", status: "PENDING" },
+    { seq: 4, code: "BEFORE_EVIDENCE", label: "원본 SQL 실행 정보 수집", status: "PENDING" },
+    { seq: 5, code: "SQL_TUNING_ADVISOR", label: "Oracle 튜닝 권고 (기본 사용 안 함)", status: "PENDING" },
+    { seq: 6, code: "LLM_REWRITE", label: "개선 SQL 만들기", status: "PENDING" },
+    { seq: 7, code: "AFTER_EVIDENCE", label: "개선 SQL 안전성·성능 확인", status: "PENDING" },
+    { seq: 8, code: "BEFORE_AFTER_COMPARE", label: "원본과 개선 결과 비교", status: "PENDING" },
+    { seq: 9, code: "VECTOR_KB", label: "비슷한 튜닝 사례 찾기", status: "PENDING" },
+    { seq: 10, code: "FINAL_REPORT", label: "결과서 만들기", status: "PENDING" },
+    { seq: 11, code: "VECTOR_SAVE", label: "검증 결과 저장", status: "PENDING" },
   ];
+
+  const FRIENDLY_ASTA_ISSUES = Object.freeze({
+    CANDIDATE_RUNTIME_LIMIT: {
+      title: "후보 SQL 검증 시간이 초과되었습니다",
+      message: "개선 SQL의 전체 결과를 확인하는 작업이 제한 시간 안에 끝나지 않았습니다. 원본 SQL은 변경되지 않았습니다.",
+      action: "같은 테스트를 바로 반복하지 말고 Run ID를 담당자에게 전달해 주세요. 결과 데이터가 큰 SQL은 검증 시간이 더 필요할 수 있습니다.",
+    },
+    SQL_REQUIRED: { title: "SQL을 입력해 주세요", message: "분석할 SQL이 비어 있습니다.", action: "SELECT 또는 WITH로 시작하는 조회 SQL을 입력한 뒤 다시 실행해 주세요." },
+    SQL_GUARD_REJECTED: { title: "실행할 수 없는 SQL입니다", message: "ASTA는 데이터 조회용 SELECT 또는 WITH 한 문장만 실행할 수 있습니다.", action: "세미콜론으로 연결된 여러 문장, INSERT·UPDATE·DELETE·DDL, FOR UPDATE를 제거해 주세요." },
+    SQL_SYNTAX_ERROR: { title: "SQL 문법을 확인해 주세요", message: "Oracle이 SQL 문장을 해석하지 못했습니다.", action: "괄호, 쉼표, 별칭, JOIN 조건을 확인한 뒤 다시 실행해 주세요." },
+    SQL_INVALID_IDENTIFIER: { title: "컬럼이나 객체 이름을 찾을 수 없습니다", message: "SQL에 현재 스키마에서 확인할 수 없는 컬럼 또는 객체 이름이 있습니다.", action: "테이블 별칭과 컬럼명을 확인해 주세요." },
+    SQL_AMBIGUOUS_COLUMN: { title: "어느 테이블의 컬럼인지 알 수 없습니다", message: "같은 이름의 컬럼이 여러 테이블에 있어 Oracle이 대상을 결정하지 못했습니다.", action: "컬럼 앞에 테이블 별칭을 붙여 주세요." },
+    SOURCE_OBJECT_NOT_FOUND: { title: "테이블 또는 뷰를 찾을 수 없습니다", message: "분석 대상 DB에서 SQL이 참조하는 객체를 찾지 못했습니다.", action: "객체명과 스키마명을 확인하고, 계속되면 Run ID를 담당자에게 전달해 주세요." },
+    SOURCE_PRIVILEGE_DENIED: { title: "조회 권한이 부족합니다", message: "ASTA 실행 계정에 필요한 객체 조회 권한이 없습니다.", action: "Run ID와 객체명을 DB 담당자에게 전달해 권한을 확인해 주세요." },
+    SOURCE_DBLINK_UNAVAILABLE: { title: "분석 대상 DB에 연결할 수 없습니다", message: "ASTA 서버와 분석 대상 DB 사이의 연결이 현재 사용 가능하지 않습니다.", action: "잠시 후 다시 시도하고, 계속되면 Run ID를 운영 담당자에게 전달해 주세요." },
+    CANDIDATE_FAILED: { title: "개선 SQL을 실행하지 못했습니다", message: "자동으로 만든 개선 SQL이 Oracle에서 정상 실행되지 않았습니다. 원본 SQL은 변경되지 않았습니다.", action: "튜닝 후 탭의 오류와 Run ID를 확인해 주세요." },
+    CANDIDATE_ORACLE_ERROR: { title: "개선 SQL을 실행하지 못했습니다", message: "자동으로 만든 개선 SQL에서 Oracle 오류가 발생했습니다. 원본 SQL은 변경되지 않았습니다.", action: "튜닝 후 탭의 오류와 Run ID를 확인해 주세요." },
+    NO_REWRITE: { title: "안전한 개선 SQL을 만들지 못했습니다", message: "현재 정보만으로는 실행 가능한 개선안을 만들 수 없었습니다.", action: "업무상 유지해야 할 조건이나 의심 구간을 참고사항에 추가해 다시 시도해 주세요." },
+    FULL_RESULT_EVIDENCE_REQUIRED: { title: "전체 결과 비교가 필요합니다", message: "일부 결과만 확인되어 원본과 개선 SQL이 완전히 같은 결과인지 확정할 수 없습니다.", action: "원본 SQL은 그대로 사용하고, Run ID를 담당자에게 전달해 전체 결과 검증 상태를 확인해 주세요." },
+    RESULT_EVIDENCE_INCOMPLETE: { title: "결과 비교가 끝나지 않았습니다", message: "원본과 개선 SQL의 전체 결과 확인이 완료되지 않았습니다.", action: "원본 SQL은 그대로 사용하고 잠시 후 다시 시도해 주세요." },
+    RESULT_DIGEST_REQUIRED: { title: "결과 비교 정보를 만들지 못했습니다", message: "원본과 개선 SQL의 결과가 같은지 확인할 정보가 부족합니다.", action: "원본 SQL을 유지하고 Run ID를 담당자에게 전달해 주세요." },
+    RESULT_DIGEST_MISMATCH: { title: "원본과 개선 SQL의 결과가 다릅니다", message: "두 SQL이 반환한 데이터가 일치하지 않아 개선 SQL을 적용하지 않았습니다.", action: "개선 SQL을 사용하지 말고 튜닝 후 탭에서 변경 조건을 확인해 주세요." },
+    RESULT_METADATA_MISMATCH: { title: "결과 컬럼 구성이 다릅니다", message: "컬럼명, 순서 또는 데이터 형식이 달라 개선 SQL을 적용하지 않았습니다.", action: "개선 SQL을 사용하지 말고 SELECT 컬럼 구성을 확인해 주세요." },
+    BIND_COVERAGE_INSUFFICIENT: { title: "입력값별 안전성을 충분히 확인하지 못했습니다", message: "조건값에 따라 실행 방식이 달라질 수 있어 개선 SQL을 확정하지 않았습니다.", action: "대표적인 조건값으로 다시 검증하거나 Run ID를 담당자에게 전달해 주세요." },
+    MEASUREMENT_EVIDENCE_INCOMPLETE: { title: "성능 측정 횟수가 부족합니다", message: "일시적인 변동을 제외할 만큼 반복 측정이 완료되지 않았습니다.", action: "원본 SQL을 유지하고 잠시 후 다시 실행해 주세요." },
+    MEASUREMENT_NOISE_TOO_HIGH: { title: "실행시간 변동이 너무 큽니다", message: "측정할 때마다 실행시간 차이가 커서 개선 여부를 확정할 수 없습니다.", action: "DB 부하가 낮을 때 다시 실행해 주세요." },
+    OPTIMIZER_INTENT_EVIDENCE_INCOMPLETE: { title: "병목이 실제로 줄었는지 확인하지 못했습니다", message: "개선 SQL의 실행계획에서 목표한 반복 작업 감소를 확인할 정보가 부족합니다.", action: "원본 SQL을 유지하고 Run ID를 담당자에게 전달해 주세요." },
+    OLTP_LATENCY_TARGET_NOT_MET: { title: "응답시간 기준을 통과하지 못했습니다", message: "개선 SQL의 응답시간이 온라인 업무 기준보다 길어 적용하지 않았습니다.", action: "원본 SQL을 계속 사용해 주세요." },
+    BATCH_ELAPSED_TIME_NOT_IMPROVED: { title: "전체 실행시간이 줄지 않았습니다", message: "개선 SQL이 원본보다 빠르지 않아 적용하지 않았습니다.", action: "원본 SQL을 계속 사용해 주세요." },
+    RUN_NOT_FOUND: { title: "분석 기록을 찾을 수 없습니다", message: "요청한 Run ID의 분석 기록이 없거나 보관기간이 지났습니다.", action: "Run ID를 다시 확인해 주세요." },
+    REPORT_NOT_FOUND: { title: "결과서를 찾을 수 없습니다", message: "분석 기록은 있지만 결과서가 아직 생성되지 않았거나 보관기간이 지났습니다.", action: "잠시 후 다시 조회하고, 계속되면 Run ID를 담당자에게 전달해 주세요." },
+    RESOURCE_BUSY: { title: "DB가 현재 바쁩니다", message: "필요한 DB 자원을 다른 작업이 사용 중이어서 분석을 완료하지 못했습니다.", action: "잠시 후 다시 시도해 주세요." },
+    SPACE_EXHAUSTED: { title: "DB 작업 공간이 부족합니다", message: "결과 비교 중 필요한 임시 공간이 부족했습니다.", action: "반복 실행하지 말고 Run ID를 DB 담당자에게 전달해 주세요." },
+    EXECUTION_CANCELLED: { title: "SQL 실행이 중단되었습니다", message: "실행 제한시간 또는 DB 요청으로 분석 SQL이 중단되었습니다. 원본 SQL은 변경되지 않았습니다.", action: "잠시 후 다시 시도하고, 계속되면 Run ID를 담당자에게 전달해 주세요." },
+  });
 
   /**
    * 사용자/서버 문자열을 HTML로 렌더링하기 전에 이스케이프한다.
@@ -938,11 +779,98 @@ SELECT H.COMP_CD,
     return { ...step, status, detail: detail || step.detail || status, at: iso, elapsed_ms: elapsedMs };
   }
 
+  /** 민감한 SQL literal/bind 값은 숨기되 ORA 코드와 gate reason은 보존한다. */
+  function redactAstaSensitiveText(value) {
+    let text = String(value ?? "");
+    const hasOracleError = /ORA-/i.test(text);
+    text = text.replace(/'(?:''|[^'])*'/g, "'[SQL_LITERAL_REDACTED]'");
+    text = text.replace(/(:[A-Za-z][A-Za-z0-9_$#]*)\s*=\s*[^,\s)]+/g, "$1=[BIND_VALUE_REDACTED]");
+    text = text.replace(/\b(SELECT|WITH|INSERT|UPDATE|DELETE|MERGE)\b[\s\S]*$/i, "[SQL_TEXT_REDACTED]");
+    if (hasOracleError && !/ORA-/i.test(text)) text = `ORA-ERROR · ${text}`;
+    return text.slice(0, 2000);
+  }
+
+  function astaIssueCandidates(data, fallbackMessage) {
+    const value = data || {};
+    const progress = value.progress && !Array.isArray(value.progress) ? value.progress : {};
+    const payload = value.payload || {};
+    const detail = payload.detail || {};
+    return [
+      value.error_code, value.error?.code, value.workflow_state?.reason_code,
+      value.comparison?.verdict_reason, value.comparison?.verdict,
+      progress.error_code, progress.error?.code, progress.workflow_state?.reason_code,
+      payload.error_code, payload.error?.code, detail.error,
+      value.message, value.error_message, value.error?.message,
+      progress.error_message, progress.error?.message,
+      detail.message, fallbackMessage,
+    ].filter((item) => item != null && String(item).trim());
+  }
+
+  /** 내부 오류 코드는 유지하되 개발자가 이해할 제목·설명·다음 행동으로 변환한다. */
+  function friendlyAstaIssue(data, fallbackMessage) {
+    const value = data || {};
+    const nestedProgress = value.progress && !Array.isArray(value.progress) ? value.progress : {};
+    const payload = value.payload || {};
+    const detail = payload.detail || {};
+    const candidates = astaIssueCandidates(data, fallbackMessage);
+    const combined = candidates.map((item) => String(item)).join("\n");
+    let code = candidates.map((item) => String(item).trim().toUpperCase())
+      .find((item) => Object.prototype.hasOwnProperty.call(FRIENDLY_ASTA_ISSUES, item));
+    if (!code) {
+      code = Object.keys(FRIENDLY_ASTA_ISSUES).find((key) => combined.toUpperCase().includes(key));
+    }
+    if (!code && /CANDIDATE EXECUTION EXCEEDED THE ADAPTIVE RUNTIME LIMIT/i.test(combined)) code = "CANDIDATE_RUNTIME_LIMIT";
+    if (!code && /ORA-0090[057]|ORA-00911|ORA-0093[36]/i.test(combined)) code = "SQL_SYNTAX_ERROR";
+    if (!code && /ORA-00904/i.test(combined)) code = "SQL_INVALID_IDENTIFIER";
+    if (!code && /ORA-00918/i.test(combined)) code = "SQL_AMBIGUOUS_COLUMN";
+    if (!code && /ORA-00942/i.test(combined)) code = "SOURCE_OBJECT_NOT_FOUND";
+    if (!code && /ORA-01031/i.test(combined)) code = "SOURCE_PRIVILEGE_DENIED";
+    if (!code && /ORA-01013|ORA-00028/i.test(combined)) code = "EXECUTION_CANCELLED";
+    const known = code ? FRIENDLY_ASTA_ISSUES[code] : null;
+    const rawTechnicalMessage = value.error_message || value.error?.message
+      || nestedProgress.error_message || nestedProgress.error?.message
+      || detail.message || value.message || fallbackMessage
+      || "상세 원인이 제공되지 않았습니다.";
+    const technicalMessage = redactAstaSensitiveText(rawTechnicalMessage);
+    return known
+      ? { code, ...known, technicalMessage }
+      : {
+          code: String(value?.error_code || value?.error?.code || value?.workflow_state?.reason_code || "ASTA_ANALYSIS_INCOMPLETE"),
+          title: "분석을 완료하지 못했습니다",
+          message: "안전을 위해 개선 SQL을 적용하지 않았으며 원본 SQL은 변경되지 않았습니다.",
+          action: "잠시 후 다시 시도하고, 같은 문제가 계속되면 Run ID와 문의 코드를 담당자에게 전달해 주세요.",
+          technicalMessage,
+        };
+  }
+
+  /** 서버 상태머신과 deterministic comparison을 하나의 terminal outcome으로 해석한다. */
+  function astaWorkflowOutcome(data) {
+    const workflowStatus = String(data?.workflow_state?.overall_status || data?.state_machine?.overall_status || "").toUpperCase();
+    const responseStatus = String(data?.status || "").toUpperCase();
+    const verdict = String(data?.comparison?.verdict || data?.verdict || "").toUpperCase();
+    const failures = ["BLOCKED", "REJECTED", "FAILED", "ERROR"];
+    if (failures.includes(workflowStatus)) return workflowStatus;
+    if (failures.includes(responseStatus)) return responseStatus;
+    if (["NON_EQUIVALENT", "INSUFFICIENT_EVIDENCE", "NOT_IMPROVED", "CANDIDATE_FAILED"].includes(verdict)) return "REJECTED";
+    if (workflowStatus === "ACCEPTED" || verdict === "IMPROVED") return "ACCEPTED";
+    if (["COMPLETED", "DONE", "BASELINE_CAPTURED"].includes(responseStatus)) return "ACCEPTED";
+    return responseStatus || workflowStatus || "RUNNING";
+  }
+
+  /** SQL/literal은 보존하되 credential, token, connection string만 UI에서 마스킹한다. */
+  function redactAstaReportForUi(report) {
+    return String(report || "")
+      .replace(/\b(authorization\s*:\s*bearer)\s+[^\s]+/gi, "$1 [CREDENTIAL_REDACTED]")
+      .replace(/\b(password|passwd|pwd|api[_-]?key|access[_-]?token|secret)\b(\s*[:=]\s*)(?:'[^']*'|"[^"]*"|[^\s,;]+)/gi, "$1$2[CREDENTIAL_REDACTED]")
+      .replace(/\b(?:jdbc:oracle:thin:|oracle:\/\/)[^\s)]+/gi, "[CONNECTION_STRING_REDACTED]");
+  }
+
   /**
    * ASTA analyze 결과와 다운로드 링크를 결과 영역에 렌더링한다.
    */
   function renderResult(target, data) {
-    const report = data?.detailed_report_markdown || data?.report_markdown || data?.llm_final_report?.report_markdown || data?.report || data?.message || "";
+    const report = data?.detailed_report_markdown || data?.report_markdown || data?.llm_final_report?.report_markdown || data?.report || data?.message || "구조화된 Gate 결과만 제공되었습니다.";
+    const safeReport = redactAstaReportForUi(report);
     const runId = data?.run_id ? `<div class="muted">Run ID: ${escapeHtml(data.run_id)}</div>` : "";
     const errorCandidates = [
       data?.error_message,
@@ -955,39 +883,53 @@ SELECT H.COMP_CD,
     ].filter((value) => typeof value === "string" && value.trim());
     const oraMessage = errorCandidates.find((value) => /ORA-\d{5}/i.test(value));
     const oraBanner = oraMessage
-      ? `<div class="tuning-ora-banner"><strong>Oracle SQL 오류</strong><code>${escapeHtml(oraMessage.slice(0, 2000))}</code></div>`
+      ? `<div class="tuning-ora-banner"><strong>Oracle SQL 오류</strong><code>${escapeHtml(redactAstaSensitiveText(oraMessage))}</code></div>`
       : "";
     window.__astaLastReport = {
       runId: data?.run_id || "report",
-      report: report || JSON.stringify(data, null, 2),
+      report: safeReport,
+      displayReport: safeReport,
+      rawReport: String(report),
     };
     target.innerHTML = `
-      <div class="card stack tuning-report-card" style="gap: var(--space-3);">
-        <div class="tuning-report-head">
-          <div>
-            <div class="section-title">ASTA 분석 결과</div>
-            ${runId}
+      <div class="card tuning-report-card">
+        <div class="tuning-report-header">
+          <div class="tuning-report-head">
+            <div class="tuning-report-title-group">
+              <div class="section-title">ASTA 분석 결과</div>
+              ${runId}
+            </div>
+            <div class="tuning-report-actions" aria-label="결과서 작업 및 스크롤 이동">
+              <button class="tuning-secondary" id="asta-report-top" type="button">맨 위</button>
+              <button class="tuning-secondary" id="asta-report-bottom" type="button">맨 아래</button>
+            </div>
           </div>
-          <div class="tuning-report-actions" aria-label="결과서 스크롤 이동">
-            <button class="tuning-secondary" id="asta-report-top" type="button">맨 위</button>
-            <button class="tuning-secondary" id="asta-report-bottom" type="button">맨 아래</button>
-          </div>
+          <div class="tuning-report-status-slot"></div>
+          <div id="asta-report-tabs-host" class="tuning-report-tabs-host"></div>
         </div>
         ${oraBanner}
         <div id="asta-report-scroll" class="code-block tuning-report-scroll" tabindex="0"></div>
       </div>`;
     const reportScroller = document.getElementById("asta-report-scroll");
     renderTrustedVectorBlocks(reportScroller, window.__astaLastReport.report);
+    const tabsHost = document.getElementById("asta-report-tabs-host");
+    const tabList = reportScroller?.querySelector(".tuning-report-tablist");
+    if (tabsHost && tabList) tabsHost.appendChild(tabList);
+    const progressTarget = document.getElementById("asta-current-progress");
+    const statusSlot = target.querySelector(".tuning-report-status-slot");
+    if (statusSlot && progressTarget) statusSlot.appendChild(progressTarget);
+    const reportActions = target.querySelector(".tuning-report-actions");
+    const downloadButton = document.getElementById("asta-download-report");
+    const resetButton = document.getElementById("asta-reset");
+    if (downloadButton) downloadButton.hidden = false;
+    if (resetButton) resetButton.hidden = false;
+    if (reportActions && downloadButton && resetButton) reportActions.append(downloadButton, resetButton);
     document.getElementById("asta-report-top")?.addEventListener("click", () => reportScroller?.scrollTo({ top: 0, behavior: "smooth" }));
     document.getElementById("asta-report-bottom")?.addEventListener("click", () => reportScroller?.scrollTo({ top: reportScroller.scrollHeight, behavior: "smooth" }));
     requestAnimationFrame(() => {
       target.scrollIntoView({ block: "start", behavior: "smooth" });
       reportScroller?.focus({ preventScroll: true });
     });
-    const downloadButton = document.getElementById("asta-download-report");
-    if (downloadButton) downloadButton.hidden = false;
-    const resetButton = document.getElementById("asta-reset");
-    if (resetButton) resetButton.hidden = false;
   }
 
   // Decode character references from backend-safe code only. The result is
@@ -999,6 +941,10 @@ SELECT H.COMP_CD,
   }
 
   function renderTrustedVectorBlocks(container, report) {
+    if (window.AstaReportTabs?.renderReportTabs) {
+      window.AstaReportTabs.renderReportTabs(container, report);
+      return;
+    }
     const detailPattern = /<details><summary>축약 SQL 보기<\/summary>\s*<pre><code>([\s\S]*?)<\/code><\/pre>\s*<\/details>\s*(?:\[전체 결과서 보기\]\(([^)]+)\))?/g;
     const safeReportPath = /^\/api\/asta\/runs\/[A-Za-z0-9][A-Za-z0-9_.:-]*\/report(?:\/view)?$/;
     let cursor = 0;
@@ -1040,16 +986,19 @@ SELECT H.COMP_CD,
   function errorDetailText(err) {
     const payload = err?.payload;
     const detail = payload?.detail;
+    const issue = friendlyAstaIssue(err?.progress || payload || err, err?.message);
     const queriedRunId = err?.queriedRunId || payload?.run_id || payload?.queried_run_id || "";
     const lines = [
-      `메시지: ${err?.message || "알 수 없는 오류"}`,
+      `문의 코드: ${issue.code}`,
+      `안내: ${issue.message}`,
+      `다음 행동: ${issue.action}`,
+      `기술 메시지: ${issue.technicalMessage}`,
       err?.status ? `HTTP 상태: ${err.status}` : "",
       err?.url ? `조회 endpoint: ${err.url}` : "",
       queriedRunId ? `조회 run_id: ${queriedRunId}` : "",
       payload?.error_code ? `ASTA 오류 코드: ${payload.error_code}` : "",
-      detail?.error ? `서버 오류: ${detail.error}` : "",
-      detail?.message ? `Oracle/상세: ${detail.message}` : "",
-      payload ? `서버 응답:\n${JSON.stringify(payload, null, 2)}` : "",
+      detail?.error ? `서버 오류: ${redactAstaSensitiveText(detail.error)}` : "",
+      detail?.message ? `Oracle/상세: ${redactAstaSensitiveText(detail.message)}` : "",
     ].filter(Boolean);
     return lines.join("\n\n");
   }
@@ -1058,16 +1007,19 @@ SELECT H.COMP_CD,
    * ASTA 실행 오류를 화면의 오류 영역에 표시한다.
    */
   function renderError(target, err) {
+    const issue = friendlyAstaIssue(err?.progress || err?.payload || err, err?.message);
     const detail = errorDetailText(err);
     window.__astaLastError = detail;
     target.innerHTML = `
       <div class="card stack" style="gap: var(--space-3); border-color:#fecaca; background:#fff7f7;">
-        <div class="section-title" style="color:#b91c1c;">ASTA 호출 실패</div>
-        <div style="color:#7f1d1d; line-height:1.55;">${escapeHtml(err?.message || "알 수 없는 오류")}</div>
+        <div class="section-title" style="color:#b91c1c;">${escapeHtml(issue.title)}</div>
+        <div style="color:#7f1d1d; line-height:1.55;">${escapeHtml(issue.message)}</div>
+        <div style="color:#7f1d1d; line-height:1.55;"><strong>다음 행동:</strong> ${escapeHtml(issue.action)}</div>
+        <div class="muted">문의 코드: <code>${escapeHtml(issue.code)}</code></div>
         <div class="tuning-actions">
-          <button class="tuning-secondary" id="asta-copy-error" type="button">오류 상세 클립보드 복사</button>
+          <button class="tuning-secondary" id="asta-copy-error" type="button">문의 정보 복사</button>
         </div>
-        <div class="section-title">오류 상세</div>
+        <div class="section-title">기술 정보 (문의 시 전달)</div>
         <pre class="code-block" style="white-space: pre-wrap; max-height: 420px; overflow:auto; border-color:#fecaca;">${escapeHtml(detail)}</pre>
       </div>`;
     const copyButton = document.getElementById("asta-copy-error");
@@ -1077,9 +1029,9 @@ SELECT H.COMP_CD,
       copyButton.addEventListener("click", async () => {
         try {
           await navigator.clipboard.writeText(window.__astaLastError || detail);
-          window.Toast?.show?.("오류 상세를 복사했습니다.", "success");
+          window.Toast?.show?.("담당자에게 전달할 문의 정보를 복사했습니다.", "success");
         } catch (_) {
-          window.Toast?.show?.("복사 실패: 화면의 오류 상세를 직접 선택해서 복사하세요.", "error");
+          window.Toast?.show?.("복사하지 못했습니다. 화면의 기술 정보를 직접 선택해 주세요.", "error");
         }
       });
     }
@@ -1158,7 +1110,7 @@ SELECT H.COMP_CD,
     }
     const overall = String(progress?.status || "").toUpperCase();
     const doneStatuses = ["DONE", "COMPLETED", "SUCCESS", "ACCEPTED", "BASELINE_CAPTURED", "DBLINK_DEFERRED", "SKIPPED"];
-    const failStatuses = ["FAILED", "ERROR", "WARN", "WARNING"];
+    const failStatuses = ["FAILED", "ERROR", "BLOCKED", "REJECTED", "WARN", "WARNING"];
     if (!overall || ["READY", "IDLE", "PENDING"].includes(overall)) {
       return byIndex;
     }
@@ -1170,7 +1122,7 @@ SELECT H.COMP_CD,
         return step;
       });
     }
-    if (["FAILED", "ERROR"].includes(overall)) {
+    if (["FAILED", "ERROR", "BLOCKED", "REJECTED"].includes(overall)) {
       // A terminal failure must not promote the next unexecuted PENDING step
       // to RUNNING. Preserve the authoritative failed stage from ADB.
       return byIndex;
@@ -1194,14 +1146,14 @@ SELECT H.COMP_CD,
     const statusText = progress?.status || "READY";
     const overall = String(statusText || "READY").toUpperCase();
     const running = steps.find((step) => String(step.status || "").toUpperCase() === "RUNNING");
-    const failed = steps.find((step) => ["FAILED", "ERROR"].includes(String(step.status || "").toUpperCase()));
+    const failed = steps.find((step) => ["FAILED", "ERROR", "BLOCKED", "REJECTED"].includes(String(step.status || "").toUpperCase()));
     const completedSteps = steps.filter((step) => ["DONE", "COMPLETED"].includes(String(step.status || "").toUpperCase()));
     const isOverallComplete = ["COMPLETED", "DONE", "BASELINE_CAPTURED"].includes(overall);
-    const isOverallFailed = ["FAILED", "ERROR"].includes(overall);
+    const isOverallFailed = ["FAILED", "ERROR", "BLOCKED", "REJECTED"].includes(overall);
     const current = isOverallComplete ? null : (isOverallFailed ? (failed || running) : (running || failed)) || completedSteps[completedSteps.length - 1] || steps[0];
     const currentStatus = isOverallComplete ? "COMPLETED" : String(current?.status || overall || "PENDING").toUpperCase();
     const isRunning = currentStatus === "RUNNING";
-    const isFailed = !isOverallComplete && (["FAILED", "ERROR"].includes(currentStatus) || isOverallFailed || progress?.stale_warning || progress?.observation_level === "STALE_OR_FAILED");
+    const isFailed = !isOverallComplete && (["FAILED", "ERROR", "BLOCKED", "REJECTED"].includes(currentStatus) || isOverallFailed || progress?.stale_warning || progress?.observation_level === "STALE_OR_FAILED");
     const isComplete = isOverallComplete;
     const ready = ["READY", "IDLE", "PENDING"].includes(overall) && !running && !failed && completedSteps.length === 0;
     const elapsed = !isOverallComplete && current?.elapsed_ms != null ? ` · ${formatDuration(current.elapsed_ms)}` : "";
@@ -1212,8 +1164,9 @@ SELECT H.COMP_CD,
     }
     const totalElapsed = totalElapsedMs(progress, steps, isComplete);
     const totalElapsedText = !ready && totalElapsed != null ? `전체 ${formatDuration(totalElapsed)}` : "";
-    const label = ready ? "대기 중" : isComplete ? "완료" : current?.label || statusText;
-    const detail = isComplete ? "AI 분석이 종료되었습니다" : ready ? "SQL 입력 후 AI 분석 실행을 누르세요" : observationDetail || current?.detail || statusText;
+    const progressIssue = isFailed ? friendlyAstaIssue(progress, current?.detail || statusText) : null;
+    const label = ready ? "대기 중" : isComplete ? "완료" : isFailed ? "확인 필요" : current?.label || statusText;
+    const detail = isComplete ? "AI 분석이 종료되었습니다" : ready ? "SQL 입력 후 AI 분석 실행을 누르세요" : isFailed ? progressIssue.message : observationDetail || current?.detail || statusText;
     const dotClass = isFailed ? "failed" : isComplete ? "done" : isRunning ? "running" : "pending";
     target.innerHTML = `
       <div class="tuning-current-progress tuning-current-${escapeHtml(dotClass)}" title="현재 진행 단계와 전체 수행 시간을 표시합니다">
@@ -1321,12 +1274,14 @@ SELECT H.COMP_CD,
       const totalDurationMs = uiStartedAt instanceof Date ? Date.now() - uiStartedAt.getTime() : undefined;
       renderProgressStack(progressTarget, { ...progress, totalDurationMs });
       const status = String(progress?.status || "").toUpperCase();
-      if (["COMPLETED", "DONE", "FAILED"].includes(status)) {
-        if (status === "FAILED") {
-          const failedStep = (progress?.progress || progress?.steps || []).find((step) => ["FAILED", "ERROR"].includes(String(step?.status || "").toUpperCase()));
+      if (["COMPLETED", "DONE", "FAILED", "BLOCKED", "REJECTED"].includes(status)) {
+        if (["FAILED", "BLOCKED", "REJECTED"].includes(status)) {
+          const failedStep = (progress?.progress || progress?.steps || []).find((step) => ["FAILED", "ERROR", "BLOCKED", "REJECTED"].includes(String(step?.status || "").toUpperCase()));
           const message = progress?.error_message || progress?.error?.message || failedStep?.detail || "ASTA 분석이 실패했습니다.";
-          const err = new Error(message);
+          const issue = friendlyAstaIssue(progress, message);
+          const err = new Error(issue.message);
           err.progress = progress;
+          err.friendlyIssue = issue;
           throw err;
         }
         renderResult(resultTarget, await fetchReport(baseUrl, runId));
@@ -1389,6 +1344,7 @@ SELECT H.COMP_CD,
           backdrop-filter: blur(12px);
         }
         .tuning-card-title { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:14px; font-weight:590; }
+        .tuning-advisor-state { display:inline-flex; align-items:center; padding:5px 10px; border:1px solid var(--tuning-border); border-radius:999px; background:var(--surface-alt, #f8fafc); color:var(--tuning-muted); font-size:12px; font-weight:650; white-space:nowrap; }
         .tuning-hero-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
         .tuning-top-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
         .tuning-current-progress { display:inline-flex; align-items:center; gap:8px; min-height:40px; max-width:min(980px, 100%); padding:8px 12px; border:1px solid #dbe3ef; border-radius:999px; background:#ffffff; color:#334155; box-shadow:0 8px 22px rgba(15,23,42,.07); }
@@ -1409,6 +1365,9 @@ SELECT H.COMP_CD,
         .tuning-pill { color:#475569; border:1px solid #dbe3ef; border-radius:999px; padding:5px 10px; font-size:12px; background:#f8fafc; }
         .tuning-field { display:flex; flex-direction:column; gap:8px; margin-bottom:14px; }
         .tuning-field span { color:#475569; font-size:13px; font-weight:510; }
+        .tuning-controls-row { display:grid; grid-template-columns:minmax(220px, .9fr) minmax(260px, 1fr) minmax(320px, 1.35fr); gap:12px; min-width:0; margin-bottom:14px; }
+        .tuning-controls-row .tuning-field { min-width:0; margin-bottom:0; }
+        .tuning-controls-row .tuning-input { min-width:0; }
         .tuning-sql-wrap { position:relative; display:grid; grid-template-columns:52px minmax(0,1fr); border:1px solid #dbe3ef; border-radius:14px; overflow:hidden; background:#fbfdff; box-shadow:inset 0 0 0 1px rgba(255,255,255,.75), 0 1px 2px rgba(15,23,42,.04); }
         .tuning-line-numbers { padding:18px 10px; color:#94a3b8; background:#f1f5f9; border-right:1px solid #dbe3ef; text-align:right; user-select:none; white-space:pre; overflow:hidden; font-family:'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace; font-size:14px; line-height:1.62; }
         .tuning-input, .tuning-sql {
@@ -1455,11 +1414,21 @@ SELECT H.COMP_CD,
         @keyframes tuning-spin { to { transform:rotate(360deg); } }
         .tuning-num { flex:0 0 26px; height:26px; display:grid; place-items:center; border-radius:9px; background:#eff6ff; color:#1d4ed8; font-size:12px; }
         .tuning-result { margin-top:18px; }
-        .tuning-report-card { min-height: min(82vh, 980px); }
-        .tuning-report-head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+        .tuning-report-card { min-height:min(82vh, 980px); padding:0 !important; overflow:hidden; border:1px solid var(--border); border-radius:var(--radius-lg); background:var(--surface); box-shadow:none; }
+        .tuning-report-header { background:var(--surface); border-bottom:1px solid var(--border); }
+        .tuning-report-head { display:flex; align-items:flex-start; justify-content:space-between; gap:var(--space-3); flex-wrap:wrap; padding:var(--space-4) var(--space-4) var(--space-2); }
+        .tuning-report-title-group { display:flex; flex-direction:column; gap:var(--space-1); min-width:0; color:var(--text); }
         .tuning-report-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+        .tuning-report-header .tuning-secondary { min-height:34px; padding:7px 10px; border:1px solid var(--border); border-radius:var(--radius); background:var(--surface); color:var(--text); box-shadow:none; }
+        .tuning-report-header .tuning-secondary:hover { transform:none; border-color:var(--primary); background:var(--surface-hover); box-shadow:none; }
+        .tuning-report-status-slot { padding:0 var(--space-4) var(--space-3); }
+        .tuning-report-status-slot:empty { display:none; }
+        .tuning-report-status-slot .tuning-current-progress { width:100%; max-width:none; border-color:var(--border); border-radius:var(--radius-lg); background:var(--surface-alt); color:var(--text); box-shadow:none; }
+        .tuning-report-status-slot .tuning-current-label, .tuning-report-status-slot .tuning-current-run-label { color:var(--text-muted); }
+        .tuning-report-status-slot .tuning-current-run-id { color:var(--text-muted); }
+        .tuning-report-tabs-host { padding:0 var(--space-4) var(--space-3); }
         .tuning-report-scroll {
-          white-space:pre;
+          white-space:normal;
           height:min(74vh, 900px);
           min-height:520px;
           max-height:calc(100dvh - 180px);
@@ -1468,9 +1437,44 @@ SELECT H.COMP_CD,
           overscroll-behavior:contain;
           scroll-behavior:smooth;
           -webkit-overflow-scrolling:touch;
+          padding:0 var(--space-4) var(--space-5);
+          border:0;
+          border-radius:0;
+          background:var(--surface);
+          color:var(--text);
         }
-        .tuning-report-scroll:focus { outline:2px solid rgba(37,99,235,.28); outline-offset:2px; }
-        @media (max-width: 1100px) { .tuning-grid { grid-template-columns:1fr; } .tuning-aside { position:static; } }
+        .tuning-report-scroll:focus { outline:2px solid var(--primary-light); outline-offset:-2px; }
+        .tuning-report-tablist { display:flex; gap:var(--space-1); width:max-content; max-width:100%; overflow-x:auto; padding:var(--space-1); border:1px solid var(--border); border-radius:var(--radius-lg); background:var(--surface-alt); scrollbar-width:thin; }
+        .tuning-report-tab { flex:0 0 auto; min-height:34px; padding:7px 11px; border:1px solid transparent; border-radius:var(--radius); background:transparent; color:var(--text-muted); font-weight:650; cursor:pointer; white-space:nowrap; }
+        .tuning-report-tab:hover { background:var(--surface-hover); color:var(--text); }
+        .tuning-report-tab[aria-selected="true"] { border-color:var(--border); background:var(--surface); color:var(--primary); }
+        .tuning-report-tab:focus-visible { outline:2px solid var(--primary); outline-offset:1px; }
+        .tuning-report-panels { min-width:0; }
+        .tuning-report-panel { padding:var(--space-4) var(--space-1) var(--space-5); color:var(--text); line-height:1.65; }
+        .tuning-report-panel[hidden] { display:none; }
+        .tuning-report-panel h2 { margin:24px 0 10px; padding-bottom:7px; border-bottom:1px solid var(--border); color:var(--text); font-size:20px; }
+        .tuning-report-panel h3 { margin:20px 0 8px; font-size:16px; }
+        .tuning-report-panel p { margin:8px 0 14px; white-space:pre-wrap; overflow-wrap:anywhere; }
+        .tuning-report-panel ul, .tuning-report-panel ol { margin:8px 0 16px; padding-left:24px; }
+        .tuning-report-code { max-width:100%; margin:10px 0 18px; padding:14px; overflow:auto; border:1px solid #dbe3ef; border-radius:10px; background:#0f172a; color:#e2e8f0; white-space:pre; }
+        .tuning-report-code code { font-family:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; font-size:12px; line-height:1.55; }
+        .tuning-report-table { width:100%; margin:10px 0 20px; border-collapse:collapse; display:block; overflow-x:auto; white-space:nowrap; }
+        .tuning-report-table th, .tuning-report-table td { padding:9px 11px; border:1px solid var(--border); text-align:left; }
+        .tuning-report-table th { background:var(--surface-alt); font-weight:750; }
+        .tuning-report-table tbody tr:nth-child(even) { background:var(--surface-alt); }
+        .tuning-report-empty { padding:24px; border:1px dashed var(--border); border-radius:var(--radius-lg); color:var(--text-muted); text-align:center; }
+        /* Visible ASTA inputs: let the rows attribute control initial height. */
+        #asta-sql,
+        #asta-tuning-notes {
+          height:auto;
+          min-height:0;
+          overflow-y:auto;
+        }
+        @media (max-width: 1100px) {
+          .tuning-grid { grid-template-columns:1fr; }
+          .tuning-aside { position:static; }
+          .tuning-controls-row { grid-template-columns:repeat(2, minmax(0, 1fr)); }
+        }
         @media (max-width: 720px) {
           .tuning-shell {
             min-height: calc(100dvh - 56px);
@@ -1506,6 +1510,8 @@ SELECT H.COMP_CD,
           }
           .tuning-card-title { margin-bottom:10px; }
           .tuning-card-title .tuning-pill { display:none; }
+          .tuning-controls-row { grid-template-columns:minmax(0, 1fr); gap:0; }
+          .tuning-controls-row .tuning-field { margin-bottom:10px; }
           .tuning-field { gap:6px; margin-bottom:10px; }
           .tuning-field span { font-size:12px; }
           .tuning-input { padding:10px 11px; font-size:14px; }
@@ -1577,9 +1583,25 @@ SELECT H.COMP_CD,
             height:68dvh;
             min-height:440px;
             max-height:68dvh !important;
-            white-space:pre-wrap !important;
+            white-space:normal !important;
             overflow-wrap:anywhere;
           }
+          .tuning-report-tablist { width:100%; overflow-x:auto; flex-wrap:nowrap; }
+          .tuning-report-panel { padding-inline:0; }
+          .tuning-report-code { font-size:11px; }
+        }
+        @media (max-width: 700px) {
+          .tuning-result .tuning-report-card { padding:0 !important; border-radius:var(--radius-lg); }
+          .tuning-report-header { min-width:0; }
+          .tuning-report-head { grid-template-columns:1fr; padding:var(--space-3) var(--space-3) var(--space-2); }
+          .tuning-report-actions { grid-template-columns:1fr 1fr; gap:var(--space-2); }
+          .tuning-report-status-slot { padding-inline:var(--space-3); padding-bottom:var(--space-3); }
+          .tuning-report-status-slot .tuning-current-progress { align-items:flex-start; border-radius:var(--radius-lg); }
+          .tuning-report-tabs-host { padding-inline:var(--space-3); padding-bottom:var(--space-3); }
+          .tuning-report-tablist { width:100%; overflow-x:auto; flex-wrap:nowrap; }
+          .tuning-report-tab { min-height:32px; padding:6px 10px; }
+          .tuning-report-scroll { padding-inline:var(--space-3); padding-bottom:var(--space-4); }
+          .tuning-report-panel { padding:var(--space-3) 0 var(--space-4); }
         }
         @media (max-width: 390px) and (orientation: portrait) {
           .tuning-shell {
@@ -1664,38 +1686,41 @@ SELECT H.COMP_CD,
           <div class="tuning-card">
             <div class="tuning-card-title">
               <span>SQL 분석 입력</span>
+              <span id="asta-advisor-status" class="tuning-advisor-state" role="status" aria-label="Oracle 튜닝 권고 사용 상태">Oracle 튜닝 권고: 사용 안 함</span>
             </div>
-            <label class="tuning-field">
-              <span>AI Profile</span>
-              <select class="tuning-input" id="asta-ai-profile">
-                <option value="ASTA_GROK_REASONING_PROFILE" selected>ASTA_GROK_REASONING_PROFILE</option>
-                <option value="ASTA_GROK_GENAI_PROFILE">ASTA_GROK_GENAI_PROFILE</option>
-                <option value="ASTA_GEMINI_PROFILE">ASTA_GEMINI_PROFILE</option>
-                <option value="ASTA_DB_GENAI_TEST">ASTA_DB_GENAI_TEST</option>
-              </select>
+            <div class="tuning-controls-row">
+              <label class="tuning-field" for="asta-ai-profile">
+                <span>AI 모델 설정</span>
+                <select class="tuning-input" id="asta-ai-profile">
+                  <option value="ASTA_GROK_REASONING_PROFILE" selected>ASTA_GROK_REASONING_PROFILE</option>
+                  <option value="ASTA_GROK_GENAI_PROFILE">ASTA_GROK_GENAI_PROFILE</option>
+                  <option value="ASTA_GEMINI_PROFILE">ASTA_GEMINI_PROFILE</option>
+                  <option value="ASTA_DB_GENAI_TEST">ASTA_DB_GENAI_TEST</option>
+                </select>
+              </label>
+              <label class="tuning-field" for="asta-workload-type">
+                <span>실행 유형</span>
+                <select class="tuning-input" id="asta-workload-type">
+                  <option value="OLTP" selected>OLTP — Buffer Reads 최소화</option>
+                  <option value="BATCH">배치 — Elapsed Time 최소화</option>
+                </select>
+                <small id="asta-workload-description" class="muted">OLTP: Buffer Reads를 우선하며 채택 latency는 3초 이하, 기존 대비 증가는 300ms 이하입니다.</small>
+              </label>
+              <label class="tuning-field" for="asta-sample-sql">
+                <span>샘플 튜닝대상 SQL</span>
+                <select class="tuning-input" id="asta-sample-sql">
+                  <option value="">직접 입력</option>
+                  ${ASTA_SAMPLE_SQLS.map((sample) => `<option value="${escapeHtml(sample.id)}">${escapeHtml(sample.label)}</option>`).join("")}
+                </select>
+              </label>
+            </div>
+            <label class="tuning-field" for="asta-tuning-notes">
+              <span>AI 참고사항 (선택)</span>
+              <textarea class="tuning-input tuning-notes" id="asta-tuning-notes" rows="3" spellcheck="false" placeholder="예: 특정 테이블/인덱스/조건을 중점 검토, 업무상 유지해야 하는 조건, 의심 병목 등"></textarea>
             </label>
-            <label class="tuning-field">
-              <span>Workload 유형</span>
-              <select class="tuning-input" id="asta-workload-type">
-                <option value="OLTP" selected>OLTP — Buffer Reads 최소화</option>
-                <option value="BATCH">배치 — Elapsed Time 최소화</option>
-              </select>
-              <small id="asta-workload-description" class="muted">OLTP: 반복 실행의 논리 Buffer Reads 최소화를 우선합니다.</small>
-            </label>
-            <label class="tuning-field">
-              <span>샘플 튜닝대상 SQL</span>
-              <select class="tuning-input" id="asta-sample-sql">
-                <option value="">직접 입력</option>
-                ${ASTA_SAMPLE_SQLS.map((sample) => `<option value="${escapeHtml(sample.id)}">${escapeHtml(sample.label)}</option>`).join("")}
-              </select>
-            </label>
-            <label class="tuning-field">
-              <span>LLM 참고사항 (선택)</span>
-              <textarea class="tuning-input tuning-notes" id="asta-tuning-notes" rows="4" spellcheck="false" placeholder="예: 특정 테이블/인덱스/조건을 중점 검토, 업무상 유지해야 하는 조건, 의심 병목 등"></textarea>
-            </label>
-            <label class="tuning-field">
+            <label class="tuning-field" for="asta-sql">
               <span>SQL</span>
-              <textarea class="tuning-sql" id="asta-sql" rows="18" spellcheck="false" placeholder="SELECT ...">select * from dual</textarea>
+              <textarea class="tuning-sql" id="asta-sql" rows="10" spellcheck="false" placeholder="SELECT ...">select * from dual</textarea>
             </label>
           </div>
         </div>
@@ -1720,6 +1745,13 @@ SELECT H.COMP_CD,
       const runButton = document.getElementById("asta-run");
       const resetButton = document.getElementById("asta-reset");
       const downloadButton = document.getElementById("asta-download-report");
+      const topActions = document.querySelector(".tuning-top-actions");
+      const secretButton = document.getElementById("asta-sql-only-llm");
+      if (topActions && resetButton && downloadButton) {
+        topActions.insertBefore(resetButton, secretButton);
+        topActions.insertBefore(downloadButton, secretButton);
+        topActions.append(progressTarget);
+      }
       window.__astaLastReport = null;
       window.__astaLastError = null;
       window.__astaRunStartedAt = null;
@@ -1744,7 +1776,7 @@ SELECT H.COMP_CD,
       if (!description) return;
       description.textContent = workloadType === "BATCH"
         ? "BATCH: 대량 처리의 전체 Elapsed Time 최소화를 우선합니다."
-        : "OLTP: 반복 실행의 논리 Buffer Reads 최소화를 우선합니다.";
+        : "OLTP: Buffer Reads를 우선하며 채택 latency는 3초 이하, 기존 대비 증가는 300ms 이하입니다.";
     }
 
     /**
@@ -1820,9 +1852,9 @@ SELECT H.COMP_CD,
     sampleInput.addEventListener("change", () => applySampleSql(sampleInput.value));
 
     document.getElementById("asta-download-report").addEventListener("click", () => {
-      if (!window.__astaLastReport?.report) return;
+      if (!window.__astaLastReport?.rawReport) return;
       const stamp = new Date().toISOString().replace(/[-:]/g, "").slice(0, 15);
-      downloadText(`asta_tuning_report_${stamp}_${window.__astaLastReport.runId || "report"}.md`, window.__astaLastReport.report);
+      downloadText(`asta_tuning_report_${stamp}_${window.__astaLastReport.runId || "report"}.md`, window.__astaLastReport.rawReport);
     });
     document.getElementById("asta-reset").addEventListener("click", resetWorkspace);
 
@@ -1911,7 +1943,7 @@ SELECT H.COMP_CD,
         "ADB ORDS/PLSQL 동기 분석 실행 중 — 세부 단계별 이력은 완료 후 실제 DB progress로 표시됩니다",
         "SQL 안전성 검사",
         "원본 SQL Evidence 수집: metrics, SQL_ID, XPLAN, object 통계",
-        "Tuning Advisor 수행",
+        "SQL Advisor 생략 (기본 OFF)",
         "ADB Vector KB 유사 결과서 조회",
         "AI 1차 튜닝: 분석결과 + Vector 사례 참조",
         "튜닝 SQL 분석: 튜닝 SQL 재수행/비교",
@@ -1946,8 +1978,7 @@ SELECT H.COMP_CD,
             ai_profile: profileInput.value || DEFAULT_AI_PROFILE,
             llm_profile: profileInput.value || DEFAULT_AI_PROFILE,
             use_llm: true,
-            // 현재 데모 Source PDB는 restricted 상태이므로 Advisor는 기본 생략한다.
-            // 고객 DB에서는 권한/라이선스/스케줄러 확인 후 true로 활성화한다.
+            // 사용자 결정에 따라 일반 실행은 기본 OFF다. 명시적 API true opt-in 기능은 유지한다.
             run_advisor: false,
             use_sqltune: false,
             sqltune_time_limit: 1800,
@@ -1979,7 +2010,8 @@ SELECT H.COMP_CD,
         window.clearInterval(progressTimer);
         if (data?.run_id && ["RUNNING", "QUEUED"].includes(String(data?.status || "").toUpperCase())) {
           renderProgressStack(progressTarget, { ...data, totalDurationMs: Date.now() - startedAt.getTime() });
-          await pollRunProgress(baseUrl, data.run_id, progressTarget, result);
+          const terminalProgress = await pollRunProgress(baseUrl, data.run_id, progressTarget, result);
+          Object.assign(data, terminalProgress || {});
         } else {
           const endedAt = new Date();
           let finalProgress = null;
@@ -1995,18 +2027,27 @@ SELECT H.COMP_CD,
               inline_status: data?.status || "",
             });
           }
+          const inlineOutcome = astaWorkflowOutcome({ ...data, ...(finalProgress || {}) });
           if (finalProgress?.progress || finalProgress?.steps) {
-            renderProgressStack(progressTarget, { ...finalProgress, status: "COMPLETED", startedAt, endedAt, totalDurationMs: endedAt - startedAt });
+            renderProgressStack(progressTarget, { ...finalProgress, status: inlineOutcome, startedAt, endedAt, totalDurationMs: endedAt - startedAt });
           } else if (data?.progress || data?.steps) {
-            renderProgressStack(progressTarget, { ...data, status: "COMPLETED", startedAt, endedAt, totalDurationMs: endedAt - startedAt });
+            renderProgressStack(progressTarget, { ...data, status: inlineOutcome, startedAt, endedAt, totalDurationMs: endedAt - startedAt });
           } else {
-            renderProgressStack(progressTarget, buildClientProgress("COMPLETED", startedAt, DEFAULT_STEPS.length - 1, stepStartedAt, endedAt, "완료"));
+            renderProgressStack(progressTarget, buildClientProgress(inlineOutcome === "ACCEPTED" ? "COMPLETED" : "FAILED", startedAt, DEFAULT_STEPS.length - 1, stepStartedAt, endedAt, inlineOutcome === "ACCEPTED" ? "완료" : "추가 확인이 필요합니다"));
           }
           renderResult(result, data);
         }
-        runButton.textContent = "완료";
-        completedOk = true;
-        window.Toast?.show?.("ASTA 분석이 완료되었습니다.", "success");
+        const terminalOutcome = astaWorkflowOutcome(data);
+        if (terminalOutcome === "ACCEPTED") {
+          runButton.textContent = "완료";
+          completedOk = true;
+          window.Toast?.show?.("ASTA 분석이 완료되었습니다.", "success");
+        } else {
+          const issue = friendlyAstaIssue(data, terminalOutcome);
+          runButton.textContent = "확인 필요";
+          completedOk = false;
+          window.Toast?.show?.(`${issue.title}: ${issue.message}`, "error", 15000);
+        }
       } catch (err) {
         window.clearInterval(progressTimer);
         const failedAt = new Date();
@@ -2020,8 +2061,9 @@ SELECT H.COMP_CD,
         } else {
           renderProgressStack(progressTarget, buildClientProgress("FAILED", startedAt, stepIndex, stepStartedAt, failedAt, err.message));
         }
-        runButton.textContent = "실패";
-        window.Toast?.show?.("ASTA 호출 실패: " + err.message, "error", 15000);
+        const issue = err?.friendlyIssue || friendlyAstaIssue(err?.progress || err?.payload || err, err?.message);
+        runButton.textContent = "다시 분석";
+        window.Toast?.show?.(`${issue.title}: ${issue.message}`, "error", 15000);
       } finally {
         if (!completedOk) runButton.disabled = false;
       }

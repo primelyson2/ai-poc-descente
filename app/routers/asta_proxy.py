@@ -27,6 +27,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 
 from app import asta_audit, db
+from app.asta_runtime_gates import apply_runtime_gates
 from app.deps import current_db, get_config
 
 router = APIRouter(prefix="/asta", tags=["asta"])
@@ -607,7 +608,9 @@ async def _audited_run_lookup(run_id: str, database: str, endpoint_kind: str, su
             "proxy_source": (annotated.get("proxy") or {}).get("source") if isinstance(annotated.get("proxy"), dict) else None,
         },
     )
-    return annotated
+    artifacts = annotated.get("artifacts") if isinstance(annotated.get("artifacts"), dict) else {}
+    gate_comparison = annotated.get("comparison") or artifacts.get("comparison")
+    return apply_runtime_gates(annotated) if isinstance(gate_comparison, dict) and gate_comparison else annotated
 
 
 @router.get("/profiles")
@@ -741,6 +744,8 @@ async def analyze(request: Request, background_tasks: BackgroundTasks, database:
     )
     ords_url = _resolve_ords_url(database, "analyze_path", "/analyze")
     result = await _post_json_to_ords(ords_url, ords_payload, _ords_timeout(database))
+    # Submission responses are QUEUED/RUNNING transport acknowledgements, not
+    # gate evidence.  Runtime gates are attached only on final run lookup.
     annotated = _annotate_proxy(result)
     annotated.setdefault("run_id", run_id)
     asta_audit.write_run_index(request_id, annotated, database=database, fallback_attempted=False)

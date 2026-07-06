@@ -8,9 +8,47 @@ quality:
   history_cycles: 5
   min_batch_elapsed_reduction_pct: 5
   min_oltp_buffer_reduction_pct: 5
+  # OLTP는 Buffer Gets가 줄어도 3초를 넘거나 기존보다 0.3초 초과 악화되면 실패다.
+  max_oltp_elapsed_time_us: 3000000
+  max_oltp_elapsed_increase_us: 300000
+
+execution_budget:
+  defaults:
+    warmup_runs_per_target: 1
+    measurement_runs_per_target: 3
+    max_candidates: 4
+    max_total_runs: 20
+    max_total_wall_time_ms: 600000
+    max_candidate_runs: 4
+    max_candidate_wall_time_ms: 15000
+    per_run_timeout_ms: 180000
+    max_noise_pct: 20.0
+  workloads:
+    OLTP:
+      per_run_timeout_ms: 180000
+      measurement_runs_per_target: 3
+    BATCH:
+      per_run_timeout_ms: 600000
+      max_total_wall_time_ms: 1800000
+
+# 전체 결과 동등성 수집 상한. 초과 시 first-N/shape로 대체하지 않고 후보를 차단한다.
+equivalence_budget:
+  require_full_result: true
+  max_rows: 1000000
+  max_canonical_bytes: 268435456
+  chunk_rows: 1000
+
+# 대표 bind coverage와 child cursor/plan 안정성 정책. bind 원문은 저장하지 않는다.
+bind_stability:
+  min_bind_cases: 3
+  required_selectivity_buckets: ["NULL", "SELECTIVE", "BROAD"]
+  min_plan_samples_per_bind: 2
+  max_failed_bind_cases: 0
+  retain_raw_bind_values: false
+  require_same_before_after_bind_set: true
 
 sample_workloads:
-  asta-awr-01: BATCH
+  asta-awr-01: OLTP
   asta-awr-02: OLTP
   asta-awr-03: BATCH
 

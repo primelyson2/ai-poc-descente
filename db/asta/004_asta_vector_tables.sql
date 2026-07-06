@@ -10,9 +10,9 @@
 -- Current ASTA_VECTOR_PKG behaviour:
 --   search_similar_cases: fingerprint-first chunk scan over
 --              asta_tuning_case_chunks joined to asta_tuning_cases.
---   save_case: INSERT INTO asta_tuning_cases, then bounded SOURCE_SQL,
---              TUNED_SQL, and REPORT_MARKDOWN chunks into
---              asta_tuning_case_chunks.
+--   save_case: raw SQL is never stored. Gate-complete POSITIVE_VERIFIED
+--              metadata is separated from REJECTED_OBSERVATION metadata and
+--              only allowlisted evidence chunks are indexed.
 --
 -- To enable ADB 23ai vector similarity search, add an embedding VECTOR column
 -- and replace the ROWNUM filter with ORDER BY VECTOR_DISTANCE(...) ASC.
@@ -28,8 +28,8 @@ CREATE TABLE asta_tuning_cases (
 );
 
 COMMENT ON TABLE asta_tuning_cases IS
-  'ASTA Vector KB: one row per completed tuning case. '
-  'Populated by ASTA_VECTOR_PKG.SAVE_CASE after equivalence verification.';
+  'ASTA Vector KB: gate-complete POSITIVE_VERIFIED and separate '
+  'REJECTED_OBSERVATION metadata. Raw SQL and bind literals are not stored.';
 
 COMMENT ON COLUMN asta_tuning_cases.sql_fingerprint IS
   'SHA-256 hex fingerprint of source_sql for deduplication (STANDARD_HASH).';

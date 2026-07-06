@@ -1,0 +1,179 @@
+"use strict";
+
+const assert = require("node:assert/strict");
+
+class FakeElement {
+  constructor(tagName) {
+    this.tagName = String(tagName).toUpperCase();
+    this.children = [];
+    this.attributes = {};
+    this.eventListeners = {};
+    this.hidden = false;
+    this.textContent = "";
+    this.className = "";
+    this.parentNode = null;
+    this.tabIndex = 0;
+    this.scrollTop = 0;
+  }
+  append(...nodes) { nodes.forEach((node) => this.appendChild(node)); }
+  appendChild(node) { node.parentNode = this; this.children.push(node); return node; }
+  replaceChildren(...nodes) { this.children = []; this.append(...nodes); }
+  setAttribute(name, value) { this.attributes[name] = String(value); }
+  getAttribute(name) { return this.attributes[name] ?? null; }
+  addEventListener(type, listener) { (this.eventListeners[type] ||= []).push(listener); }
+  dispatchEvent(event) {
+    event.target ||= this;
+    event.currentTarget = this;
+    event.preventDefault ||= () => { event.defaultPrevented = true; };
+    (this.eventListeners[event.type] || []).forEach((listener) => listener(event));
+  }
+  focus() { fakeDocument.activeElement = this; }
+  scrollTo(options) { this.scrollTop = options?.top || 0; }
+  matches(selector) {
+    if (selector.startsWith(".")) return this.className.split(/\s+/).includes(selector.slice(1));
+    const role = selector.match(/^\[role="([^"]+)"\]$/);
+    if (role) return this.getAttribute("role") === role[1];
+    const data = selector.match(/^\[([^=]+)="([^"]+)"\]$/);
+    if (data) return this.getAttribute(data[1]) === data[2];
+    if (selector === "table" || selector === "pre" || selector === "code") return this.tagName === selector.toUpperCase();
+    if (selector === "pre code") return false;
+    return false;
+  }
+  querySelectorAll(selector) {
+    if (selector === "pre code") {
+      return this.querySelectorAll("pre").flatMap((pre) => pre.querySelectorAll("code"));
+    }
+    const result = [];
+    for (const child of this.children) {
+      if (child.matches(selector)) result.push(child);
+      result.push(...child.querySelectorAll(selector));
+    }
+    return result;
+  }
+  querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
+}
+
+const fakeDocument = {
+  activeElement: null,
+  createElement(tagName) { return new FakeElement(tagName); },
+};
+global.document = fakeDocument;
+
+function allText(node) {
+  return [node.textContent, ...node.children.map((child) => allText(child))].join(" ");
+}
+
+const tabsApi = require("../../static/js/extensions/asta_report_tabs.js");
+
+const report = [
+  "# SQL 튜닝 결과서",
+  "## 결론",
+  "개선 후보를 채택합니다.",
+  "## 병목 진단",
+  "반복 스캔입니다.",
+  "## 튜닝 전/후 수치 비교",
+  "| 구분 | Elapsed |",
+  "| --- | ---: |",
+  "| Before | 2.8s |",
+  "| After | 1.6s |",
+  "## 튜닝전 SQL",
+  "```sql",
+  "SELECT 'VISIBLE_LITERAL' AS sample FROM dual",
+  "```",
+  "## 튜닝 전 XPLAN",
+  "```text",
+  "| 10 | TABLE ACCESS FULL | SECRET_TABLE |",
+  "```",
+  "## 튜닝 후 SQL",
+  "```sql",
+  "SELECT /* ASTA */ 'AFTER_LITERAL' AS sample FROM dual",
+  "```",
+  "## 튜닝후 XPLAN",
+  "```text",
+  "| 10 | HASH JOIN ANTI | |",
+  "```",
+  "### 사용자 참고사항 반영",
+  "OLTP 요청을 반영했습니다.",
+  "### 과거 유사 튜닝 사례 - 참고 정보",
+  "참고 사례입니다.",
+  "### Oracle SQL Tuning Advisor 요약",
+  "없음 <script>globalThis.__pwned = true</script> [bad](javascript:alert(1))",
+  "### DBA 검토 사항",
+  "검토 내용입니다.",
+  "## 작업 수행 이력",
+  "- 진단",
+  "## 단계별 수행 체크",
+  "- 완료",
+  "## 테이블 통계 및 인덱스 정보",
+  "통계 정보",
+  "### 테이블 통계",
+  "262 rows",
+].join("\r\n");
+
+const root = new FakeElement("div");
+const result = tabsApi.renderReportTabs(root, report);
+const tabs = root.querySelectorAll('[role="tab"]');
+const panels = root.querySelectorAll('[role="tabpanel"]');
+
+assert.deepEqual(tabs.map((tab) => tab.textContent), [
+  "요약", "튜닝 전", "튜닝 후", "상세 분석", "객체 정보",
+]);
+assert.equal(tabs.length, 5);
+assert.equal(panels.length, 5);
+assert.equal(root.querySelectorAll('[role="tablist"]').length, 1);
+assert.equal(tabs[0].getAttribute("aria-selected"), "true");
+assert.equal(panels[0].hidden, false);
+assert.ok(panels.slice(1).every((panel) => panel.hidden));
+assert.ok(tabs.every((tab) => tab.getAttribute("aria-controls")));
+
+assert.match(allText(panels[0]), /Oracle SQL Tuning Advisor 요약/);
+assert.match(allText(panels[0]), /없음 <script>globalThis.__pwned/);
+assert.doesNotMatch(allText(panels[3]), /Oracle SQL Tuning Advisor 요약/);
+assert.equal(root.querySelectorAll(".tuning-gate-host").length, 0, "Gate host must not be rendered");
+
+assert.equal(panels[0].querySelectorAll("table").length, 1, "comparison Markdown must be an HTML table");
+assert.match(panels[1].textContent + panels[1].querySelectorAll("pre code").map((node) => node.textContent).join(""), /VISIBLE_LITERAL/);
+assert.match(panels[2].querySelectorAll("pre code").map((node) => node.textContent).join(""), /AFTER_LITERAL/);
+assert.equal(globalThis.__pwned, undefined);
+assert.equal(root.querySelectorAll("script").length, 0);
+assert.equal(root.querySelectorAll("a").length, 0);
+
+tabs[1].dispatchEvent({ type: "click" });
+assert.equal(tabs[1].getAttribute("aria-selected"), "true");
+assert.equal(panels[1].hidden, false);
+assert.equal(panels[0].hidden, true);
+
+tabs[1].dispatchEvent({ type: "keydown", key: "ArrowRight" });
+assert.equal(fakeDocument.activeElement, tabs[2]);
+assert.equal(tabs[2].getAttribute("aria-selected"), "true");
+tabs[2].dispatchEvent({ type: "keydown", key: "End" });
+assert.equal(fakeDocument.activeElement, tabs[4]);
+tabs[4].dispatchEvent({ type: "keydown", key: "Home" });
+assert.equal(fakeDocument.activeElement, tabs[0]);
+tabs[0].dispatchEvent({ type: "keydown", key: "ArrowLeft" });
+assert.equal(fakeDocument.activeElement, tabs[4]);
+
+const missingRoot = new FakeElement("div");
+tabsApi.renderReportTabs(missingRoot, "## 결론\n내용만 있음");
+const missingPanels = missingRoot.querySelectorAll('[role="tabpanel"]');
+assert.equal(missingPanels[1].querySelector(".tuning-report-empty").textContent, "표시할 내용이 없습니다.");
+assert.equal(missingPanels[4].querySelector(".tuning-report-empty").textContent, "표시할 내용이 없습니다.");
+
+const duplicate = tabsApi.classifyReportSections("## 튜닝 전 SQL\nA\n## 튜닝전 SQL\nB\n## 결론\nOK");
+assert.equal(duplicate.tabs.before.length, 0, "duplicate heading must fail closed");
+assert.ok(duplicate.reasonCodes.includes("AMBIGUOUS_REPORT_SECTION"));
+assert.equal(duplicate.tabs.overview.length, 1, "an ambiguous section must not poison other tabs");
+
+const advisorH2 = tabsApi.classifyReportSections("## Oracle SQL Tuning Advisor 요약\nCOMPLETED\n## 결론\nOK");
+assert.equal(advisorH2.tabs.overview.length, 1, "adjacent Overview ranges may be merged");
+assert.match(advisorH2.tabs.overview[0], /Oracle SQL Tuning Advisor 요약\nCOMPLETED/);
+assert.equal(advisorH2.tabs.details.length, 0);
+
+const duplicateAdvisor = tabsApi.classifyReportSections(
+  "### Oracle SQL Tuning Advisor 요약\nA\n### Oracle SQL Tuning Advisor 요약\nB",
+);
+assert.equal(duplicateAdvisor.tabs.overview.length, 0, "duplicate Advisor heading must fail closed");
+assert.ok(duplicateAdvisor.reasonCodes.includes("AMBIGUOUS_REPORT_SECTION"));
+
+assert.equal(result.tabs.length, 5);
+console.log("asta_report_tabs_dom_test: PASS");

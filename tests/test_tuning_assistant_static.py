@@ -81,7 +81,7 @@ def test_tuning_assistant_calls_astA_api_with_detailed_report_fallbacks():
     assert "참고사항" in view
     assert "tuning-spinner" in view
     assert "현재 진행" in view
-    assert "원본 SQL Evidence 수집" in view
+    assert "원본 SQL 실행 정보 수집" in view
     assert "원본 SQL 분석: 원본 SQL/XPLAN/metrics" not in view
     assert "progress polling timeout" not in view
     assert "const maxAttempts = 2400" in view
@@ -143,8 +143,8 @@ def test_tuning_assistant_persists_detailed_error_in_result_panel():
     view = (ROOT / "static/js/extensions/tuning_assistant.js").read_text(encoding="utf-8")
 
     assert "renderError(result, err)" in view
-    assert "오류 상세" in view
-    assert "클립보드 복사" in view
+    assert "기술 정보 (문의 시 전달)" in view
+    assert "문의 정보 복사" in view
     assert "window.__astaLastError" in view
     assert "err.payload" in view
     assert "조회 endpoint" in view
@@ -160,11 +160,11 @@ def test_tuning_assistant_treats_ords_not_found_body_as_copyable_error():
     assert "err.queriedRunId = decodeURIComponent" in view
 
 
-def test_tuning_assistant_sample_sqls_include_complex_cases():
+def test_tuning_assistant_exposes_customer_and_fourteen_verified_samples():
     view = (ROOT / "static/js/extensions/tuning_assistant.js").read_text(encoding="utf-8")
 
     assert "ASTA_SAMPLE_SQLS" in view
-    assert view.count('id: "asta-awr-') == 10
+    assert view.count('id: "asta-awr-') == 15
     assert "7rcw6d3us86r7" in view
     assert "SESL0640.selectList" in view
     assert 'id: "asta-ui-' not in view
@@ -184,16 +184,18 @@ def test_tuning_assistant_result_report_has_large_scroll_container():
     assert "target.scrollIntoView" in view
 
 
-def test_tuning_assistant_sample_sqls_are_intentionally_inefficient():
+def test_tuning_assistant_exposes_only_current_verified_sample_patterns():
     view = (ROOT / "static/js/extensions/tuning_assistant.js").read_text(encoding="utf-8")
 
-    assert view.count('id: "asta-awr-') == 10
+    assert view.count('id: "asta-awr-') == 15
     assert "SESL0640.selectList" in view
-    assert view.count("ASTA intentionally inefficient sample") == 9
-    assert "repeated correlated aggregates" in view
-    assert "DISTINCT over analytic aggregation" in view
-    assert "UNION sort over the same table" in view
-    assert "composite correlated IN" in view
+    assert view.count('pattern: "') == 14
+    for pattern in ("CORRELATED_EXISTS_COUNT", "CORRELATED_NOT_EXISTS", "CORRELATED_EXCLUSION_KEYS",
+                    "DUPLICATE_CTE_SCAN", "FUNCTION_PREDICATE", "REDUNDANT_DISTINCT_GROUP",
+                    "UNION_DUPLICATE_ELIMINATION", "COMPOSITE_EXISTS_RESCAN", "DUAL_EXISTS_CHAIN",
+                    "SEMI_ANTI_MIXED", "DUPLICATE_INLINE_AGGREGATE", "EXISTS_NOT_EXISTS_CHAIN",
+                    "REPEATED_GROUP_BY_CTE", "REDUNDANT_FUNCTION_FILTER"):
+        assert f'pattern: "{pattern}"' in view
 
 
 def test_tuning_assistant_removes_only_a_trailing_sql_terminator_before_submit():
@@ -227,7 +229,7 @@ def test_tuning_assistant_sample_sql_details_are_preserved():
     view = (ROOT / "static/js/extensions/tuning_assistant.js").read_text(encoding="utf-8")
 
     expected_sql_ids = ["7rcw6d3us86r7"]
-    assert view.count('id: "asta-awr-') == 10
+    assert view.count('id: "asta-awr-') == 15
     for sql_id in expected_sql_ids:
         assert sql_id in view
     assert ":v_" not in view
@@ -238,7 +240,8 @@ def test_tuning_assistant_sample_sql_details_are_preserved():
 def test_asta_error_toast_stays_visible_longer():
     view = (ROOT / "static/js/extensions/tuning_assistant.js").read_text(encoding="utf-8")
 
-    assert "ASTA 호출 실패: " in view
+    assert "friendlyAstaIssue" in view
+    assert "기술 정보 (문의 시 전달)" in view
     assert "15000" in view
 
 
@@ -252,13 +255,37 @@ def test_tuning_assistant_keeps_async_runs_running_until_poll_completion():
     premature_progress_pos = view.index("finalProgress = await fetchJson")
     assert async_pos < poll_pos < premature_progress_pos
     assert "sqltune_time_limit" in view
-    assert "run_advisor: false" in view
-    assert "use_sqltune: false" in view
     assert "hasAuthoritativeInlineProgress" in view
     assert "SOURCE_DIRECT_FALLBACK" in view
     assert "CONTROLLED_FALLBACK" in view
     assert "data?.run_id && !hasAuthoritativeInlineProgress" in view
     assert "sqltune_timeout_seconds" not in view
+
+
+def test_tuning_assistant_disables_advisor_in_top_level_and_options_payload():
+    view = (ROOT / "static/js/extensions/tuning_assistant.js").read_text(encoding="utf-8")
+    start = view.index("const data = await fetchJson(url, {")
+    end = view.index('if (["FAILED", "ERROR"].includes', start)
+    payload = view[start:end]
+    options_pos = payload.index("options: {")
+    top_level = payload[:options_pos]
+    options = payload[options_pos:]
+
+    assert "run_advisor: false" in top_level
+    assert "use_sqltune: false" in top_level
+    assert "run_advisor: false" in options
+    assert "use_sqltune: false" in options
+    assert "run_advisor: true" not in payload
+    assert "use_sqltune: true" not in payload
+
+
+def test_tuning_assistant_shows_noninteractive_advisor_off_status():
+    view = (ROOT / "static/js/extensions/tuning_assistant.js").read_text(encoding="utf-8")
+
+    assert 'id="asta-advisor-status"' in view
+    assert "Oracle 튜닝 권고: 사용 안 함" in view
+    assert 'aria-label="Oracle 튜닝 권고 사용 상태"' in view
+    assert 'type="checkbox"' not in view[view.index('id="asta-advisor-status"') - 200:view.index('id="asta-advisor-status"') + 300]
 
 
 def test_tuning_assistant_has_iphone_mini_portrait_and_landscape_css():

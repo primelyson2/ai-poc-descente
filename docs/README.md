@@ -1,6 +1,6 @@
 # OADT2 문서 안내
 
-최종 업데이트: 2026-07-03
+최종 업데이트: 2026-07-06
 
 ## ASTA canonical 요약
 
@@ -12,8 +12,7 @@ OADT2 ASTA는 `Browser → FastAPI thin proxy → ADB ORDS/ASTA_PKG → allowlis
 
 ## 문서
 
-- `OADT2_ASTA_ARCHITECTURE.md`: package/API/DB Link 경계와 새 수행 순서
-- `AI_SQL_TUNING_ASSISTANT_PROGRAM_SPEC.md`: evidence-aware LLM 및 deterministic 판정 명세
+- `OADT2_ASTA_ARCHITECTURE.md`: package/API/DB Link 경계, 실행 순서, evidence-aware LLM과 deterministic 판정을 합친 단일 기준 명세
 - `AI_SQL_TUNING_ASSISTANT_MANUAL.md`: 사용자/운영 가이드
 
 ## 코드

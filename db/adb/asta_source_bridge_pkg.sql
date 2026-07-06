@@ -10,7 +10,9 @@ CREATE OR REPLACE PACKAGE asta_source_bridge_pkg AUTHID DEFINER AS
     p_repeat_policy     IN VARCHAR2 DEFAULT 'AUTO',
     p_run_advisor       IN VARCHAR2 DEFAULT 'N',
     p_sqltune_time_sec  IN NUMBER   DEFAULT 1800,
-    p_source_sql_id     IN VARCHAR2 DEFAULT NULL
+    p_source_sql_id     IN VARCHAR2 DEFAULT NULL,
+    p_result_evidence_mode IN VARCHAR2 DEFAULT 'FULL_RESULT',
+    p_result_max_rows   IN NUMBER DEFAULT 100000
   ) RETURN CLOB;
 
   FUNCTION get_connection_json(p_source_db_id IN VARCHAR2) RETURN CLOB;
@@ -136,6 +138,20 @@ CREATE OR REPLACE PACKAGE BODY asta_source_bridge_pkg AS
     RETURN LEAST(GREATEST(NVL(p_sqltune_time_sec, 1800), 60), 1800);
   END normalized_sqltune_time_sec;
 
+  FUNCTION normalized_result_evidence_mode(p_mode IN VARCHAR2) RETURN VARCHAR2 IS
+    l_mode VARCHAR2(30) := UPPER(TRIM(NVL(p_mode, 'FULL_RESULT')));
+  BEGIN
+    IF l_mode NOT IN ('BOUNDED', 'FULL_RESULT') THEN
+      RAISE_APPLICATION_ERROR(-20002, 'ASTA_SOURCE_BRIDGE: invalid result evidence mode');
+    END IF;
+    RETURN l_mode;
+  END normalized_result_evidence_mode;
+
+  FUNCTION normalized_result_max_rows(p_rows IN NUMBER) RETURN PLS_INTEGER IS
+  BEGIN
+    RETURN LEAST(GREATEST(NVL(p_rows, 100000), 1), 1000000);
+  END normalized_result_max_rows;
+
   PROCEDURE resolve_connection(
     p_source_db_id IN  VARCHAR2,
     p_db_link_name OUT VARCHAR2,
@@ -168,7 +184,9 @@ CREATE OR REPLACE PACKAGE BODY asta_source_bridge_pkg AS
     p_repeat_policy     IN VARCHAR2 DEFAULT 'AUTO',
     p_run_advisor       IN VARCHAR2 DEFAULT 'N',
     p_sqltune_time_sec  IN NUMBER   DEFAULT 1800,
-    p_source_sql_id     IN VARCHAR2 DEFAULT NULL
+    p_source_sql_id     IN VARCHAR2 DEFAULT NULL,
+    p_result_evidence_mode IN VARCHAR2 DEFAULT 'FULL_RESULT',
+    p_result_max_rows   IN NUMBER DEFAULT 100000
   ) RETURN CLOB IS
     l_db_link_name VARCHAR2(128);
     l_source_schema VARCHAR2(128);
@@ -186,6 +204,8 @@ CREATE OR REPLACE PACKAGE BODY asta_source_bridge_pkg AS
     l_run_id         VARCHAR2(64);
     l_source_sql_id  VARCHAR2(13);
     l_sqltune_time_sec PLS_INTEGER;
+    l_result_evidence_mode VARCHAR2(30);
+    l_result_max_rows PLS_INTEGER;
   BEGIN
     resolve_connection(p_source_db_id, l_db_link_name, l_source_schema);
     asta_sql_guard_pkg.assert_safe_select(p_sql);
@@ -195,14 +215,18 @@ CREATE OR REPLACE PACKAGE BODY asta_source_bridge_pkg AS
     l_repeat_policy := normalized_repeat_policy(p_repeat_policy);
     l_run_advisor := normalized_run_advisor(p_run_advisor);
     l_sqltune_time_sec := normalized_sqltune_time_sec(p_sqltune_time_sec);
+    l_result_evidence_mode := normalized_result_evidence_mode(p_result_evidence_mode);
+    l_result_max_rows := normalized_result_max_rows(p_result_max_rows);
     l_source_prefix := CASE WHEN l_source_schema IS NULL THEN '' ELSE l_source_schema || '.' END;
     l_sql_vc := DBMS_LOB.SUBSTR(p_sql, 32767, 1);
 
       l_stmt :=
       'BEGIN ' || l_source_prefix ||
       'asta_source_pkg.run_evidence_store_proc@' || l_db_link_name ||
-      '(:sql_text, :run_id, :fetch_rows, :repeat_policy, :run_advisor, :sqltune_time_sec, :source_sql_id, :out_json); END;';
+      '(:sql_text, :run_id, :fetch_rows, :repeat_policy, :run_advisor, :sqltune_time_sec, :source_sql_id, :result_evidence_mode, :result_max_rows, :out_json); END;';
 
+    -- Legacy positional contract ended with :source_sql_id, :out_json.
+    -- FULL_RESULT parameters are additive and precede the unchanged OUT bind.
     -- Source helper owns its storage transaction via its autonomous
     -- run_evidence_store_vc path. Do not COMMIT or ROLLBACK here:
     -- ASTA_PKG has already created caller-owned ASTA_RUNS/progress state
@@ -215,6 +239,8 @@ CREATE OR REPLACE PACKAGE BODY asta_source_bridge_pkg AS
             IN  l_run_advisor,
             IN  l_sqltune_time_sec,
             IN  l_source_sql_id,
+            IN  l_result_evidence_mode,
+            IN  l_result_max_rows,
             OUT l_status_vc;
 
     IF l_status_vc IS NULL OR INSTR(l_status_vc, '"status":"STORED"') = 0 THEN

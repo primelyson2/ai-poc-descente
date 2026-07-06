@@ -250,6 +250,7 @@ CREATE OR REPLACE PACKAGE BODY asta_vector_pkg AS
                  JSON_OBJECT(
                    'case_id' VALUE case_id,
                    'run_id' VALUE case_id,
+                   'learning_class' VALUE learning_class,
                    'verdict' VALUE verdict,
                    'workload_type' VALUE workload_type,
                    'primary_metric' VALUE primary_metric,
@@ -269,7 +270,7 @@ CREATE OR REPLACE PACKAGE BODY asta_vector_pkg AS
                TO_CLOB('[]')
              )
       FROM (
-        SELECT case_id, sql_fingerprint, matched_fingerprint, sql_preview,
+        SELECT case_id, sql_fingerprint, matched_fingerprint, sql_preview, learning_class,
                workload_type, primary_metric, verdict, change_summary,
                before_buffer_gets, after_buffer_gets,
                before_elapsed_time_us, after_elapsed_time_us
@@ -280,6 +281,7 @@ CREATE OR REPLACE PACKAGE BODY asta_vector_pkg AS
                  JSON_VALUE(c.metadata_json, '$.workload_type' RETURNING VARCHAR2(30) NULL ON ERROR) workload_type,
                  JSON_VALUE(c.metadata_json, '$.primary_metric' RETURNING VARCHAR2(30) NULL ON ERROR) primary_metric,
                  JSON_VALUE(c.metadata_json, '$.verdict' RETURNING VARCHAR2(30) NULL ON ERROR) verdict,
+                 JSON_VALUE(c.metadata_json, '$.learning_class' RETURNING VARCHAR2(30) NULL ON ERROR) learning_class,
                  JSON_VALUE(c.metadata_json, '$.change_summary' RETURNING VARCHAR2(1000) NULL ON ERROR) change_summary,
                  JSON_VALUE(c.metadata_json, '$.before_buffer_gets' RETURNING NUMBER NULL ON ERROR) before_buffer_gets,
                  JSON_VALUE(c.metadata_json, '$.after_buffer_gets' RETURNING NUMBER NULL ON ERROR) after_buffer_gets,
@@ -290,6 +292,7 @@ CREATE OR REPLACE PACKAGE BODY asta_vector_pkg AS
           -- Chunks remain searchable storage; UX result is deliberately one row per case.
           -- Legacy relation: JOIN asta_tuning_cases c ON c.case_id = ch.case_id
           WHERE  EXISTS (SELECT 1 FROM asta_tuning_case_chunks ch WHERE ch.case_id = c.case_id)
+          AND    JSON_VALUE(c.metadata_json, '$.learning_class' RETURNING VARCHAR2(30) NULL ON ERROR) = 'POSITIVE_VERIFIED'
           ORDER  BY CASE WHEN c.sql_fingerprint = :query_fp_order THEN 0 ELSE 1 END,
                     c.created_at DESC,
                     c.case_id
@@ -333,6 +336,11 @@ CREATE OR REPLACE PACKAGE BODY asta_vector_pkg AS
     l_case_id VARCHAR2(64);
     l_source_fingerprint VARCHAR2(128);
     l_chunks_saved PLS_INTEGER := 0;
+    l_learning_class VARCHAR2(30);
+    l_rejection_reason VARCHAR2(4000);
+    l_safe_metadata CLOB;
+    l_redacted_sql CLOB;
+    l_report_ref CLOB;
   BEGIN
     l_case_id := validated_case_id(p_run_id);
     l_source_fingerprint := sql_fingerprint(p_sql);
@@ -341,6 +349,49 @@ CREATE OR REPLACE PACKAGE BODY asta_vector_pkg AS
        OR NOT object_exists('ASTA_TUNING_CASE_CHUNKS') THEN
       RETURN not_configured('SAVE_CASE', p_sql);
     END IF;
+
+    l_learning_class := CASE
+      WHEN json_vc(p_metadata_json, '$.learning_class') = 'POSITIVE_VERIFIED'
+       AND json_vc(p_metadata_json, '$.verdict') = 'IMPROVED'
+       AND json_vc(p_metadata_json, '$.optimizer_intent_status') = 'VERIFIED'
+       AND json_vc(p_metadata_json, '$.result_digest_scope') = 'FULL_RESULT'
+       AND json_vc(p_metadata_json, '$.equivalence_status') = 'VERIFIED'
+       AND json_vc(p_metadata_json, '$.bind_stability_status') = 'VERIFIED'
+       AND LOWER(json_vc(p_metadata_json, '$.all_representative_binds_passed')) = 'true'
+       AND json_vc(p_metadata_json, '$.measurement_status') = 'ACCEPTED'
+      THEN 'POSITIVE_VERIFIED'
+      ELSE 'REJECTED_OBSERVATION'
+    END;
+    l_rejection_reason := CASE WHEN l_learning_class = 'POSITIVE_VERIFIED' THEN NULL ELSE
+      json_vc(p_metadata_json, '$.verdict_reason', 'VECTOR_POSITIVE_GATE_INCOMPLETE') END;
+    IF l_rejection_reason IS NOT NULL
+       AND NOT REGEXP_LIKE(l_rejection_reason, '^[A-Z][A-Z0-9_:-]{0,127}$') THEN
+      l_rejection_reason := 'REJECTION_REASON_REDACTED';
+    END IF;
+    IF REGEXP_LIKE(p_report_markdown, '^/api/asta/runs/[A-Za-z0-9][A-Za-z0-9_.:-]*/report$') THEN
+      l_report_ref := p_report_markdown;
+    END IF;
+    l_safe_metadata := TO_CLOB(
+      '{"learning_class":' || json_str(l_learning_class) ||
+      ',"verdict":' || json_str(json_vc(p_metadata_json, '$.verdict')) ||
+      ',"verdict_reason":' || json_str(CASE WHEN l_learning_class = 'POSITIVE_VERIFIED' THEN
+        json_vc(p_metadata_json, '$.verdict_reason') ELSE l_rejection_reason END) ||
+      ',"workload_type":' || json_str(json_vc(p_metadata_json, '$.workload_type')) ||
+      ',"primary_metric":' || json_str(json_vc(p_metadata_json, '$.primary_metric')) ||
+      ',"optimizer_intent_status":' || json_str(json_vc(p_metadata_json, '$.optimizer_intent_status')) ||
+      ',"result_digest_scope":' || json_str(json_vc(p_metadata_json, '$.result_digest_scope')) ||
+      ',"equivalence_status":' || json_str(json_vc(p_metadata_json, '$.equivalence_status')) ||
+      ',"bind_stability_status":' || json_str(json_vc(p_metadata_json, '$.bind_stability_status')) ||
+      ',"all_representative_binds_passed":' || json_str(json_vc(p_metadata_json, '$.all_representative_binds_passed')) ||
+      ',"measurement_status":' || json_str(json_vc(p_metadata_json, '$.measurement_status')) ||
+      ',"before_buffer_gets":' || json_str(json_vc(p_metadata_json, '$.before_buffer_gets')) ||
+      ',"after_buffer_gets":' || json_str(json_vc(p_metadata_json, '$.after_buffer_gets')) ||
+      ',"before_elapsed_time_us":' || json_str(json_vc(p_metadata_json, '$.before_elapsed_time_us')) ||
+      ',"after_elapsed_time_us":' || json_str(json_vc(p_metadata_json, '$.after_elapsed_time_us')) ||
+      ',"before_plan_hash_value":' || json_str(json_vc(p_metadata_json, '$.before_plan_hash_value')) ||
+      ',"after_plan_hash_value":' || json_str(json_vc(p_metadata_json, '$.after_plan_hash_value')) ||
+      ',"rewrite_type":' || json_str(json_vc(p_metadata_json, '$.rewrite_type')) || '}'
+    );
 
     SAVEPOINT asta_vector_save_case;
 
@@ -363,27 +414,25 @@ CREATE OR REPLACE PACKAGE BODY asta_vector_pkg AS
         SYSTIMESTAMP
       )
     ]'
-    USING l_case_id, p_sql, p_tuned_sql, p_report_markdown, p_metadata_json, l_source_fingerprint;
+    USING l_case_id, l_redacted_sql, l_redacted_sql, l_report_ref, l_safe_metadata, l_source_fingerprint;
 
-    l_chunks_saved := l_chunks_saved + save_case_chunk(l_case_id, 'SOURCE_SQL', p_sql);
-    l_chunks_saved := l_chunks_saved + save_case_chunk(l_case_id, 'TUNED_SQL', p_tuned_sql);
-    -- Existing metadata JSON is the schema: preserve verdicts including failures
-    -- and NO_REWRITE, while indexing semantically useful bounded chunks.
-    l_chunks_saved := l_chunks_saved + save_case_chunk(l_case_id, 'STRUCTURE',
-      TO_CLOB('rewrite_type=') || TO_CLOB(json_vc(p_metadata_json, '$.rewrite_type', '-')) || CHR(10) || p_tuned_sql);
-    l_chunks_saved := l_chunks_saved + save_case_chunk(l_case_id, 'VERDICT',
-      TO_CLOB('verdict=') || TO_CLOB(json_vc(p_metadata_json, '$.verdict', '-')) ||
-      TO_CLOB('; equivalence=') || TO_CLOB(json_vc(p_metadata_json, '$.equivalence_status', '-')) ||
-      TO_CLOB('; plans=') || TO_CLOB(json_vc(p_metadata_json, '$.before_plan_hash_value', '-')) ||
-      TO_CLOB(' -> ') || TO_CLOB(json_vc(p_metadata_json, '$.after_plan_hash_value', '-')) ||
-      TO_CLOB('; metrics=') || TO_CLOB(json_vc(p_metadata_json, '$.before_buffer_gets', '-')) ||
-      TO_CLOB(' -> ') || TO_CLOB(json_vc(p_metadata_json, '$.after_buffer_gets', '-')) ||
-      TO_CLOB('; elapsed=') || TO_CLOB(json_vc(p_metadata_json, '$.before_elapsed_time_us', '-')) ||
-      TO_CLOB(' -> ') || TO_CLOB(json_vc(p_metadata_json, '$.after_elapsed_time_us', '-')));
-    l_chunks_saved := l_chunks_saved + save_case_chunk(l_case_id, 'ADVISOR',
-      TO_CLOB(json_vc(p_metadata_json, '$.advisor_summary', NULL)));
-    l_chunks_saved := l_chunks_saved + save_case_chunk(l_case_id, 'FAILURE_REASON',
-      TO_CLOB(json_vc(p_metadata_json, '$.verdict_reason', NULL)));
+    IF l_learning_class = 'POSITIVE_VERIFIED' THEN
+      l_chunks_saved := l_chunks_saved + save_case_chunk(l_case_id, 'VERIFIED_OUTCOME',
+        TO_CLOB('verdict=IMPROVED; intent=VERIFIED; equivalence=VERIFIED; binds=VERIFIED; measurement=ACCEPTED'));
+      l_chunks_saved := l_chunks_saved + save_case_chunk(l_case_id, 'PLAN_EVIDENCE',
+        TO_CLOB('plans=') || TO_CLOB(json_vc(l_safe_metadata, '$.before_plan_hash_value', '-')) ||
+        TO_CLOB(' -> ') || TO_CLOB(json_vc(l_safe_metadata, '$.after_plan_hash_value', '-')));
+      l_chunks_saved := l_chunks_saved + save_case_chunk(l_case_id, 'METRICS',
+        TO_CLOB('buffer_gets=') || TO_CLOB(json_vc(l_safe_metadata, '$.before_buffer_gets', '-')) ||
+        TO_CLOB(' -> ') || TO_CLOB(json_vc(l_safe_metadata, '$.after_buffer_gets', '-')) ||
+        TO_CLOB('; elapsed_us=') || TO_CLOB(json_vc(l_safe_metadata, '$.before_elapsed_time_us', '-')) ||
+        TO_CLOB(' -> ') || TO_CLOB(json_vc(l_safe_metadata, '$.after_elapsed_time_us', '-')));
+    ELSE
+      l_chunks_saved := l_chunks_saved + save_case_chunk(l_case_id, 'REJECTED_OBSERVATION',
+        TO_CLOB('learning_class=REJECTED_OBSERVATION; gate evidence retained without SQL or bind literals'));
+      l_chunks_saved := l_chunks_saved + save_case_chunk(l_case_id, 'REJECTION_REASON',
+        TO_CLOB(l_rejection_reason));
+    END IF;
 
     RETURN TO_CLOB(
       '{"status":"COMPLETED","code":"VECTOR_KB","operation":"SAVE_CASE","case_id":' ||
@@ -391,6 +440,8 @@ CREATE OR REPLACE PACKAGE BODY asta_vector_pkg AS
       ',"contract_version":"asta.v1"' ||
       ',"execution_boundary":"ADB_VECTOR_PLSQL"' ||
       ',"search_strategy":' || json_str(C_SEARCH_STRATEGY) ||
+      ',"learning_class":' || json_str(l_learning_class) ||
+      ',"rejection_reason":' || json_str(l_rejection_reason) ||
       ',"chunks_saved":' || TO_CHAR(l_chunks_saved) ||
       ',"source_fingerprint":' || json_str(l_source_fingerprint) || '}'
     );

@@ -18,17 +18,14 @@ def awr_blocks(view: str):
     )
 
 
-def test_sesl0640_and_derived_samples_have_id_label_and_workload_metadata():
+def test_customer_sample_and_fourteen_full_gate_samples_are_exposed():
     blocks = awr_blocks(view_text())
-    assert [number for number, _ in blocks] == [f"{number:02d}" for number in range(1, 11)]
+    assert [number for number, _ in blocks] == [f"{index:02d}" for index in range(1, 16)]
     for number, body in blocks:
         if number == "01":
             assert 'sqlId: "7rcw6d3us86r7"' in body
             assert 'label: "SESL0640.selectList"' in body
-        else:
-            assert "ASTA intentionally inefficient sample" in body
-            assert 'label: "SESL0640 ' in body
-        assert 'workload: "' in body
+        assert 'workload: "OLTP"' in body
         assert "sql: `" in body
 
 
@@ -43,7 +40,7 @@ def test_awr_samples_replace_all_legacy_samples():
 def test_awr_samples_are_single_read_only_sql_without_sqlplus_binds():
     view = view_text()
     blocks = awr_blocks(view)
-    assert len(blocks) == 10
+    assert len(blocks) == 15
     for _, body in blocks:
         assert re.search(r"sql: `(?:SELECT|WITH|/\*)", body, re.IGNORECASE)
         assert ":v_" not in body

@@ -15,9 +15,9 @@ def _read(rel_path: str) -> str:
 def test_source_helper_emits_evidence_method_and_metric_source_contracts():
     """ASTA 계약/회귀 조건을 검증한다: source helper emits evidence method and metric source contracts."""
     src = _read("db/source/asta_source_pkg.sql")
-    assert '"evidence_method":"BOUNDED_COUNT_GATHER_PLAN_STATS"' in src
+    assert '"evidence_method":"BOUNDED_ORDERED_JSON_GATHER_PLAN_STATS"' in src
     assert '"metrics_source":"V$SQL_PLAN_STATISTICS_ALL_LAST"' in src
-    assert src.count('"evidence_method":"BOUNDED_COUNT_GATHER_PLAN_STATS"') == 2
+    assert src.count('"evidence_method":"BOUNDED_ORDERED_JSON_GATHER_PLAN_STATS"') == 2
     assert src.count('"metrics_source":"V$SQL_PLAN_STATISTICS_ALL_LAST"') == 2
     assert '"execution_boundary":"SOURCE_BASEDB_DBLINK_ONLY"' in src
 
@@ -103,6 +103,17 @@ def test_sql_normalizer_never_uses_keywords_inside_change_comment_as_sql_start()
     assert "l_comment_end + 2" in normalizer
     assert "preserve the validated leading change annotation" in normalizer
     assert "IF l_comment_end > 0 AND l_start > l_comment_end THEN" in normalizer
+
+
+def test_sql_normalizer_drops_model_prose_between_header_and_line_start_sql():
+    llm = _read("db/adb/asta_llm_pkg.sql")
+    normalizer = llm[llm.index("FUNCTION normalize_sql_response("):llm.index("END normalize_sql_response;")]
+
+    assert "l_header" in normalizer
+    assert "drop non-SQL prose between the validated header and executable SQL" in normalizer
+    assert "CHR(10) || ')[[:space:]]*WITH[[:space:]]'" in normalizer
+    assert "CHR(10) || ')[[:space:]]*SELECT[[:space:]]'" in normalizer
+    assert "l_header || CHR(10) || LTRIM(SUBSTR(l_text, l_start))" in normalizer
 
 
 def test_operational_prompts_treat_ui_user_notes_as_hard_scope():
@@ -191,12 +202,11 @@ def test_vector_kb_saves_searchable_chunks_and_searches_fingerprint_first():
         "FUNCTION chunk_clob(p_val IN CLOB) RETURN CLOB",
         "FUNCTION save_case_chunk(",
         "INSERT INTO asta_tuning_case_chunks(",
-        "save_case_chunk(l_case_id, 'SOURCE_SQL', p_sql)",
-        "save_case_chunk(l_case_id, 'TUNED_SQL', p_tuned_sql)",
-        "save_case_chunk(l_case_id, 'STRUCTURE'",
-        "save_case_chunk(l_case_id, 'VERDICT'",
-        "save_case_chunk(l_case_id, 'ADVISOR'",
-        "save_case_chunk(l_case_id, 'FAILURE_REASON'",
+        "save_case_chunk(l_case_id, 'VERIFIED_OUTCOME'",
+        "save_case_chunk(l_case_id, 'PLAN_EVIDENCE'",
+        "save_case_chunk(l_case_id, 'METRICS'",
+        "save_case_chunk(l_case_id, 'REJECTED_OBSERVATION'",
+        "save_case_chunk(l_case_id, 'REJECTION_REASON'",
         "JOIN asta_tuning_cases c ON c.case_id = ch.case_id",
         "CASE WHEN c.sql_fingerprint = :query_fp_order THEN 0 ELSE 1 END",
         "'matched_fingerprint' VALUE matched_fingerprint",
@@ -209,6 +219,8 @@ def test_vector_kb_saves_searchable_chunks_and_searches_fingerprint_first():
         assert fragment in src
 
     assert "fingerprint-first chunk scan" in ddl
-    assert "SOURCE_SQL" in ddl
-    assert "TUNED_SQL" in ddl
-    assert "REPORT_MARKDOWN" in ddl
+    assert "POSITIVE_VERIFIED" in ddl
+    assert "REJECTED_OBSERVATION" in ddl
+    assert "raw SQL" in ddl
+    assert "save_case_chunk(l_case_id, 'SOURCE_SQL', p_sql)" not in src
+    assert "save_case_chunk(l_case_id, 'TUNED_SQL', p_tuned_sql)" not in src

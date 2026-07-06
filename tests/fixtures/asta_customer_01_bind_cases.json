@@ -1,0 +1,35 @@
+{
+  "policy": {
+    "min_bind_cases": 3,
+    "required_selectivity_buckets": ["NULL", "SELECTIVE", "BROAD"]
+  },
+  "cases": [
+    {
+      "bind_case_id": "STYLE_NULL",
+      "selectivity_bucket": "NULL",
+      "bindings": [
+        {"name": ":P_STYLE", "position": 1, "oracle_type": "VARCHAR2", "is_null": true, "selectivity_bucket": "NULL", "value_fingerprint": "sha256:0000000000000000000000000000000000000000000000000000000000000000"}
+      ],
+      "before_bind_fingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "after_bind_fingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "bind_case_id": "STYLE_SELECTIVE",
+      "selectivity_bucket": "SELECTIVE",
+      "bindings": [
+        {"name": ":P_STYLE", "position": 1, "oracle_type": "VARCHAR2", "is_null": false, "selectivity_bucket": "SELECTIVE", "value_fingerprint": "sha256:1111111111111111111111111111111111111111111111111111111111111111"}
+      ],
+      "before_bind_fingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "after_bind_fingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    {
+      "bind_case_id": "STYLE_BROAD",
+      "selectivity_bucket": "BROAD",
+      "bindings": [
+        {"name": ":P_STYLE", "position": 1, "oracle_type": "VARCHAR2", "is_null": false, "selectivity_bucket": "BROAD", "value_fingerprint": "sha256:2222222222222222222222222222222222222222222222222222222222222222"}
+      ],
+      "before_bind_fingerprint": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "after_bind_fingerprint": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    }
+  ]
+}
