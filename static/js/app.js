@@ -9,6 +9,7 @@
     chat:      { render: () => window.Views.aiChat(),         label: "AI Chat" },
     nl2sql:    { render: () => window.Views.nl2sql(),         label: "Select AI Test - Table list" },
     predefined:{ render: () => window.Views.predefinedQuery(), label: "Select AI Test - Predefined Query" },
+    persona:   { render: () => window.Views.personaAnalysis(), label: "Select AI Test - 페르소나분석" },
     api:       { render: () => window.Views.apiAdmin(),       label: "API관리" },
     databases: { render: () => window.Views.databaseAdmin(),  label: "Database 관리" },
     access:    { render: () => window.Views.accessAdmin(),    label: "Tool관리" },
@@ -36,6 +37,7 @@
     { route: "objects",    label: "AI Profile Object Meta" },
     { route: "nl2sql",     label: "Select AI Test - Table list" },
     { route: "predefined", label: "Select AI Test - Predefined Query" },
+    { route: "persona",    label: "Select AI Test - 페르소나분석" },
     { route: "chat",       label: "AI Chat" },
     { route: "api",        label: "API관리(개발중)" },
   ];
