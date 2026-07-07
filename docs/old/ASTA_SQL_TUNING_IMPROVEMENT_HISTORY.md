@@ -976,3 +976,9 @@ Before/After 반복, cache/order 편향, timeout과 runaway session을 제한하
 - strict TDD RED는 UI payload/상태/cache 3건이었다. GREEN focused `37 passed`, Node DOM PASS, JS syntax 2건 통과. 전체 `381 passed, 기존 9 failed`, 신규 실패 0, `git diff --check` 통과다.
 - cache version은 `20260706_advisor_default_off1`. DB/ORDS deploy, 서비스 재시작, commit/push는 수행하지 않았다. localhost HTTP는 현재 Codex network namespace에서 `EPERM`으로 차단됐으며, cache-busted 검증 URL과 `tools/asta_deploy_adb.py --advisor-off-live-static <outdir>` 읽기 전용 검증 모드를 제공한다.
 - 롤백은 UI 네 flag를 true, client 문구를 기존 Advisor 수행 문구로, cache를 `20260705_advisor_summary_dba1`로 복원하는 것이다. backend/PLSQL 삭제나 롤백은 없다.
+## BATCH 화면 샘플 5개 [완료] — 2026-07-07
+
+- 기존 OLTP 15개 뒤에 BATCH `asta-batch-01~05`를 추가했다. 차원은 브랜드/상품분류/성별/라인/판매기준이며 샘플 선택 시 workload가 `BATCH`로 설정된다.
+- 원본은 2025년 일판매 KPI 40개 반복 집계, 후보는 월판매 요약 1회 집계 + `UNPIVOT`이다. 원본 실측은 35.798~54.969초, 후보는 1.016~1.068초, elapsed 개선율은 97.0891~98.1223%다.
+- 5개 모두 전체 결과 row count, metadata digest, full-result digest가 일치했다. 근거는 `reports/asta_batch_samples_20260707/verification.json`에 SQL 원문 없이 보존했다.
+- 관련 `82 passed, 기존 2 failed`, 전체 `423 passed, 기존 9 failed`, 신규 실패 0. DB package/ORDS/schema/business data와 서비스는 변경하지 않았다.

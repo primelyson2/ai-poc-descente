@@ -1,1322 +1,446 @@
 # ASTA 소스코드 실행 흐름
 
-> **주의:** 이 문서는 초기 동기식 구현의 상세 추적 기록을 포함한다. 현재 운영 계약과 실행 순서의 단일 기준은 `OADT2_ASTA_ARCHITECTURE.md`다. 현재 분석 제출은 `ASTA_PKG.SUBMIT_RUN → DBMS_SCHEDULER → ASTA_PKG.EXECUTE_RUN` 방식이며 아래의 `ANALYZE_SQL`/FastAPI BackgroundTasks 설명을 현재 구조로 사용하지 않는다.
+최종 업데이트: 2026-07-07
 
-## 1. 문서 목적
+이 문서는 Real ASTA 저장소에서 사용자가 **AI 분석 실행**을 누른 뒤 브라우저, FastAPI, ADB ORDS, ADB package, DB Link, Source package가 실제로 어떤 순서로 동작하는지 추적한다. 정책과 판정의 단일 기준은 `OADT2_ASTA_ARCHITECTURE.md`이며, 이 문서는 구현 위치를 찾기 위한 companion 문서다.
 
-이 문서는 OADT2 ASTA(AI SQL Tuning Assistant) 화면에서 사용자가 **AI 분석 실행**을 누른 뒤 어떤 소스 파일의 어떤 함수·프로시저가 순서대로 실행되는지 설명한다.
-
-분석 범위:
-
-- 브라우저 UI 및 HTTP 호출
-- FastAPI 인증·라우팅·비동기 ORDS proxy
-- ADB ORDS endpoint
-- ADB PL/SQL 메인 오케스트레이션
-- ADB → DB Link → Source DB 실행 경계
-- Source SQL 실행, 통계, XPLAN, SQL Tuning Advisor
-- Vector 검색과 LLM SQL 재작성
-- 후보 SQL 재실행과 Before/After 비교
-- Markdown 결과서 생성과 조회
-
-> 핵심 원칙: FastAPI는 ASTA SQL 튜닝을 직접 수행하지 않는다. 실제 오케스트레이션은 ADB의 `ASTA_PKG`가 담당하고, Source SQL 실행은 ADB에서 허용된 DB Link를 통해 Source DB의 `ASTA_SOURCE_PKG`가 수행한다.
-
----
-
-## 2. 전체 실행 흐름
+## 1. 현재 운영 경로
 
 ```text
-브라우저
+Browser
   static/js/extensions/tuning_assistant.js
-    └─ POST /api/asta/analyze
+    → POST /api/asta/analyze
 
-FastAPI
-  app/main.py
-    └─ access_gate()
-       └─ app/routers/asta_proxy.py
-          └─ analyze()
-             ├─ payload 정규화
-             ├─ run_id 생성
-             ├─ RUNNING 즉시 반환
-             └─ BackgroundTasks
-                └─ _run_ords_analyze_background()
-                   └─ POST ORDS /asta/analyze
+FastAPI thin proxy
+  app/routers/asta_proxy.py::analyze()
+    → payload 정규화
+    → POST ORDS /asta/analyze
 
-ADB ORDS
+ADB ORDS asta.v1
   db/ords/asta_ords_module.sql
-    └─ ASTA_PKG.ANALYZE_SQL(:body_text)
+    → ASTA_PKG.SUBMIT_RUN(:body_text)
 
-ADB
-  db/adb/asta_pkg.sql
-    ├─ SQL Guard
-    ├─ Source 연결 allowlist 조회
-    ├─ 원본 SQL Evidence 수집
-    ├─ SQL Tuning Advisor 상태 반영
-    ├─ Vector KB 유사 사례 검색
-    ├─ DBMS_CLOUD_AI SQL 재작성
-    ├─ 후보 SQL Evidence 수집
-    ├─ Before/After 비교
-    ├─ LLM 최종 리뷰
-    ├─ Markdown 결과서 생성
-    ├─ Vector 사례 저장
-    └─ ASTA_RUNS에 최종 결과 저장
+ADB asynchronous runtime
+  ASTA_PKG.SUBMIT_RUN
+    → ASTA_RUNS에 QUEUED 저장
+    → DBMS_SCHEDULER job 생성
+    → 즉시 run_id 반환
+  ASTA_PKG.EXECUTE_RUN(run_id)
+    → ASTA_PKG.RUN_PIPELINE(...)
 
-Source DB
-  db/source/asta_source_pkg.sql
-    ├─ SQL 실제 실행
-    ├─ V$SQL 실행 통계 수집
-    ├─ DBMS_XPLAN.DISPLAY_CURSOR
-    ├─ 테이블·컬럼·인덱스 통계 수집
-    └─ DBMS_SCHEDULER → DBMS_SQLTUNE
+Source boundary
+  ASTA_SOURCE_BRIDGE_PKG.RUN_SOURCE_EVIDENCE
+    → ASTA_SOURCE_CONNECTIONS allowlist
+    → DB Link
+    → Source ASTA_SOURCE_PKG.RUN_EVIDENCE_STORE_PROC
+    → ASTA_SOURCE_PKG.RUN_EVIDENCE
 
-브라우저
-  ├─ GET /api/asta/runs/{run_id}/progress 반복
-  └─ GET /api/asta/runs/{run_id}/report
+Browser polling
+  GET /api/asta/runs/{run_id}/progress
+  terminal 이후 GET /api/asta/runs/{run_id}
+  결과서 GET /api/asta/runs/{run_id}/report
 ```
 
----
+중요한 경계는 다음과 같다.
 
-## 3. FastAPI 애플리케이션 시작
+- FastAPI는 SQL, XPLAN, Advisor, LLM, Vector를 로컬에서 실행하지 않는다.
+- 현재 `/api/asta/analyze`는 FastAPI `BackgroundTasks`에 장기 분석을 등록하지 않는다. ORDS 제출을 기다린 뒤 ADB의 `QUEUED` 응답을 전달한다.
+- 장기 실행의 소유자는 ADB `DBMS_SCHEDULER`다. 프로세스 재시작이나 브라우저 종료와 무관하게 ADB 저장 상태를 기준으로 조회한다.
+- Source SQL은 ADB가 allowlist에서 고른 DB Link를 통해서만 Source `ASTA_SOURCE_PKG`에서 실행된다.
+- Python direct DB/SSH/subprocess fallback은 운영 경로가 아니다.
 
-파일: `app/main.py`
+## 2. 화면 생성과 입력
 
-### 3.1 애플리케이션 초기화
+주요 파일은 다음과 같다.
 
-```python
-lifespan()
-  → load_config()
-  → deps.set_config(cfg)
-  → db.init_pool(...)
-```
+- `static/index.html`: `tuning_assistant.js`, `asta_report_tabs.js` cache-busted asset 로드
+- `static/js/extensions/tuning_assistant.js`: 입력, 샘플, 제출, polling, 진행 Drawer, 결과 카드
+- `static/js/extensions/asta_report_tabs.js`: Markdown section 분류, 6개 탭, SQL 좌우 비교, verdict 도움말
 
-주요 위치:
+화면은 다음 입력을 만든다.
 
-- `lifespan()`: `app/main.py:25`
-- FastAPI 생성: `app/main.py:37`
-- ASTA router 등록: `app/main.py:114`
+- AI Profile
+- 실행 유형 `OLTP` 또는 `BATCH`
+- 샘플 SQL 또는 직접 입력
+- AI 참고사항
+- SQL textarea
 
-```python
-app.include_router(asta_proxy.router, prefix="/api")
-```
+샘플은 OLTP 15개와 BATCH 5개다. 샘플을 선택하면 SQL과 workload만 채워지며 분석은 자동 시작하지 않는다.
 
-`asta_proxy.router`의 자체 prefix가 `/asta`이므로 실제 endpoint는 다음과 같다.
+`SQL 분석 입력`과 `ASTA 분석 결과`는 독립적인 `<details>`다. 결과가 정상 렌더링될 때 입력은 접고 결과를 펼친다. 초기화하면 결과를 비우고 입력을 다시 연다.
 
-```text
-/api/asta/analyze
-/api/asta/profiles
-/api/asta/runs/{run_id}
-/api/asta/runs/{run_id}/progress
-/api/asta/runs/{run_id}/report
-/api/asta/llm-sql-only
-```
+상단 **매뉴얼 및 사용설명**은 `aria-modal` dialog를 연다. User/개발자 카드는 OCI 리소스 없이 PoC 샘플 화면 역할만 표시한다. UI(VM) 카드는 `OCI Load Balancer → DK-AI-DEV-VM-01` 진입 경로를 포함하고, AI Lakehouse/BaseDB 카드는 DEV/PRO/shared OCI 리소스를 기능·경계와 함께 표시한다. 11단계 Workflow 탭은 이 문서의 단계별 실행 영역과 실제 package/procedure를 화면 안에서 조회할 수 있게 한다. backdrop, 닫기 버튼, `Escape`로 닫을 수 있고 포커스는 열기 전 control로 돌아간다.
 
-### 3.2 API 인증 및 DB 선택
+## 3. 브라우저 제출
 
-모든 `/api/*` 요청은 먼저 다음 middleware를 통과한다.
-
-```python
-access_gate()
-```
-
-위치: `app/main.py:84`
-
-처리 내용:
-
-1. 사전공유 키 인증 여부 확인
-2. 인증 cookie 검증
-3. `call_next(request)`로 실제 router 호출
-4. CSP 및 보안 header 추가
-
-각 ASTA endpoint의 `Depends(current_db)`는 다음 작업을 수행한다.
-
-- `X-Database` header 또는 기본 DB 선택
-- 설정에 존재하는 DB인지 검증
-- DB pool 상태 확인
-
----
-
-## 4. ASTA 화면 진입
-
-핵심 파일:
-
-- `static/index.html`
-- `static/js/extensions/app_extensions.js`
-- `static/js/app.js`
-- `static/js/extensions/tuning_assistant.js`
-
-### 4.1 JavaScript 로딩 순서
-
-`static/index.html`에서 다음 순서로 로드한다.
-
-```text
-tuning_assistant.js
-app_extensions.js
-app.js
-```
-
-`app_extensions.js`가 `tuning` route를 등록하고, `#/tuning` 진입 시 다음 view를 실행한다.
-
-```javascript
-window.Views.tuningAssistant()
-```
-
-정의 위치:
-
-```text
-static/js/extensions/tuning_assistant.js:691
-```
-
-### 4.2 화면 구성
-
-`tuningAssistant()`는 다음 UI를 생성한다.
-
-- AI Profile 선택
-- 샘플 SQL 선택
-- LLM 참고사항
-- SQL 입력창
-- AI 분석 실행 버튼
-- 현재 실행 단계
-- 결과서 표시 영역
-- Markdown 다운로드 버튼
-
-초기 상태는 `renderProgressStack(..., READY)`로 표시한다.
-
-### 4.3 AI Profile 조회
-
-화면 초기화 중 다음 함수가 실행된다.
-
-```javascript
-loadAstaProfiles()
-  → fetchJson("/api/asta/profiles")
-```
-
-위치:
-
-- `loadAstaProfiles()`: `tuning_assistant.js:1062`
-- HTTP 호출: `tuning_assistant.js:1064`
-
-FastAPI 흐름:
-
-```text
-profiles()
-  → _resolve_ords_url()
-  → _get_json_from_ords()
-  → _filter_asta_profiles()
-```
-
-위치: `app/routers/asta_proxy.py:435`
-
-ORDS는 다음 ADB 함수를 호출한다.
-
-```sql
-ASTA_PKG.LIST_PROFILES
-```
-
-위치: `db/ords/asta_ords_module.sql:80`
-
-이름이 `ASTA`로 시작하고 선택 가능한 profile만 UI에 표시한다. 조회 실패 시 UI에 하드코딩된 기본 목록을 유지한다.
-
----
-
-## 5. 사용자가 AI 분석 실행을 누름
-
-이벤트 시작점:
-
-```javascript
-document.getElementById("asta-run").addEventListener("click", async () => ...)
-```
-
-위치: `static/js/extensions/tuning_assistant.js:1196`
-
-### 5.1 요청 준비
-
-호출 함수:
-
-```javascript
-buildBaseUrl(DEFAULT_ENDPOINT)
-buildAnalyzeUrl(DEFAULT_ENDPOINT)
-formatSql(sql)
-```
-
-관련 위치:
-
-- `buildAnalyzeUrl()`: `tuning_assistant.js:588`
-- `buildBaseUrl()`: `tuning_assistant.js:601`
-- `fetchJson()`: `tuning_assistant.js:608`
-
-기본 endpoint:
-
-```text
-/api/asta/analyze
-```
-
-빈 SQL이면 HTTP 요청 없이 종료한다.
-
-### 5.2 임시 진행 표시
-
-분석 요청 직후:
-
-- 실행 버튼을 비활성화한다.
-- 버튼 문구를 `분석중`으로 변경한다.
-- 500ms 간격의 client progress timer를 시작한다.
-- 서버 progress를 받기 전까지 요청 수신 및 ORDS 실행 중 상태를 임시 표시한다.
-
-이 timer는 실제 DB progress 조회가 아니다. 실제 progress polling은 `/analyze` 응답에서 `run_id`를 받은 다음 시작한다.
-
-### 5.3 POST payload
-
-호출:
+`tuning_assistant.js`의 실행 handler는 SQL formatting과 클라이언트 검사를 거쳐 same-origin endpoint를 호출한다.
 
 ```http
 POST /api/asta/analyze
 Content-Type: application/json
 ```
 
-주요 body:
+주요 payload는 다음 의미를 가진다.
 
 ```json
 {
-  "sql_text": "<포맷된 SQL>",
-  "sql": "<포맷된 SQL>",
-  "source_db_id": "DB0903_TESTDB",
-  "ai_profile": "<선택 profile>",
-  "llm_profile": "<선택 profile>",
-  "use_llm": true,
-  "run_advisor": true,
-  "use_sqltune": true,
-  "sqltune_time_limit": 1800,
+  "sql": "SELECT ...",
+  "sql_text": "SELECT ...",
+  "source_db_id": "allowlisted logical id",
+  "ai_profile": "ASTA_...",
+  "llm_profile": "ASTA_...",
+  "run_advisor": false,
+  "use_sqltune": false,
   "tuning_context": {
-    "user_notes": "<사용자 참고사항>",
-    "source": "UI_OPTIONAL_TEXT"
+    "workload_type": "OLTP",
+    "user_notes": "..."
   },
   "options": {
     "fetch_rows": 100,
     "timeout_seconds": 900,
-    "sqltune_time_limit": 1800,
-    "run_advisor": true,
-    "use_sqltune": true,
-    "run_mode": "ASYNC",
-    "use_llm": true,
-    "llm_profile": "<선택 profile>"
+    "run_mode": "ASYNC"
   }
 }
 ```
 
-위치: `tuning_assistant.js:1241-1271`
+일반 UI는 `run_advisor=false`, `use_sqltune=false`다. Advisor를 명시적으로 켜는 API 계약은 남아 있지만 화면 기본 실행에서는 사용하지 않는다. 사용자가 DB Link 이름이나 Source schema를 직접 지정할 수 없다.
 
----
+제출 직후 브라우저는 임시 진행 정보를 표시한다. ADB가 run ID를 반환하면 `/progress` polling으로 전환한다. `QUEUED`와 `RUNNING`은 처리 상태이며 개선 성공 판정이 아니다.
 
-## 6. FastAPI 분석 요청 처리
+## 4. FastAPI thin proxy
 
 파일: `app/routers/asta_proxy.py`
 
-진입 함수:
+### 4.1 `analyze()`
 
-```python
-@router.post("/analyze")
-async def analyze(...)
-```
+현재 동작은 다음과 같다.
 
-위치: `asta_proxy.py:537`
+1. request JSON이 object인지 확인한다.
+2. `_coerce_payload()`로 `sql/sql_text`, `ai_profile/llm_profile`, boolean과 제한값을 정규화한다.
+3. `source_schema`, `source_db_link` 같은 임의 연결 입력을 제거하고 logical `source_db_id`만 유지한다.
+4. `run_id`가 없으면 `OADT2-ASTA-<uuid>`를 만들고 `run_id/client_run_id`에 넣는다.
+5. 설정의 ORDS `analyze_path`로 `_post_json_to_ords()`를 호출한다.
+6. ORDS의 `QUEUED/RUNNING` 제출 응답을 감사 정보와 함께 반환한다.
 
-### 6.1 요청 정규화
+FastAPI source에는 과거 호환을 위한 in-memory async helper와 `BackgroundTasks` 인자가 남아 있다. 그러나 현재 `analyze()`는 `background_tasks.add_task()`를 호출하지 않는다. 이를 현재 실행 owner로 문서화하거나 새 코드에서 사용하면 안 된다.
 
-```python
-payload = await request.json()
-ords_payload = _coerce_payload(payload)
-```
+### 4.2 조회 endpoint
 
-`_coerce_payload()` 위치: `asta_proxy.py:167`
+| OADT2 endpoint | proxy 함수 | ORDS suffix |
+|---|---|---|
+| `GET /api/asta/profiles` | `profiles()` | `/profiles` |
+| `GET /api/asta/runs/{run_id}` | `get_run()` | `/runs/{run_id}` |
+| `GET /api/asta/runs/{run_id}/progress` | `get_run_progress()` | `/runs/{run_id}/progress` |
+| `GET /api/asta/runs/{run_id}/report` | `get_run_report()` | `/runs/{run_id}/report` |
+| `GET /api/asta/runs/{run_id}/report/view` | 안전 HTML renderer | report JSON |
+| `GET /api/asta/runs/{run_id}/report/download` | Markdown attachment | report JSON |
 
-처리 내용:
+`_audited_run_lookup()`은 ORDS 응답에 proxy/audit 정보를 붙이고, final comparison이 있으면 Python의 mirror runtime gate를 적용해 계약 불일치를 fail-closed로 만든다. 로컬 snapshot 조회는 과거 실행의 진단/조회 보조 수단일 뿐 Source 분석 fallback이 아니다.
 
-- `sql`과 `sql_text` 통일
-- `ai_profile`과 `llm_profile` 통일
-- `fetch_rows`, `vector_top_k`, SQLTUNE 제한시간 기본값 적용
-- `run_advisor`와 `use_sqltune` 통일
-- `source_schema`, `source_db_link` 제거
-- `source_db_id`만 전달
+`/report/view`는 제한된 Markdown subset을 HTML로 변환하고 CSP를 적용한다. `/report/download`는 원문 Markdown을 attachment로 반환한다.
 
-브라우저가 임의의 Source schema나 DB Link 이름을 지정하지 못하도록 한다. 실제 연결 정보는 ADB의 `ASTA_SOURCE_CONNECTIONS`에서 조회한다.
+### 4.3 숨김 SQL-only 경로
 
-### 6.2 run_id 생성
+`POST /api/asta/llm-sql-only`는 명시적인 숨김 진단 경로다. Evidence, SQL Guard 결과서, Vector, Advisor, deterministic 비교를 거치는 정식 ASTA 분석이 아니며 일반 결과와 혼용하지 않는다.
 
-```python
-_new_proxy_run_id()
-```
+## 5. ORDS adapter
 
-형식:
+파일: `db/ords/asta_ords_module.sql`
 
-```text
-OADT2-ASTA-<UUID>
-```
+ORDS module은 `asta.v1`, base path는 `asta/`다.
 
-생성한 값을 다음 두 필드에 동일하게 넣는다.
+| ORDS handler | 호출 package 함수 |
+|---|---|
+| `POST asta/analyze` | `ASTA_PKG.SUBMIT_RUN(:body_text)` |
+| `GET asta/profiles` | `ASTA_PKG.LIST_PROFILES` |
+| `GET asta/runs/:run_id` | `ASTA_PKG.GET_RUN(:run_id)` |
+| `GET asta/runs/:run_id/progress` | `ASTA_PKG.GET_PROGRESS(:run_id)` |
+| `GET asta/runs/:run_id/report` | `ASTA_PKG.GET_REPORT(:run_id)` |
 
-```python
-ords_payload["run_id"] = run_id
-ords_payload["client_run_id"] = run_id
-```
+각 handler는 JSON CLOB을 2,000자 단위로 출력하며 `no-store`, execution boundary, contract version header를 설정한다. ORDS 자체는 분석 로직이나 판정을 수행하지 않는다.
 
-### 6.3 비동기 실행 등록
+## 6. ADB 제출과 Scheduler
 
-FastAPI memory에 초기 실행 상태를 저장한다.
+파일: `db/adb/asta_pkg.sql`
 
-```python
-_store_async_run(...)
-```
+### 6.1 `ASTA_PKG.SUBMIT_RUN`
 
-그 후 background task를 등록한다.
+`SUBMIT_RUN`은 다음 순서로 동작한다.
 
-```python
-background_tasks.add_task(
-    _run_ords_analyze_background,
-    ...
-)
-```
+1. run ID와 선택적 `idempotency_key`를 정규화한다.
+2. SQL이 존재하는지 확인하고 `ASTA_SQL_GUARD_PKG.ASSERT_SAFE_SELECT`를 실행한다.
+3. 동일 idempotency key와 동일 request면 기존 run을 반환한다.
+4. 같은 key에 다른 request면 `IDEMPOTENCY_CONFLICT`, 같은 run ID 충돌이면 `RUN_ID_CONFLICT`로 거절한다.
+5. `ASTA_RUNS`에 request JSON과 `QUEUED` 상태를 commit한다.
+6. `ASTA_RUN_<id>` Scheduler job을 만들고 `ASTA_PKG.EXECUTE_RUN(run_id)` 인자를 설정한다.
+7. job을 enable하고 `execution_mode=ADB_SCHEDULER` 응답을 반환한다.
 
-위치: `asta_proxy.py:586`
-
-브라우저에는 즉시 다음 형태를 반환한다.
+대표 응답:
 
 ```json
 {
   "run_id": "OADT2-ASTA-...",
-  "status": "RUNNING",
-  "progress": [],
-  "proxy": {
-    "source": "FASTAPI_ASYNC_PROXY",
-    "external_call": false
-  }
+  "status": "QUEUED",
+  "execution_mode": "ADB_SCHEDULER",
+  "job_name": "ASTA_RUN_..."
 }
 ```
 
-### 6.4 BackgroundTasks에서 ORDS 호출
+### 6.2 `ASTA_PKG.EXECUTE_RUN`
 
-함수:
+Scheduler는 `QUEUED` 또는 승인된 `RETRY` row를 잠그고 상태를 `RUNNING`으로 바꾼 뒤 저장된 `REQUEST_JSON`으로 `RUN_PIPELINE`을 호출한다. 예외 시 run을 `FAILED/EXECUTE_RUN`으로 종결한다.
 
-```python
-_run_ords_analyze_background()
-```
+`ASTA_PKG.ANALYZE_SQL`은 현재 호환 wrapper이며 내부에서 `SUBMIT_RUN`을 호출한다. ORDS handler는 `ANALYZE_SQL`이 아니라 `SUBMIT_RUN`을 직접 호출한다.
 
-위치: `asta_proxy.py:101`
+## 7. ADB pipeline과 11단계
 
-호출 관계:
+저장/API 단계 번호는 고정되어 있다.
 
-```text
-_run_ords_analyze_background()
-  → _post_json_to_ords()
-  → asyncio.to_thread(_post_json_sync)
-  → _request_json_sync()
-  → urllib_request.urlopen()
-```
+| 번호 | code | 실제 역할 |
+|---:|---|---|
+| 1 | `REQUEST_RECEIVED` | 요청 접수 marker |
+| 2 | `ORDS_DISPATCH` | ORDS 전달 marker |
+| 3 | `SQL_GUARD` | read-only 단일 SQL 재검증 |
+| 4 | `BEFORE_EVIDENCE` | 원본 Source evidence |
+| 5 | `SQL_TUNING_ADVISOR` | Source evidence 안의 Advisor 상태 반영 |
+| 6 | `LLM_REWRITE` | evidence 기반 구조 재작성 |
+| 7 | `AFTER_EVIDENCE` | 후보 Source evidence와 runtime watchdog |
+| 8 | `BEFORE_AFTER_COMPARE` | deterministic gate와 workload 판정 |
+| 9 | `VECTOR_KB` | LLM 전에 검증 사례 검색 |
+| 10 | `FINAL_REPORT` | Markdown 결과서 작성 |
+| 11 | `VECTOR_SAVE` | gate 결과에 맞는 Vector 관측 저장 |
 
-ORDS 응답 후:
-
-```text
-_annotate_proxy()
-_complete_async_run()
-asta_audit.write_run_index()
-asta_audit.write_event()
-```
-
-FastAPI는 여기서 Source SQL 실행, XPLAN 수집, Vector 검색, LLM 재작성, SQLTUNE 또는 결과서 생성을 수행하지 않는다.
-
----
-
-## 7. ORDS에서 ADB PL/SQL 호출
-
-파일: `db/ords/asta_ords_module.sql`
-
-ORDS module:
+단계 번호 순서와 실제 호출 의존 순서는 다르다.
 
 ```text
-module: asta.v1
-base path: asta/
+1 REQUEST_RECEIVED
+2 ORDS_DISPATCH
+3 SQL_GUARD
+4 BEFORE_EVIDENCE
+5 SQL_TUNING_ADVISOR
+9 VECTOR_KB search
+6 LLM_REWRITE
+7 AFTER_EVIDENCE
+8 BEFORE_AFTER_COMPARE
+11 VECTOR_SAVE
+10 FINAL_REPORT
 ```
 
-`POST /asta/analyze` handler의 핵심 호출:
+Vector 검색 결과가 LLM prompt에 들어가므로 9단계가 6단계보다 먼저 실행된다. 번호는 API 호환 때문에 바꾸지 않는다.
 
-```sql
-l_response := ASTA_PKG.ANALYZE_SQL(:body_text);
-```
+### 7.1 Before evidence
 
-위치: `asta_ords_module.sql:38`
+`RUN_PIPELINE`은 `ASTA_SOURCE_CONNECTIONS`의 logical source를 확인하고 bridge에 다음 핵심 값을 전달한다.
 
-ORDS는 반환된 CLOB을 2,000자 단위로 HTTP response에 출력한다.
+- 원본 SQL과 run marker
+- `repeat_policy=AUTO`
+- `result_evidence_mode=FULL_RESULT`
+- fetch/result 행 예산
+- Advisor opt-in 여부
+- 선택적 원본 `source_sql_id`
 
-```sql
-WHILE l_offset <= NVL(DBMS_LOB.GETLENGTH(l_response), 0) LOOP
-  l_chunk := DBMS_LOB.SUBSTR(l_response, 2000, l_offset);
-  HTP.prn(l_chunk);
-  l_offset := l_offset + 2000;
-END LOOP;
-```
+실패하면 4단계를 FAILED로 기록하고 fail-closed error를 반환한다.
 
-ORDS는 분석 로직을 직접 수행하지 않는 얇은 HTTP-to-PL/SQL adapter이다.
+### 7.2 Vector 검색과 LLM
 
----
+`ASTA_VECTOR_PKG`는 positive verified 사례만 검색 근거로 사용한다. `ASTA_LLM_PKG`는 원본 SQL 외에 XPLAN, 실제 metrics, object 정보, Advisor 상태, 유사 사례, workload와 사용자 참고사항을 받아 JSON-only 구조 후보를 만든다.
 
-## 8. ADB 메인 오케스트레이션
+후보 SQL은 SQL Guard를 다시 통과해야 한다. 제한된 repair 후에도 안전한 후보가 없으면 7·8단계를 `SKIPPED`, verdict를 `NO_REWRITE`로 처리한다.
 
-파일: `db/adb/asta_pkg.sql`
+### 7.3 After evidence와 watchdog
 
-메인 함수:
+후보가 있으면 7단계에서 동일 Source 경로로 실행한다. adaptive candidate runtime limit를 계산하고 watchdog job을 arm한다. timeout은 후보를 `CANDIDATE_RUNTIME_LIMIT`로 실패시키고 원본을 유지한다.
 
-```sql
-FUNCTION analyze_sql(p_body_json IN CLOB) RETURN CLOB
-```
+ADB job stop이 DB Link 너머 이미 시작한 Source statement를 즉시 취소한다고 가정하지 않는다. 운영 진단 시 ADB run/job과 Source session의 run marker를 함께 확인한다.
 
-위치: `asta_pkg.sql:536`
+### 7.4 deterministic 비교
 
-### 8.1 요청값 파싱
+8단계 비교 순서는 다음과 같다.
 
-파싱 대상:
+1. optimizer intent evidence
+2. full-result 및 metadata equivalence
+3. bind/child cursor evidence 또는 `BIND_NOT_APPLICABLE`
+4. warm-up/반복 측정 완전성 및 noise
+5. OLTP/BATCH 성능 기준
 
-- `run_id` 또는 `client_run_id`
-- `sql` 또는 `sql_text`
-- `llm_profile` 또는 `ai_profile`
-- `source_db_id`
-- `use_llm`
-- `fetch_rows`
-- `vector_top_k`
-- `sqltune_time_limit`
-- `run_advisor` 또는 `use_sqltune`
-- `tuning_context`
+모든 필수 gate를 통과해야 `IMPROVED`다. LLM 설명, Advisor 권고, Vector 유사도는 verdict를 덮어쓰지 못한다.
 
-위치: `asta_pkg.sql:574-639`
+### 7.5 Vector 저장과 결과서
 
-### 8.2 ASTA_RUNS 생성
+검증이 끝나면 `ASTA_VECTOR_PKG`가 gate-complete success와 rejected observation을 분리해 저장한다. raw SQL, literal, bind 값은 Vector metadata에 저장하지 않는다.
 
-```sql
-INSERT INTO asta_runs(...)
-VALUES (..., 'RUNNING', ...);
+`ASTA_REPORT_PKG.BUILD_REPORT`는 comparison과 같은 verdict의 Markdown을 만든다. `ASTA_RUN_PROGRESS` timing을 넣기 위해 단계 10/11 저장 후 report를 다시 구성하고, 최종 response/report/status를 `ASTA_RUNS`에 commit한다. rich response 저장이 실패해도 완료 run을 RUNNING으로 남기지 않고 `FAILED/ASTA_PERSIST`로 종결한다.
 
-COMMIT;
-```
-
-위치: `asta_pkg.sql:641-662`
-
-분석 초기에 commit하므로 장시간 실행 중에도 다른 request가 run과 progress를 조회할 수 있다.
-
----
-
-## 9. 11단계 분석 절차
-
-### 9.1 단계 1~2: 요청 수신과 ORDS 전달
-
-```sql
-record_progress(..., 1, 'REQUEST_RECEIVED', ..., 'DONE');
-record_progress(..., 2, 'ORDS_DISPATCH', ..., 'DONE');
-```
-
-위치: `asta_pkg.sql:581-582`
-
-`record_progress()`는 `ASTA_RUN_PROGRESS`에 상태를 저장한다.
-
-정의 위치: `asta_pkg.sql:125`
-
-이 procedure는 autonomous transaction을 사용하므로 메인 분석 transaction이 끝나기 전에도 progress를 조회할 수 있다.
-
-### 9.2 단계 3: SQL Guard
-
-호출:
-
-```sql
-asta_sql_guard_pkg.assert_safe_select(l_sql);
-```
-
-위치: `asta_pkg.sql:665`
-
-구현:
-
-- 파일: `db/adb/asta_sql_guard_pkg.sql`
-- 함수: `assert_safe_select()`
-- 위치: `asta_sql_guard_pkg.sql:112`
-
-정책:
-
-- `SELECT` 또는 `WITH` 단일문만 허용
-- DML 차단
-- DDL 차단
-- PL/SQL 차단
-- 다중 statement 차단
-- 위험한 terminator 차단
-
-LLM 후보 SQL도 별도로 같은 정책을 통과해야 한다.
-
-### 9.3 단계 4: Source 연결 조회
-
-```sql
-asta_source_bridge_pkg.get_connection_json(l_source_db_id)
-```
-
-위치: `asta_pkg.sql:669`
-
-내부 `resolve_connection()`이 `ASTA_SOURCE_CONNECTIONS`에서 다음 값을 조회한다.
-
-- `source_db_id`
-- `db_link_name`
-- `source_schema`
-- `enabled_yn`
-
-연결은 사용자 payload가 아니라 ADB allowlist가 결정한다.
-
-### 9.4 단계 4: 원본 SQL Evidence
-
-```sql
-asta_source_bridge_pkg.run_source_evidence(
-  p_source_db_id     => l_source_db_id,
-  p_sql              => l_sql,
-  p_run_id           => l_run_id,
-  p_fetch_rows       => l_fetch_rows,
-  p_repeat_policy    => 'AUTO',
-  p_run_advisor      => l_run_advisor,
-  p_sqltune_time_sec => l_sqltune_time_limit
-)
-```
-
-위치: `asta_pkg.sql:702-710`
-
-### 9.5 단계 5: SQL Tuning Advisor 상태
-
-Source Evidence JSON의 Advisor 상태를 읽어 progress에 반영한다.
-
-```sql
-advisor_progress_status(l_source_json)
-advisor_progress_detail(l_source_json, l_run_advisor)
-```
-
-위치: `asta_pkg.sql:717-724`
-
-별도의 Advisor 재실행이 아니라 Source에서 이미 수행된 Advisor 결과를 진행 단계로 기록하는 부분이다.
-
-### 9.6 단계 6: Vector KB 검색
-
-```sql
-asta_vector_pkg.search_similar_cases(l_sql, l_vector_top_k)
-```
-
-위치: `asta_pkg.sql:727`
-
-구현:
-
-- 파일: `db/adb/asta_vector_pkg.sql`
-- 함수: `search_similar_cases()`
-- 위치: `asta_vector_pkg.sql:137`
-
-현재 SQL과 과거 ASTA 튜닝 사례를 비교해 LLM prompt에 넣을 유사 사례를 반환한다.
-
-### 9.7 단계 7: LLM SQL 재작성
-
-```sql
-asta_llm_pkg.generate_tuning(...)
-```
-
-위치: `asta_pkg.sql:731-738`
-
-구현:
-
-- 파일: `db/adb/asta_llm_pkg.sql`
-- 함수: `generate_tuning()`
-- 위치: `asta_llm_pkg.sql:368`
-
-내부 흐름:
-
-```text
-assert_safe_select(원본 SQL)
-  → build_tuning_prompt()
-  → DBMS_CLOUD_AI.GENERATE(action => 'chat')
-  → asta_sql_guard_pkg.extract_candidate_sql()
-  → 후보 SQL 안전성 검사
-```
-
-후보가 없거나 원본 SQL과 동일하면 다음 보조 경로를 시도한다.
-
-```sql
-asta_llm_pkg.generate_sql_only_tuning(...)
-```
-
-위치: `asta_pkg.sql:759`
-
-### 9.8 단계 8: 후보 SQL Evidence
-
-안전한 후보가 있으면 원본과 동일한 Source 경로로 실제 실행한다.
-
-```sql
-asta_source_bridge_pkg.run_source_evidence(
-  p_sql          => l_tuned_sql,
-  p_run_id       => l_run_id || '-TUNED',
-  p_run_advisor  => 'N'
-)
-```
-
-위치: `asta_pkg.sql:783-791`
-
-후보 SQL 실행이 실패하면:
-
-```text
-LLM 후보 거절
-  → 원본 SQL 유지
-  → 원본 SQL을 <run_id>-SAFE로 재실행
-```
-
-관련 위치: `asta_pkg.sql:793-811`
-
-### 9.9 단계 9: Before/After 비교
-
-```sql
-build_comparison_json(l_source_json, l_after_json)
-```
-
-위치: `asta_pkg.sql:820`
-
-주요 비교값:
-
-- row count
-- output rows 일치 여부
-- buffer gets
-- disk reads
-- elapsed time
-- 전후 실행 상태
-
-그 후 LLM 최종 리뷰를 수행한다.
-
-```sql
-asta_llm_pkg.final_review(...)
-```
-
-위치: `asta_pkg.sql:834-838`
-
-LLM은 evidence를 변경하지 않고 Before/After 결과를 설명하고 보고서 초안을 생성한다.
-
-### 9.10 단계 10: 최종 결과서
-
-```sql
-asta_report_pkg.build_report(...)
-```
-
-위치: `asta_pkg.sql:846-858`
-
-결과서 구성:
-
-- 결론
-- 원본 SQL
-- 후보 SQL
-- Before/After 수치
-- SQL Tuning Advisor 결과
-- 사용자 참고사항
-- 원본 XPLAN
-- 후보 SQL XPLAN
-- 테이블 및 컬럼 통계
-- 인덱스 정보
-
-XPLAN 및 오브젝트 통계는 LLM이 작성한 값이 아니라 Source DB에서 수집한 artifact를 직접 붙인다.
-
-### 9.11 단계 11: Vector 사례 저장
-
-```sql
-asta_vector_pkg.save_case(...)
-```
-
-위치: `asta_pkg.sql:862-868`
-
-저장 정보:
-
-- run_id
-- 원본 SQL
-- 후보 SQL
-- Markdown 결과서
-- LLM metadata
-
-관련 테이블:
-
-```text
-ASTA_TUNING_CASES
-ASTA_TUNING_CASE_CHUNKS
-```
-
-### 9.12 최종 JSON 및 ASTA_RUNS 갱신
-
-```sql
-asta_report_pkg.build_response_json(...)
-```
-
-위치: `asta_pkg.sql:872-885`
-
-그 후:
-
-```sql
-UPDATE asta_runs
-SET status = l_status,
-    tuned_sql = l_tuned_sql,
-    completed_at = SYSTIMESTAMP,
-    detailed_report_md = l_report_markdown,
-    response_json = l_response_json
-WHERE run_id = l_run_id;
-
-COMMIT;
-```
-
-위치: `asta_pkg.sql:887-894`
-
-예외가 발생해도 실패 상태의 결과서와 response JSON을 생성해 `ASTA_RUNS`에 저장한다.
-
----
-
-## 10. ADB → Source DB 실행 경계
+## 8. ADB → Source DB bridge
 
 파일: `db/adb/asta_source_bridge_pkg.sql`
 
-함수:
+`ASTA_SOURCE_BRIDGE_PKG.RUN_SOURCE_EVIDENCE`는 다음 안전 경계를 적용한다.
 
-```sql
-run_source_evidence()
-```
+1. `source_db_id`로 enabled `ASTA_SOURCE_CONNECTIONS` row를 조회한다.
+2. DB Link, schema, run ID, source SQL ID 형식을 검증한다.
+3. ADB `ASTA_SQL_GUARD_PKG`로 SQL을 다시 검사한다.
+4. fetch rows, repeat policy, Advisor limit, result mode/max rows를 범위 안으로 정규화한다.
+5. SQL CLOB을 AL32UTF8 byte 수 기준 최대 32,767-byte DB Link VARCHAR2 payload로 변환한다.
+6. 동적 호출 대상은 allowlisted schema와 link의 `ASTA_SOURCE_PKG.RUN_EVIDENCE_STORE_PROC`로 제한한다.
+7. Source가 저장한 결과를 chunk로 회수해 ADB CLOB으로 조립한다.
 
-위치: `asta_source_bridge_pkg.sql:150`
+멀티바이트 SQL은 4,000-character chunk로 읽어 누적 `LENGTHB`를 검사한다. 32,767 bytes를 넘으면 잘라 보내지 않고 명시적으로 거절한다.
 
-### 10.1 DB Link procedure 호출
-
-```sql
-BEGIN
-  <source_schema>.asta_source_pkg.run_evidence_store_proc@<db_link>(...);
-END;
-```
-
-동적 호출문 생성 위치: `asta_source_bridge_pkg.sql:185-188`
-
-실행 위치: `asta_source_bridge_pkg.sql:194-201`
-
-호출 구조:
-
-```text
-ADB ASTA_SOURCE_BRIDGE_PKG
-  → 허용된 DB Link
-    → Source DB ASTA_SOURCE_PKG.RUN_EVIDENCE_STORE_PROC
-```
-
-FastAPI나 ADB Python pool이 Source DB에 직접 연결하지 않는다.
-
-### 10.2 Source 결과 chunk 회수
-
-Source의 결과 JSON은 대용량 CLOB이므로 DB Link OUT CLOB로 직접 반환하지 않는다.
-
-```text
-Source ASTA_SOURCE_RESULTS에 저장
-  → GET_RESULT_CHUNK@DBLINK 반복 호출
-  → ADB에서 CLOB 재조립
-```
-
-ADB 호출:
-
-```sql
-asta_source_pkg.get_result_chunk@<db_link>(...)
-```
-
-위치: `asta_source_bridge_pkg.sql:207-222`
-
-한 번에 8,000자씩 읽는다.
-
-Bridge는 commit 또는 rollback하지 않는다. Source helper의 autonomous transaction이 Source 결과 저장을 담당한다.
-
----
-
-## 11. Source DB Evidence 수집
+## 9. Source evidence
 
 파일: `db/source/asta_source_pkg.sql`
 
-진입 관계:
+공개 진입점은 `RUN_EVIDENCE`, DB Link 저장 wrapper인 `RUN_EVIDENCE_STORE_PROC`와 `RUN_EVIDENCE_STORE_VC`다.
 
-```text
-run_evidence_store_proc()
-  → run_evidence_store_vc()
-    → run_evidence()
-```
+### 9.1 SQL Guard와 parsing schema
 
-### 11.1 DB Link wrapper
+Source에서도 하나의 `SELECT` 또는 `WITH`만 허용한다. `source_sql_id`가 있으면 원 SQL의 parsing schema를 찾아 `CURRENT_SCHEMA`를 일시 변경해 이름 해석을 재현한다. 이는 이름 해석만 바꾸며 객체 권한을 추가하지 않는다. 종료와 예외 경로에서 원 schema로 복원한다.
 
-- `run_evidence_store_proc()`: `asta_source_pkg.sql:1029`
-- `run_evidence_store_vc()`: `asta_source_pkg.sql:904`
-- autonomous transaction: `asta_source_pkg.sql:912`
+### 9.2 반복 실행과 metrics
 
-### 11.2 실제 Evidence 함수
+`AUTO`는 warm-up 1회와 측정 3회다. 각 bounded 실행에는 `gather_plan_statistics`와 `ASTA_RUN_ID` marker가 들어간다.
 
-```sql
-FUNCTION run_evidence(...) RETURN CLOB
-```
+각 실행 후 marker로 `V$SQL` cursor를 찾고 `V$SQL_PLAN_STATISTICS_ALL`의 LAST metrics를 수집한다.
 
-위치: `asta_source_pkg.sql:730`
-
-처리 순서:
-
-1. `assert_safe_select()`로 Source 측 재검증
-2. fetch rows 및 repeat policy 정규화
-3. `build_exec_sql()`로 제한된 실행 SQL 생성
-4. `EXECUTE IMMEDIATE`로 실제 SQL 실행
-5. run marker로 cursor 검색
-6. 실행 통계 수집
-7. `DBMS_XPLAN.DISPLAY_CURSOR` 실행
-8. plan object 기반 메타데이터 수집
-9. 선택적 Advisor 처리
-10. Evidence JSON 생성
-
-### 11.3 실제 SQL 실행
-
-```sql
-FOR i IN 1..l_repeats LOOP
-  EXECUTE IMMEDIATE l_exec_sql INTO l_row_count;
-END LOOP;
-```
-
-위치: `asta_source_pkg.sql:785-787`
-
-`build_exec_sql()`은 다음 목적을 가진다.
-
-- `gather_plan_statistics` 사용
-- ASTA run marker 삽입
-- 조회 행 제한
-- 실제 실행계획과 실행 통계 수집
-
-### 11.4 Cursor와 실행 통계
-
-```sql
-find_cursor(...)
-collect_metrics(...)
-```
-
-위치:
-
-- `find_cursor()`: `asta_source_pkg.sql:398`
-- 호출: `asta_source_pkg.sql:797`
-- `collect_metrics()`: `asta_source_pkg.sql:429`
-- 호출: `asta_source_pkg.sql:801-804`
-
-수집 항목:
-
-- SQL_ID
-- child cursor
-- plan hash value
-- output rows
-- buffer gets
-- disk reads
 - elapsed time
+- Buffer Gets
+- Disk Reads
+- output rows
+- SQL ID, child number, plan hash
 
-주요 통계 source:
+측정 3회가 모두 존재하고 elapsed noise가 20% 이하여야 Source measurement status가 `ACCEPTED`다. median elapsed, Buffer Gets, Disk Reads와 개별 `measurement_runs`를 반환한다.
+
+### 9.3 XPLAN, optimizer intent, bind
+
+`DBMS_XPLAN.DISPLAY_CURSOR` 기반 plan text와 node statistics를 수집한다. `optimizer_intent_evidence`는 target access/operation, Starts, buffers, plan shape 등 ADB 비교가 사용할 실제 node evidence를 제공한다.
+
+child cursor/ACS와 `V$SQL_BIND_CAPTURE`는 raw bind 값을 반환하지 않는다. bind metadata는 datatype/position/bucket/fingerprint 중심이며 원문 값은 유지하지 않는다. placeholder와 capture가 모두 없으면 `BIND_NOT_APPLICABLE`, bind가 있으나 replay가 없으면 fail-closed blocked evidence다.
+
+### 9.4 객체 통계와 인덱스
+
+XPLAN의 owner/object를 기준으로 다음 dictionary를 조회한다.
+
+- `DBA_TAB_STATISTICS`
+- `DBA_TAB_COLUMNS`
+- `DBA_INDEXES`
+- `DBA_IND_COLUMNS`
+
+ALL_* 가시성에 없지만 실행계획에는 나타나는 객체도 Source 계정의 실제 dictionary 권한 범위에서 수집하기 위한 현재 계약이다. table rows/blocks, column metadata, index와 index column을 JSON `object_info`로 반환한다.
+
+### 9.5 full-result equivalence evidence
+
+성능/XPLAN은 bounded wrapper로 측정하고, 결과 동일성은 별도 pass로 처리한다.
+
+`FULL_RESULT`이면 먼저 전체 행 수를 계산한다. 최대 행 예산을 넘으면 `EQUIVALENCE_BUDGET_EXCEEDED`로 차단한다. 예산 안이면 다음을 digest에 반영한다.
+
+- 컬럼 순서·이름·datatype·precision/scale·길이·charset metadata
+- NULL을 구분한 typed row hash
+- 중복 행 개수
+- 최종 `ORDER BY`가 있으면 `ORDERED_ROWS`
+- 없으면 `UNORDERED_MULTISET`
+- 전체 행 수와 complete marker
+
+일부 결과, digest 오류, metadata/mode 불일치는 동일하다고 추정하지 않는다.
+
+### 9.6 SQL Tuning Advisor
+
+`p_run_advisor='Y'`일 때만 SQL Tuning Advisor를 실행한다. 현재 일반 UI는 OFF다. Source가 만든 현재 호출 소유의 `ASTA_ADV_%` Scheduler job만 best-effort cleanup하며 실행 중인 다른 job이나 기존 job을 임의로 force drop하지 않는다. Advisor report는 참고 evidence이며 자동 적용 대상이 아니다.
+
+## 10. Progress 조회와 화면 표시
+
+`ASTA_PKG.RECORD_PROGRESS`는 `(run_id, seq)` 기준으로 상태, detail, `started_at`, `completed_at`, `elapsed_ms`를 `ASTA_RUN_PROGRESS`에 저장한다. `GET_PROGRESS`는 작고 빠른 polling JSON을 만든다.
+
+브라우저는 같은 run 동안 progress DOM 골격을 한 번 만들고 값이 달라진 부분만 갱신한다. 단계 전환마다 전체 `innerHTML`을 교체하지 않아 compact bar와 Drawer 깜빡임을 방지한다.
+
+기본 화면은 현재 단계, 전체 경과시간, Run ID, **진행 상세** 버튼만 표시한다. Drawer는 11단계 카드와 redacted detail을 보여준다. 표시 규칙은 다음과 같다.
+
+- 실제 저장 elapsed: ms 또는 초/분으로 표시
+- timestamp 차이로 계산 가능: 계산 소요시간 표시
+- timestamp만 있고 구간 측정 불가: `미측정`
+- 명시적 `SKIPPED`: `생략`
+- 시작 전 `PENDING`: `-`
+
+Drawer는 닫기, backdrop, Escape를 지원하고 모바일에서는 bottom sheet가 된다.
+
+## 11. 결과 조회와 6개 탭
+
+terminal progress를 받은 뒤 UI는 전체 run/report를 조회한다. 결과 Markdown은 다음 탭으로 분류한다.
+
+1. 요약
+2. 튜닝 전
+3. SQL 변경
+4. 튜닝 후
+5. 상세 분석
+6. 객체 정보
+
+`SQL 변경`은 원본/후보 SQL을 좌우 pane에 줄 번호와 함께 배치하고 remove/add block을 정렬한다. raw report는 바꾸지 않는다. 객체 정보 heading은 package가 동일 제목을 여러 번 만들 수 있어 해당 section만 원문 순서대로 병합한다. 다른 중복 heading은 잘못된 배치를 피하려고 fail-closed 처리한다.
+
+요약의 canonical verdict를 allowlist로 추출해 badge를 표시한다. `?` popover는 여섯 verdict의 의미와 권장 조치를 설명할 뿐 comparison을 변경하지 않는다. Markdown renderer는 `textContent` 중심의 안전 DOM을 사용하며 raw HTML과 script link를 실행하지 않는다.
+
+## 12. 저장 객체
+
+| 객체 | 역할 |
+|---|---|
+| `ASTA_RUNS` | request, 상태, 원본/후보, response JSON, Markdown, Scheduler metadata |
+| `ASTA_RUN_PROGRESS` | 11단계 상태와 timing |
+| `ASTA_SOURCE_CONNECTIONS` | logical source와 enabled DB Link/schema allowlist |
+| `ASTA_LLM_CALL_LOG` | LLM stage/attempt/크기/상태 감사 |
+| `ASTA_TUNING_CASES` 및 chunk | positive/rejected Vector 사례 |
+
+운영 artifact와 인계 파일에는 token, password, cookie, wallet 정보, raw bind 값을 기록하지 않는다.
+
+## 13. 상태와 장애 해석
+
+- `QUEUED/RUNNING/COMPLETED/FAILED`는 pipeline 처리 상태다.
+- `COMPLETED`가 곧 `IMPROVED`는 아니다. 최종 comparison verdict를 확인한다.
+- `NO_REWRITE`, `NOT_IMPROVED`, `NON_EQUIVALENT`, `CANDIDATE_FAILED`, `INSUFFICIENT_EVIDENCE`는 모두 원본 SQL 유지다.
+- 6단계 장기 실행은 모델 HTTP 대기인지 LLM 응답 후 PL/SQL 후처리 CPU인지 LLM audit와 session stack을 함께 확인한다.
+- 7단계 timeout은 ADB watchdog 완료와 Source session 종료를 구분해 확인한다.
+- 4단계 ORA-06502는 SQL character 길이뿐 아니라 UTF-8 byte 길이, bridge CLOB 변환, Source 내부 VARCHAR2 경계를 확인한다.
+- 객체 정보가 비면 XPLAN object 존재 여부와 DBA_* dictionary 가시성을 대조한다.
+
+진단만 요청받았을 때 job stop, run 상태 변경, package 배포를 수행하지 않는다. 중단이 필요하면 해당 run이 소유한 Scheduler job과 Source session인지 확인하고 별도 승인을 받는다.
+
+## 14. 배포와 검증 경계
+
+ADB package compile 순서:
 
 ```text
-V$SQL_PLAN_STATISTICS_ALL
+ASTA_SQL_GUARD_PKG
+  → ASTA_SOURCE_BRIDGE_PKG
+  → ASTA_VECTOR_PKG
+  → ASTA_LLM_PKG
+  → ASTA_REPORT_PKG
+  → ASTA_PKG
 ```
 
-### 11.5 실제 XPLAN 수집
-
-```sql
-collect_xplan(l_sql_id, l_child_number)
-```
-
-내부 호출:
-
-```sql
-DBMS_XPLAN.DISPLAY_CURSOR(...)
-```
-
-위치:
-
-- 정의: `asta_source_pkg.sql:466`
-- 호출: `asta_source_pkg.sql:809`
-
-따라서 결과서의 XPLAN 원문은 LLM 생성 텍스트가 아니다.
-
-### 11.6 오브젝트 메타데이터
-
-```sql
-collect_object_info(l_sql_id, l_child_number)
-```
-
-위치:
-
-- 정의: `asta_source_pkg.sql:504`
-- 호출: `asta_source_pkg.sql:810`
-
-수집 대상:
-
-- table statistics
-- column statistics
-- indexes
-- index columns
-
----
-
-## 12. SQL Tuning Advisor의 실제 운영 경로
-
-DB Link 기반 운영 경로에서는 `run_evidence_store_vc()`가 기본 Evidence를 먼저 수집하고 Advisor를 별도의 Scheduler job으로 수행한다.
-
-```text
-RUN_EVIDENCE_STORE_PROC()
-  → RUN_EVIDENCE_STORE_VC()
-     ├─ RUN_EVIDENCE(p_run_advisor => 'N')
-     │  ├─ SQL 실행
-     │  ├─ metrics
-     │  ├─ XPLAN
-     │  └─ object metadata
-     │
-     └─ Advisor 요청 시
-        DBMS_SCHEDULER.CREATE_JOB()
-          → RUN_ADVISOR_JOB()
-             → RUN_ADVISOR_OPT()
-                ├─ DBMS_SQLTUNE.CREATE_TUNING_TASK()
-                ├─ DBMS_SQLTUNE.EXECUTE_TUNING_TASK()
-                ├─ DBMS_SQLTUNE.REPORT_TUNING_TASK()
-                └─ DBMS_SQLTUNE.DROP_TUNING_TASK()
-```
-
-관련 위치:
-
-- 기본 Evidence 호출: `asta_source_pkg.sql:924-931`
-- Scheduler 생성 및 polling: `asta_source_pkg.sql:958-990`
-- `run_advisor_job()`: `asta_source_pkg.sql:695`
-- `run_advisor_opt()`: `asta_source_pkg.sql:648`
-
-restricted login이면 Source 직접접속 fallback을 시도하지 않는다. Advisor 상태를 `FAILED`로 기록하고 DBA가 정상 login을 허용한 후 재실행하도록 actionable message를 남긴다.
-
----
-
-## 13. Progress 조회
-
-### 13.1 ADB progress 저장
-
-```sql
-ASTA_PKG.RECORD_PROGRESS()
-```
-
-위치: `db/adb/asta_pkg.sql:125`
-
-`PRAGMA AUTONOMOUS_TRANSACTION`을 사용하므로 장시간 `ANALYZE_SQL()` 실행 중에도 별도 HTTP request가 진행 상태를 읽을 수 있다.
-
-단계:
-
-1. `REQUEST_RECEIVED`
-2. `ORDS_DISPATCH`
-3. `SQL_GUARD`
-4. `BEFORE_EVIDENCE`
-5. `SQL_TUNING_ADVISOR`
-6. `VECTOR_KB`
-7. `LLM_REWRITE`
-8. `AFTER_EVIDENCE`
-9. `LLM_FINAL_REVIEW`
-10. `FINAL_REPORT`
-11. `VECTOR_SAVE`
-
-### 13.2 브라우저 polling
-
-함수:
-
-```javascript
-pollRunProgress(baseUrl, runId, progressTarget, resultTarget)
-```
-
-위치: `tuning_assistant.js:663`
-
-1초 간격으로 다음 endpoint를 호출한다.
-
-```http
-GET /api/asta/runs/{run_id}/progress
-```
-
-최대 반복 횟수는 2,400회이다.
-
-### 13.3 FastAPI progress 조회
-
-```python
-get_run_progress()
-  → _audited_run_lookup(run_id, database, "progress", "progress")
-```
-
-위치:
-
-- `get_run_progress()`: `asta_proxy.py:609`
-- `_audited_run_lookup()`: `asta_proxy.py:364`
-
-조회 우선순위:
-
-1. FastAPI `ASYNC_RUNS` memory
-2. ADB ORDS progress endpoint
-3. ORDS가 명시적으로 `NOT_FOUND`를 반환하면 기존 local snapshot
-
-ORDS 통신 자체가 실패하면 local snapshot으로 자동 전환하지 않고 오류를 다시 발생시킨다.
-
-### 13.4 ORDS 및 ADB progress 조회
-
-ORDS:
-
-```sql
-ASTA_PKG.GET_PROGRESS(:run_id)
-```
-
-위치: `asta_ords_module.sql:164`
-
-ADB:
-
-```sql
-ASTA_PKG.GET_PROGRESS()
-  → ASTA_RUNS 조회
-  → BUILD_PROGRESS_ARRAY_JSON()
-  → ASTA_RUN_PROGRESS 조회
-```
-
-위치: `asta_pkg.sql:1031`
-
-Progress 조회는 Source DB를 다시 호출하지 않는다.
-
----
-
-## 14. 최종 결과서 조회
-
-브라우저의 progress 상태가 `COMPLETED` 또는 `DONE`이면 다음 함수가 실행된다.
-
-```javascript
-fetchReport(baseUrl, runId)
-```
-
-위치: `tuning_assistant.js:639`
-
-요청:
-
-```http
-GET /api/asta/runs/{run_id}/report
-```
-
-FastAPI:
-
-```python
-get_run_report()
-  → _audited_run_lookup(..., "report")
-```
-
-위치: `asta_proxy.py:615`
-
-ORDS:
-
-```sql
-ASTA_PKG.GET_REPORT(:run_id)
-```
-
-위치: `asta_ords_module.sql:206`
-
-ADB:
-
-```sql
-ASTA_PKG.GET_REPORT()
-  → ASTA_RUNS.DETAILED_REPORT_MD 조회
-```
-
-위치: `asta_pkg.sql:1078`
-
-브라우저는 `renderResult()`로 Markdown 결과를 표시하고 다운로드 상태를 저장한다.
-
-다운로드 파일 형식:
-
-```text
-asta_tuning_report_<timestamp>_<run_id>.md
-```
-
----
-
-## 15. Run 조회
-
-```http
-GET /api/asta/runs/{run_id}
-```
-
-호출 관계:
-
-```text
-FastAPI get_run()
-  → ORDS GET runs/:run_id
-    → ASTA_PKG.GET_RUN(:run_id)
-      → ASTA_RUNS.RESPONSE_JSON
-```
-
-위치:
-
-- FastAPI: `asta_proxy.py:603`
-- ORDS: `asta_ords_module.sql:122`
-- ADB: `asta_pkg.sql:996`
-
-Source DB를 다시 호출하지 않고 저장된 최종 response JSON을 반환한다.
-
----
-
-## 16. Local fallback과 Source 직접접속 정책
-
-FastAPI 조회 fallback은 `_audited_run_lookup()`에 존재한다.
-
-```text
-FastAPI memory
-  → ADB ORDS
-  → ORDS의 명시적 NOT_FOUND이면 local final snapshot
-```
-
-현재 일반 ASTA analyze 경로에는 Source DB 직접접속 fallback이 없다.
-
-`app/asta_source_direct.py`는 차단 shim이다.
-
-```python
-should_attempt_source_direct()      # 항상 False
-apply_source_direct_fallback()      # RuntimeError
-apply_source_direct_advisor_repair() # RuntimeError
-```
-
-따라서 현재 Source 실행의 유효한 경로는 다음뿐이다.
-
-```text
-ADB ASTA_SOURCE_BRIDGE_PKG
-  → 허용된 DB Link
-    → Source ASTA_SOURCE_PKG
-```
-
----
-
-## 17. SQL-only LLM 숨김 경로
-
-UI에서 `Ctrl+Alt+L`을 사용하면 SQL-only LLM 버튼을 표시할 수 있다.
-
-요청:
-
-```http
-POST /api/asta/llm-sql-only
-```
-
-FastAPI 함수:
-
-```python
-llm_sql_only()
-```
-
-위치: `app/routers/asta_proxy.py:445`
-
-이 경로는 선택된 ADB pool에서 다음을 직접 수행한다.
-
-```sql
-DBMS_CLOUD_AI.GENERATE(action => 'chat')
-```
-
-다음 ASTA 기능을 우회한다.
-
-- Source DB Evidence
-- SQL Tuning Advisor
-- Vector 검색
-- 후보 SQL 실제 실행
-- Before/After 비교
-- 정식 ASTA 결과서 생성
-
-따라서 일반 `AI 분석 실행` 경로와 별개인 디버그·비교 기능이다.
-
----
-
-## 18. 프런트엔드 상태 처리 주의점
-
-현재 `pollRunProgress()`는 다음 상태에서 종료한다.
-
-```javascript
-["COMPLETED", "DONE", "FAILED"]
-```
-
-위치: `tuning_assistant.js:671-674`
-
-`FAILED`이면 결과서를 조회하지 않고 progress를 반환한다. 그러나 상위 실행 handler는 반환된 progress 상태를 재검사하지 않고 다음 성공 처리를 수행할 수 있다.
-
-```javascript
-runButton.textContent = "완료";
-completedOk = true;
-Toast.show("ASTA 분석이 완료되었습니다.");
-```
-
-위치: `tuning_assistant.js:1299-1301`
-
-따라서 서버가 `FAILED`를 반환해도 UI가 완료 toast를 표시할 가능성이 있다.
-
-추가 주의점:
-
-- polling 종료 상태에 `ERROR`가 없다.
-- 서버 최종 상태가 `ERROR`이면 즉시 종료되지 않을 수 있다.
-- 최초 500ms progress timer는 실제 서버 progress가 아니라 client placeholder이다.
-- 2,400초 제한 외에 각 HTTP 요청 소요시간이 별도로 추가된다.
-
----
-
-## 19. 파일별 역할
-
-| 계층 | 파일 | 주요 역할 |
-|---|---|---|
-| UI | `static/js/extensions/tuning_assistant.js` | 화면, analyze 요청, progress polling, report 표시·다운로드 |
-| FastAPI 시작 | `app/main.py` | 설정, 인증 middleware, router 등록, static serving |
-| FastAPI ASTA | `app/routers/asta_proxy.py` | payload 정규화, async 상태, ORDS proxy, progress/report 조회 |
-| Audit | `app/asta_audit.py` | request event, run index, 호환 snapshot |
-| ORDS | `db/ords/asta_ords_module.sql` | HTTP endpoint와 ADB package 연결 |
-| ADB Main | `db/adb/asta_pkg.sql` | 전체 11단계 오케스트레이션 |
-| SQL Guard | `db/adb/asta_sql_guard_pkg.sql` | SELECT/WITH 단일문 검증, 후보 SQL 추출·검증 |
-| Source Bridge | `db/adb/asta_source_bridge_pkg.sql` | allowlist 조회, DB Link Source 호출, chunk 회수 |
-| Source Runtime | `db/source/asta_source_pkg.sql` | SQL 실행, metrics, XPLAN, object stats, SQLTUNE |
-| Vector | `db/adb/asta_vector_pkg.sql` | 유사 사례 검색 및 결과 저장 |
-| LLM | `db/adb/asta_llm_pkg.sql` | prompt, DBMS_CLOUD_AI, 후보 SQL, final review |
-| Report | `db/adb/asta_report_pkg.sql` | Markdown 결과서 및 API response JSON 생성 |
-
----
-
-## 20. 소스 읽기 추천 순서
-
-1. UI 버튼 handler  
-   `static/js/extensions/tuning_assistant.js:1196`
-
-2. FastAPI analyze endpoint  
-   `app/routers/asta_proxy.py:537`
-
-3. ORDS analyze mapping  
-   `db/ords/asta_ords_module.sql:21-61`
-
-4. ADB 전체 workflow  
-   `db/adb/asta_pkg.sql:536`
-
-5. ADB → Source DB Link 경계  
-   `db/adb/asta_source_bridge_pkg.sql:150`
-
-6. Source 실제 SQL 실행  
-   `db/source/asta_source_pkg.sql:730`
-
-7. Source store 및 Advisor Scheduler  
-   `db/source/asta_source_pkg.sql:904`
-
-8. LLM 후보 생성  
-   `db/adb/asta_llm_pkg.sql:368`
-
-9. 결과서 생성  
-   `db/adb/asta_report_pkg.sql`
-
-10. Progress polling  
-    `tuning_assistant.js:663` → `asta_proxy.py:609` → `ASTA_PKG.GET_PROGRESS()`
-
----
-
-## 21. 최종 요약
-
-```text
-FastAPI는 요청을 중계하고 비동기 상태를 관리한다.
-ADB ASTA_PKG가 전체 분석 흐름을 제어한다.
-Source ASTA_SOURCE_PKG가 SQL을 실제 실행한다.
-ADB ASTA_LLM_PKG가 LLM 후보 SQL과 최종 리뷰를 만든다.
-ADB ASTA_REPORT_PKG가 실제 Evidence와 XPLAN을 조합해 결과서를 만든다.
-```
-
-가장 중요한 실행 경계:
-
-```text
-Browser
-  → FastAPI same-origin proxy
-    → ADB ORDS
-      → ADB ASTA_PKG
-        → ADB Source Bridge
-          → DB Link
-            → Source ASTA_SOURCE_PKG
-```
-
-Source DB 직접접속 fallback은 사용하지 않는다. 원본 및 후보 SQL의 실행 결과, XPLAN, 통계가 최종 판단의 기준이며 LLM 설명이나 사용자 참고사항과 충돌할 경우 실제 Evidence가 우선한다.
+Source `ASTA_SOURCE_PKG`, ADB package, schema migration, ORDS module, Python service, static asset은 서로 별도 배포 대상이다. 저장소 파일을 수정했다고 실환경에 반영된 것으로 보지 않는다.
+
+배포 시에는 승인된 범위에서 다음을 확인한다.
+
+1. 배포 전 DDL/설정 백업
+2. package spec/body `VALID`, `USER_ERRORS=0`
+3. ORDS handler와 contract version
+4. Source bridge marker, repeat/full-result/object metadata smoke
+5. 제출 `QUEUED`, progress, terminal run, report 조회
+6. static cache version과 served byte 일치
+7. rollback 절차
+
+현재 문서가 반영하는 2026-07-06~07 실환경 변경에는 Scheduler 기반 pipeline, full-result/optimizer intent/bind/반복 측정 evidence, 14개 OLTP 샘플 최종 검증, 단계 timing, 멀티바이트 bridge 수정, Source DBA_* 객체정보 수집, 5개 BATCH 샘플과 최신 UI가 포함된다.
+
+## 15. 코드 읽기 순서
+
+1. `docs/OADT2_ASTA_ARCHITECTURE.md`
+2. `static/js/extensions/tuning_assistant.js`
+3. `app/routers/asta_proxy.py`
+4. `db/ords/asta_ords_module.sql`
+5. `db/adb/asta_pkg.sql`
+6. `db/adb/asta_source_bridge_pkg.sql`
+7. `db/source/asta_source_pkg.sql`
+8. `db/adb/asta_llm_pkg.sql`
+9. `db/adb/asta_vector_pkg.sql`
+10. `db/adb/asta_report_pkg.sql`
+11. `static/js/extensions/asta_report_tabs.js`
+
+이 순서로 읽으면 제출 owner, Source 실행 경계, evidence, 판정, 저장, 화면 표시를 혼동하지 않고 따라갈 수 있다.

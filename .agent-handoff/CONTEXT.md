@@ -397,3 +397,267 @@
 - `origin/ASTA`의 8개 커밋을 merge commit `67f772f`로 통합했다. 충돌은 없었고 로컬 ASTA 구현은 유지하면서 원격의 persona analysis 라우터/UI와 관련 main 변경을 반영했다.
 - 병합 후 전체 회귀는 `398 passed, 9 failed in 1.19s`로 병합 전과 동일하며 신규 실패 0건이다. Python `compileall`, `tuning_assistant.js`, `asta_report_tabs.js`, `persona_analysis.js`의 Node syntax, `git diff --check`가 모두 통과했다.
 - push 직전 브랜치는 `origin/ASTA` 대비 48커밋 ahead, 작업 트리 clean이었다. 이 인계 갱신을 별도 커밋한 뒤 `ASTA` 브랜치를 push한다.
+
+## Run b10 6단계 장기 실행 진단 — 2026-07-06
+
+- 대상 `OADT2-ASTA-b10dd6e13ad24483ba52ba3c9980eb35`을 ADB에서 읽기 전용 조회했다. SQL/프롬프트/응답 원문은 출력하거나 인계에 기록하지 않았다.
+- 제출 `2026-07-06 14:22:19 UTC`, Source Before evidence는 5.561초에 완료, Advisor는 SKIPPED, Vector는 0.002초에 완료됐다. 6단계 `LLM_REWRITE`는 `14:22:24 UTC`부터 RUNNING이고 7단계 `AFTER_EVIDENCE`에는 진입하지 않았다.
+- LLM audit상 DIAGNOSIS는 16.5초에 RECEIVED, 첫 CANDIDATE_SQL은 6.4초에 `NO_REWRITE`로 RECEIVED, 두 번째 CANDIDATE_SQL은 3.9초에 1,449자 응답으로 RECEIVED됐다. 마지막 모델 응답은 `14:22:51.601 UTC`에 이미 끝났다.
+- 약 11분 시점에도 Scheduler 세션은 active이며 blocking session은 없었다. 현재 PL/SQL stack은 `ASTA_PKG.EXECUTE_RUN → ASTA_LLM_PKG`이고 대기 이벤트는 `resmgr:cpu quantum`; 현재 PL/SQL SQL 통계는 CPU 중심이고 disk read는 극소수다.
+- 결론: 화면상 “개선 SQL 만들기” 단계인 것은 맞지만 모델 응답 대기가 아니다. 두 번째 응답 후 `ASTA_LLM_PKG`의 SQL 정규화/구조 비교/guard 전후 후처리에서 CPU pathological path에 빠진 정황이다. 후보 SQL은 아직 `ASTA_RUNS.TUNED_SQL`에 저장되지 않았고 Source 후보 실행도 시작되지 않았다.
+- 후보 응답은 주석 1쌍과 균형 잡힌 괄호 10쌍, WITH/SELECT 시작을 가진 형태다. 정확한 private routine line은 PL/Scope metadata가 없어 확정하지 못했지만 로컬 코드상 `normalize_sql_response`, `structural_sql_key`의 Oracle regex, `assert_safe_select` 호출 구간이 우선 조사 대상이다.
+- candidate watchdog은 LLM 함수가 반환하고 7단계에 진입한 뒤에만 arm되므로 현재 6단계 CPU hang에는 timeout이 없다. 이번 요청은 진단만 수행했고 job stop, run 상태 변경, package 배포, 서비스 재시작은 하지 않았다.
+
+## ASTA 11단계 진행 상세보기·단계 로그 UI — 2026-07-06 완료
+
+- 요청/결론: 기본 진행 UI는 현재 단계 한 줄만 유지하고, `상세보기`를 열었을 때 11단계 전체 상태와 단계별 로그를 확인하도록 구현했다. `<details>`는 기본 닫힘이며 polling 재렌더링 중 사용자가 열어 둔 상태는 유지한다.
+- 각 단계는 번호/한글명/내부 code/status, 시작·완료 시각, 저장 또는 실시간 계산 소요시간을 표시한다. 로그는 시작, 현재/종료 상태, redacted detail, 소요시간으로 구성하며 아직 시작하지 않은 단계도 PENDING으로 보인다.
+- 단계 status/timestamp/detail signature가 바뀔 때만 브라우저 console에 `asta-stage-progress` 구조화 로그를 남긴다. SQL literal/bind/SQL text는 기존 redaction을 적용한다.
+- `normalizeSteps`가 서버의 `started_at`, `completed_at`, `elapsed_ms`를 보존하도록 변경했다. 서버/DB schema/package는 변경하지 않았으며 기존 `ASTA_RUN_PROGRESS` 11단계 데이터만 사용한다.
+- cache-buster는 `tuning_assistant.js?v=20260706_progress_details1`이다. 변경 파일: `static/js/extensions/tuning_assistant.js`, `static/index.html`, 신규 `tests/test_asta_progress_details.py`, 관련 정적/cache 계약 테스트, 이 handoff.
+- TDD RED `4 failed` 확인 후 focused `49 passed`; Node syntax와 `git diff --check` 통과. 전체 회귀 `403 passed, 기존 9 failed in 1.19s`, 신규 실패 0건이다.
+- `select-ai-test.service`는 PID 822785로 active이고 8000 포트 LISTEN 상태다. 최초 `/` 포함 HTTP 검증은 응답 지연으로 종료했지만 정적 자산만 10초 제한으로 재검증해 HTTP 200, 133,329 bytes, workspace 파일과 byte-identical을 확인했다. 서비스 재시작, 현재 Run 중지, DB/ORDS 변경, commit/push는 수행하지 않았다.
+
+## ASTA 진행 상세 UI Drawer 전환 — 2026-07-06 완료
+
+- 사용자 피드백에 따라 진행 카드 내부의 11단계 `<details>`를 제거했다. 기본 화면은 compact 현재 단계/전체 시간/Run ID와 `진행 상세` 버튼만 표시한다.
+- `진행 상세`는 우측 고정 Drawer dialog를 연다. 11단계 상태·timing·로그는 Drawer에서만 보이며 닫기 버튼, backdrop 클릭, Escape로 닫는다. polling 재렌더링 중 열린 상태와 scrollTop을 유지한다.
+- 모바일 <=700px에서는 하단에서 열리는 92dvh sheet로 전환하고 compact 상태에서 긴 detail/Run ID를 숨긴다. 단계 code를 숨기고 timing을 1열로 바꾼다.
+- 단계별 redacted console log와 서버 progress timing 보존 계약은 유지했다. cache-buster는 `tuning_assistant.js?v=20260706_progress_drawer1`이다.
+- TDD Drawer RED `4 failed` 확인 후 focused `55 passed`; Node syntax와 diff check 통과. 전체 `403 passed, 기존 9 failed in 1.20s`, 신규 실패 0건이다.
+- 실행 서비스 static asset은 HTTP 200, 137,726 bytes이며 workspace 파일과 byte-identical이다. 서비스 재시작, DB/ORDS 변경, 현재 Run 중지, commit/push는 수행하지 않았다.
+
+## ASTA 진행 UI 초기 노출·polling 깜빡임 수정 — 2026-07-06 완료
+
+- 초기 `READY/IDLE/PENDING`이며 실제 진행 row가 없는 경우 progress anchor를 hidden 처리하고 DOM을 비운다. 분석 제출 후 RUNNING/QUEUED 상태부터 compact 진행 UI가 표시되며 초기화 시 다시 숨는다.
+- polling tick마다 `innerHTML`을 교체하던 원인을 제거했다. 단계 status/detail/started/completed/elapsed의 render signature가 동일하면 기존 DOM과 Drawer를 보존하고 현재 단계·전체·각 단계 경과시간 textContent만 갱신한다.
+- 실제 단계 전환, 오류, 로그 변화가 있을 때만 Drawer DOM을 다시 만들며 기존 open 상태와 scrollTop 보존도 유지한다. cache-buster는 `20260706_progress_drawer3`이다.
+- 신규 계약 RED `2 failed`와 anti-flicker RED `1 failed` 확인 후 focused `51 passed`. Node syntax/diff check 통과, 전체 `405 passed, 기존 9 failed in 1.20s`, 신규 실패 0건이다.
+- 실행 서비스 asset은 HTTP 200, 140,973 bytes이고 workspace와 byte-identical이다. 서비스 재시작, DB/ORDS 변경, 현재 Run 중지, commit/push 없음.
+
+## ASTA 단계 전환 깜빡임 제거 — 2026-07-06 완료
+
+- 잔여 원인은 단계 status가 바뀔 때 render signature가 달라져 같은 Run의 compact bar와 Drawer 전체 `innerHTML`을 교체하던 것이었다.
+- 같은 Run ID 동안에는 DOM 골격을 한 번만 만들고 이후 단계 전환도 `refreshProgressView`가 현재 label/dot/class, 해당 단계 status/timing/log만 부분 갱신한다. 전체 DOM 생성은 새 Run 시작 시 한 번만 수행한다.
+- Drawer 카드에 안정적인 `data-progress-step-card` key를 부여했다. 실행 중 elapsed는 timing text만 갱신하고 로그 HTML에는 매 tick 추가하지 않으며, 로그 내용이 실제로 바뀐 카드만 부분 교체한다.
+- cache-buster는 `20260706_progress_drawer4`. focused `51 passed`, Node syntax/diff check 통과, 전체 `405 passed, 기존 9 failed in 1.21s`, 신규 실패 0건이다.
+- 실행 서비스 asset HTTP 재검증은 localhost 응답 지연으로 종료했다. 직전 drawer3 served-byte 검증은 통과했으며 정적 파일은 workspace에서 직접 제공된다. 서비스 재시작, DB/ORDS 변경, Run 중지, commit/push 없음.
+
+## ASTA 4단계 ORA-06502 수정·배포 — 2026-07-07 완료
+
+- 사용자 보고는 4단계 Source evidence의 `ORA-06502: character string buffer too small`다. request audit에서 같은 SQL fingerprint의 실제 run 3건이 QUEUED/RUNNING 후 약 10~12초 안에 반복 FAILED하고 proxy가 모두 `PAYLOAD_LIMIT`로 분류한 것을 확인했다. 일시적 장애가 아니다. SQL 원문은 조회·기록하지 않았다.
+- 실패 SQL은 18,411자/UTF-8 18,653 bytes로 DB Link 32,767-byte 한도 이내였다. 최초 Bridge/Source 진단 배포 후 동일 SQL 재현에서 backtrace `ORCLAI.ASTA_SOURCE_PKG body line 500 → 1206`을 확보했다. 이는 `sql_bind_placeholder_count` 호출과 내부 `DBMS_LOB.SUBSTR(...,1,...)` 대입 지점이다. SQL 문자 스캐너가 한 문자를 담는 변수를 `VARCHAR2(1)` byte로 선언해 한글 등 AL32UTF8 멀티바이트 문자를 만날 때 ORA-06502를 발생시킨 것이 정확한 원인이다.
+- `db/adb/asta_source_bridge_pkg.sql`에 4000-character chunk 기반 `clob_to_dblink_varchar2`를 추가했다. 누적 `LENGTHB`를 검사해 32767 bytes 이하는 원문 그대로 전달하고, 초과하면 모호한 ORA-06502 대신 명시적인 DB Link payload-limit 오류를 반환한다.
+- Source의 `sql_bind_placeholder_count` 문자 변수 3개와 `top_level_sql_text` 문자/quote 변수 2개를 `VARCHAR2(4)`로 변경했다. Source Bridge와 Source package 예외 JSON에는 `DBMS_UTILITY.FORMAT_ERROR_BACKTRACE`를 추가했다. SQL/bind 원문은 포함하지 않는다.
+- Source `ASTA_SOURCE_PKG`와 ADB `ASTA_SOURCE_BRIDGE_PKG`만 백업 후 배포했다. 양쪽 PACKAGE/BODY는 모두 VALID, USER_ERRORS=0이다. Source FULL_RESULT 기본 smoke와 실제 ADB→DB Link→Source 한글 주석 smoke는 `COMPLETED`, digest `COMPLETED`다. 배포/검증 artifact는 `reports/asta_deploy_source/20260706T151449Z/`, `reports/asta_deploy_source/20260706T152106Z/`, `reports/asta_ora06502_deploy/20260707/`에 있다.
+- Bridge BODY 첫 배포는 기존 Scheduler 2개가 package library lock을 잡아 120초 timeout됐으며 기존 BODY는 VALID 상태로 유지됐다. `b10...` 6단계 LLM CPU loop와 `2254...` 7단계 후보 실행은 자체 60초 제한을 수시간 초과한 stale job이어서 두 job만 stop하고 각 run/progress를 `LLM_RUNTIME_LIMIT`/`CANDIDATE_RUNTIME_LIMIT` FAILED로 정합화했다. 이후 Bridge 배포는 즉시 완료됐다.
+- 동일 고객 SQL은 수정 후 기존 ORA-06502 지점을 통과했으나 FULL_RESULT와 BOUNDED 모두 120초를 초과했다. 이는 별도의 Source SQL 실행 성능 문제이며 검증 호출을 취소했다. `same_sql_retest.json`에 SQL 원문 없이 기록했다. 멀티바이트 회귀는 짧은 한글 주석 SELECT로 동일 실경로에서 2.3초 내 완료했다.
+- 신규 `tests/test_asta_source_bridge_multibyte_payload.py`는 3건이다. 관련 focused 회귀 `78 passed`; 전체 회귀 `408 passed, 기존 9 failed in 1.20s`, 신규 실패 0건이다. 최종 `ALL_SCHEDULER_RUNNING_JOBS`의 ASTA job은 0건이며 package lock blocker도 없다. `git diff --check` 통과. 서비스 재시작, ORDS/schema 변경, commit/push는 수행하지 않았다.
+
+## ASTA 분석 진행상태 compact 재구성 — 2026-07-07 완료
+
+- 기본 진행 UI를 높이 32px의 단일 행으로 축소했다. 표시 정보는 상태점, `현재/전체 단계`(예: `4/11`), 현재 단계명, 단계 경과시간, 전체 경과시간, `상세` 버튼만 남겼다.
+- 정상 실행 중 긴 detail은 기본 행에서 숨기고 title과 Drawer에서 확인하게 했다. 실패 시에만 축약 오류 detail을 기본 행에 표시한다. Run ID와 복사 버튼은 기본 행에서 제거하고 Drawer 헤더로 이동했다.
+- 같은 Run의 DOM을 유지하는 기존 `refreshProgressView` 부분 갱신 구조에 단계 번호와 단계 경과시간 갱신을 추가했다. polling/단계 전환 시 전체 DOM 재생성과 깜빡임 방지 계약은 유지한다.
+- 모바일에서도 동일 단일 행을 사용하고 긴 실패 detail만 숨긴다. Drawer의 11단계 timing/log와 열림/scroll 보존 동작은 변경하지 않았다.
+- cache-buster는 `20260707_progress_compact1`. 변경 파일은 `static/js/extensions/tuning_assistant.js`, `static/index.html`, 진행/UI/cache 계약 테스트와 이 handoff다.
+- 신규 계약 RED `2 failed` 확인 후 UI focused `52 passed`. Node syntax, `git diff --check` 통과. 전체 회귀 `409 passed, 기존 9 failed in 1.19s`, 신규 실패 0건이다.
+- 실행 서비스는 active/PID 822785/8000 LISTEN이며, localhost 정적 asset HTTP 검증 결과 142,967 bytes와 SHA-256 `a61f89ad...c1a6b7e`가 workspace 파일과 동일했다. 서비스 재시작, DB/ORDS 변경, commit/push는 수행하지 않았다.
+
+## ASTA 진행시간 +540분 보정·SQL 변경 diff — 2026-07-07 완료
+
+- 진행 중 소요시간에 정확히 540분이 더해진 원인은 ADB가 반환한 timezone 없는 Oracle timestamp(`YYYY-MM-DD HH24:MI:SS.FF`)를 브라우저가 Asia/Seoul 로컬 시각으로 해석한 것이었다. ASTA timestamp에 timezone이 없으면 UTC로 정규화하고 microseconds를 JS milliseconds로 안전하게 줄인 뒤 epoch를 계산하도록 수정했다. 이미 `Z`/offset이 있는 ISO timestamp는 그대로 유지한다.
+- Asia/Seoul Node runtime에서 `2026-07-06 15:05:11.432403`이 `2026-07-06T15:05:11.432Z`와 같은 epoch가 되는 실행 테스트를 추가했다. compact 단계/전체 소요시간과 Drawer 시작·완료 시각 모두 같은 parser를 사용한다.
+- 결과서 탭에 `SQL 변경`을 `요약` 다음에 추가했다. 기존 결과서의 `SQL 변경 내용`과 `변경 위치`를 추출해 “무엇을 어디서 바꿨나” 박스로 먼저 보여주고, 이어서 튜닝 전/후 SQL fenced block을 줄 단위 diff로 표시한다.
+- diff는 원본/튜닝 양쪽 줄 번호, `-` 제거, `+` 추가, 추가·삭제 줄 수를 제공한다. DOM textContent만 사용해 SQL/설명에서 HTML/스크립트를 실행하지 않는다. 긴 SQL은 40줄 bounded lookahead 알고리즘으로 비교해 브라우저의 quadratic memory 사용을 피한다.
+- cache-buster는 `asta_report_tabs.js?v=20260707_sql_diff1`, `tuning_assistant.js?v=20260707_progress_time_diff1`이다. 변경 파일은 두 JS, `static/index.html`, DOM/time/cache 계약 테스트와 이 handoff다.
+- RED `3 failed` 후 time/diff focused `60 passed`, 추가 Asia/Seoul/diff focused `17 passed`. 전체 회귀 `412 passed, 기존 9 failed in 1.29s`, 신규 실패 0건. 두 JS syntax와 `git diff --check` 통과.
+- 실행 서비스 static asset은 HTTP로 각각 145,440/16,725 bytes를 반환했고 workspace와 SHA-256이 동일했다. 서비스 재시작, DB/ORDS 변경, commit/push는 수행하지 않았다.
+
+## 진행 UI 미반영 확인 — 2026-07-07 브라우저 기존 세션
+
+- 사용자 피드백 후 실행 서비스 `/`를 다시 받아 workspace `static/index.html`과 SHA-256/bytes가 동일함을 확인했다. live HTML은 `20260707_sql_diff1`, `20260707_progress_time_diff1`을 참조하며 JS 응답은 `Cache-Control: no-store, no-cache`다. 중복 ASTA UI asset도 없다.
+- 당시 최신 run `OADT2-ASTA-50349ee60647410e9c5ab69c01c97789`의 DB 저장값을 읽기 전용 확인했다. DB now `2026-07-06 15:42:19.742 +00:00`, 6단계 시작 `15:41:45.679 UTC`, elapsed_ms는 RUNNING이라 null로 정상이며 실제 경과는 약 34초다. 서버 progress 데이터에 +540분은 없다.
+- 결론: 해당 Run은 변경 JS가 배포되기 전에 이미 열려 있던 브라우저 탭에서 시작되어, 탭 메모리의 이전 `parseTimeMs`/UI 코드를 계속 사용하고 있다. 현재 Run은 중단·변경하지 않았다. 진행 중 새로고침하면 UI가 Run을 자동 복구하지 않으므로 완료 후 새로고침 또는 새 탭에서 다음 Run부터 최신 UI를 확인하는 것이 안전하다.
+
+## ASTA Drawer 단계 카드 compact 전환 — 2026-07-07 완료
+
+- 사용자 의도가 기본 진행 pill이 아니라 상세 Drawer 안 11개 단계 카드 크기임을 확인해 각 카드를 `<details>` 기반 32px 요약 행으로 변경했다.
+- 닫힌 행은 단계 번호, 단계명, 소요시간, 상태, 펼침 화살표만 표시한다. 클릭 시에만 내부 code, 시작/완료 시각, 단계 로그가 보인다. RUNNING/FAILED/ERROR/BLOCKED/REJECTED 단계는 상태 전환 순간 자동으로 열고 완료 전환 시 다시 접는다. 사용자가 수동으로 닫은 RUNNING 단계는 동일 상태 polling에서 다시 열지 않는다.
+- 카드 gap 8→4px, 번호 24→18px, radius/padding/font를 축소했다. Drawer 폭 540→480px, header/body/current banner padding도 함께 줄였다. 11단계 전체를 훨씬 적은 세로 공간에서 확인할 수 있다.
+- cache-buster는 `tuning_assistant.js?v=20260707_progress_time_diff2`. focused `62 passed`; 전체 회귀 `413 passed, 기존 9 failed in 1.25s`, 신규 실패 0건. JS syntax와 diff check 통과.
+- 실행 서비스 asset 146,706 bytes와 workspace SHA-256 `811d979e...92b50b`가 동일하다. 현재 열려 있는 기존 브라우저 탭은 메모리의 이전 JS를 유지하므로 새로고침/새 탭 이후 적용된다. DB/ORDS/서비스 재시작/commit/push 없음.
+
+## Run 71572 단계별 0초 진단 — 2026-07-07
+
+- 대상 `OADT2-ASTA-71572f297bb1404ca124a58a387b1246`을 ADB에서 읽기 전용 조회했다. run은 COMPLETED, created→completed 37.739초, 실제 execute started→completed 36.444초다.
+- 4 BEFORE_EVIDENCE 5,023ms, 6 LLM_REWRITE 16,169ms, 7 AFTER_EVIDENCE 15,187ms로 세 단계 합계 36.379초이며 execute 시간의 약 99.8%다.
+- 6단계 LLM audit는 DIAGNOSIS 7,721.971ms, CANDIDATE_SQL 1차 4,645.356ms(NO_REWRITE), 2차 3,777.122ms로 합계 약 16.144초다. 7단계 안에서는 REPAIR_SQL 10,087.62ms 후 나머지 약 5.1초가 후보 Source evidence 처리다.
+- 나머지 실측은 3 SQL_GUARD 4ms, 8 비교 5ms, 9 Vector KB 2ms, 10 결과서 생성 27ms, 11 Vector 저장 8ms다. 현재 UI `formatDuration`이 1초 미만도 초 단위 소수 1자리로 표시해 모두 `0.0초`로 반올림된다.
+- 1 REQUEST_RECEIVED와 2 ORDS_DISPATCH는 작업 구간이 아니라 접수/전달 상태 마커라 started_at=completed_at이고 elapsed_ms는 null이다. 5 SQL_TUNING_ADVISOR는 SKIPPED이며 동일 시각 marker다. 따라서 이 세 단계의 0초는 “실행이 매우 빠름”이 아니라 “독립 소요시간 미측정/생략” 의미다. 이번 요청은 진단만 수행했고 소스/DB/Run 상태는 변경하지 않았다.
+
+## 단계 소요시간 millisecond/상태 표시 — 2026-07-07 완료
+
+- 사용자 승인에 따라 단계 카드 전용 `formatStepElapsed`를 추가했다. 1초 미만 실측은 0.0초로 반올림하지 않고 정수 ms로 표시하며, 1ms 미만 실측은 `<1ms`로 표시한다.
+- SKIPPED는 `생략`, elapsed_ms가 없고 동일 timestamp로 찍힌 접수/전달 marker는 `미측정`, 미시작 PENDING은 `-`로 구분한다. 단계 카드 요약, 펼친 로그, compact 현재 단계에 동일 규칙을 적용했다. 전체 경과시간은 기존 초/분 형식을 유지한다.
+- Run 71572 기준 예상 표시는 1/2 `미측정`, 3 `4ms`, 4 `5.0초`, 5 `생략`, 6 `16.2초`, 7 `15.2초`, 8 `5ms`, 9 `2ms`, 10 `27ms`, 11 `8ms`다.
+- cache-buster는 `tuning_assistant.js?v=20260707_progress_time_diff3`. focused `58 passed`; 전체 회귀 `414 passed, 기존 9 failed in 1.24s`, 신규 실패 0건. JS syntax/diff check 통과.
+- 실행 서비스 asset 147,359 bytes와 workspace SHA-256 `d16e643a...29c759`가 동일하다. DB/ORDS/서비스 재시작/commit/push 없음.
+
+## SQL 변경 탭 위치·좌우 비교 전환 — 2026-07-07 완료
+
+- 결과서 탭 순서를 `요약 → 튜닝 전 → SQL 변경 → 튜닝 후 → 상세 분석 → 객체 정보`로 변경했다.
+- 기존 단일 unified diff를 좌우 2-pane 비교로 교체했다. 왼쪽은 튜닝 전 원본 SQL, 오른쪽은 튜닝 후 SQL이며 각 창에 독립 줄 번호와 code를 표시한다. 삭제 줄은 왼쪽 red, 추가 줄은 오른쪽 green, 상대편이 없는 줄은 빈 hatch row로 표시한다.
+- bounded lookahead diff 결과의 연속 remove/add block을 `alignSqlDiffRows`로 pair해 두 창의 대응 변경이 같은 세로 위치에 오도록 했다. 공통 줄도 양쪽 같은 행에 유지한다. 긴 SQL은 각 pane에서 가로 스크롤하고 작은 화면에서도 좌우 구조를 유지한다.
+- 상단의 “무엇을 어디서 바꿨나”, 변경 위치/내용, 추가·삭제 줄 수 요약은 그대로 유지한다. SQL 렌더링은 계속 textContent만 사용한다.
+- cache-buster는 `asta_report_tabs.js?v=20260707_sql_diff2`, `tuning_assistant.js?v=20260707_progress_time_diff4`. focused `33 passed`; 전체 `414 passed, 기존 9 failed in 1.24s`, 신규 실패 0건. 두 JS syntax/diff check 통과.
+- 실행 서비스의 두 asset은 workspace와 각각 SHA-256 `059d5c4f...d25a3a7`, `2e667676...117b01b`로 동일하다. DB/ORDS/서비스 재시작/commit/push 없음.
+
+## SQL 입력·ASTA 결과 접기 UI — 2026-07-07 완료
+
+- `SQL 분석 입력`과 `ASTA 분석 결과`를 각각 독립적인 `<details>` 섹션으로 변경했다. 제목 행 전체를 클릭하거나 키보드로 접고 펼칠 수 있으며 방향 아이콘과 focus 표시를 제공한다.
+- 분석 결과가 정상 렌더링되는 시점에만 입력 섹션을 자동으로 접고 새 결과 섹션은 펼친 상태로 표시한다. 진행 polling은 접힘 상태를 건드리지 않으며, 결과 헤더의 맨 위/맨 아래/다운로드/초기화 버튼은 summary 밖에 유지해 접기 동작과 충돌하지 않는다.
+- `신규분석(초기화)`은 결과를 비우고 입력 섹션을 다시 펼친다. 접힌 결과 카드는 기존 최소 높이를 제거해 제목 한 줄만 남는다.
+- cache-buster는 `tuning_assistant.js?v=20260707_collapsible_sections1`. 신규 접기 계약 RED `4 failed` 후 focused `62 passed`; 전체 회귀 `418 passed, 기존 9 failed in 1.24s`, 신규 실패 0건이다. JS syntax와 `git diff --check`도 통과했다.
+- 실행 서비스 asset은 150,289 bytes, SHA-256 `44268c6f...d127c6`로 workspace와 byte-identical이며 `/`도 새 cache version을 참조한다. DB/ORDS 변경, 서비스 재시작, commit/push는 수행하지 않았다.
+
+## Oracle 튜닝 권고 비활성 표시 제거 — 2026-07-07 완료
+
+- `SQL 분석 입력` 제목의 `Oracle 튜닝 권고: 사용 안 함` badge와 전용 CSS를 제거했다. 요청 payload의 `run_advisor:false`, `use_sqltune:false` 계약과 백엔드 동작은 변경하지 않았다.
+- cache-buster는 `tuning_assistant.js?v=20260707_advisor_badge_removed1`. 관련 `55 passed`, 전체 `418 passed, 기존 9 failed in 1.25s`, 신규 실패 0건이며 JS syntax/diff check를 통과했다.
+- 실행 서비스 asset은 149,836 bytes, SHA-256 `c8dc609b...938d25`로 workspace와 byte-identical이고 제거 문구/id가 없음을 확인했다. DB/ORDS 변경, 서비스 재시작, commit/push는 수행하지 않았다.
+
+## 객체 정보 중복 섹션·결과 버튼 배치 수정 — 2026-07-07 완료
+
+- 결과서에 `## 테이블 통계 및 인덱스 정보`가 중복되면 기존 분류기가 해당 heading을 모호한 구역으로 제외해 `객체 정보`가 비거나 일부만 보이는 원인을 수정했다. 객체 metadata 구역에 한해서는 중복 section을 원문 순서대로 모두 표시하며, SQL 전/후 등 다른 중복 heading의 fail-closed 동작은 유지한다.
+- DOM 회귀 fixture에 정상 객체 통계 뒤 동일 heading의 object_info 오류 구역을 추가해 두 내용이 모두 `객체 정보` 탭에 표시됨을 검증했다.
+- 결과 영역의 `맨 위`, `맨 아래` 버튼과 scroll handler를 제거했다. `보고서 다운로드`는 결과 헤더에 유지하고, `신규분석(초기화)`은 결과로 이동시키지 않아 상단의 완료 버튼 바로 옆에 표시되도록 했다.
+- cache-buster는 `asta_report_tabs.js?v=20260707_object_sections1`, `tuning_assistant.js?v=20260707_result_actions1`. focused `62 passed`와 Node DOM PASS, 전체 `418 passed, 기존 9 failed in 1.24s`, 신규 실패 0건이다. 두 JS syntax와 diff check도 통과했다.
+- 실행 서비스 자산은 각각 18,801/149,276 bytes이며 workspace와 SHA-256 `dd338efd...38132e`, `39e38e95...affef`로 동일하다. DB/ORDS 변경, 서비스 재시작, commit/push는 수행하지 않았다.
+
+## 객체 통계/인덱스 미수집 원인 진단 — 2026-07-07
+
+- 최신 5개 COMPLETED Run을 ADB에서 읽기 전용 점검했다. 모든 Run의 `artifacts.source_evidence.object_info`와 결과서 `## 테이블 통계 및 인덱스 정보` 제목은 존재하므로 UI 탭/결과서 생성 누락은 아니다.
+- 최신 `OADT2-ASTA-72aaadb0d8104db089b346883b5cf10d`는 plan object `DSNT.TGP_ORDER_D` 1개를 수집했지만 num_rows/blocks가 null이고 indexes가 0개였다. Source의 현재 `collect_object_info`가 `ALL_TAB_STATISTICS`, `ALL_TAB_COLUMNS`, `ALL_INDEXES`를 사용한다.
+- Source dictionary를 DB Link로 확인한 결과 `TGP_ORDER_D`는 ALL_*에서 table/stat/column/index가 모두 0건이지만 DBA_*에서는 table 1, num_rows 2,698,893, blocks 69,980, columns 43, indexes 5다. `TGP_STYGRP_M`도 ALL_* 0건, DBA_*에서는 table 1/rows 10,833/blocks 193/columns 12/index 1이다. 반면 정상 표시된 `TSE_SALE_MON_S`, `TSE_INOUT_S`는 ALL_*와 DBA_* 결과가 일치한다.
+- 결론: 실행계획 하위 객체는 보이지만 ALL_* dictionary 가시성 밖인 객체가 있어 현재 package가 빈 metadata를 만든다. Source 계정은 DBA_*를 조회할 수 있으므로 `collect_object_info`의 4개 dictionary를 DBA_*로 전환하면 해결 가능하다. 이번 요청은 진단으로 처리해 source 수정/compile/deploy는 수행하지 않았다.
+
+## Source 객체 통계/인덱스 수집 수정 배포 — 2026-07-07 완료
+
+- 사용자 승인으로 `db/source/asta_source_pkg.sql`의 `collect_object_info` dictionary를 `ALL_TAB_STATISTICS/COLUMNS/INDEXES/IND_COLUMNS`에서 `DBA_TAB_STATISTICS/COLUMNS/INDEXES/IND_COLUMNS`로 변경했다. 회귀 계약은 DBA_* 4개 존재와 ALL_* 0개를 고정한다.
+- 배포 전 실제 Scheduler job 2건이 각각 7단계 AFTER_EVIDENCE 약 47분, 6단계 LLM_REWRITE 약 46분으로 장기 정지해 있었다. 추가 사용자 승인 후 두 job만 force stop하고 진행 row와 Run을 각각 `CANDIDATE_RUNTIME_LIMIT`, `LLM_RUNTIME_LIMIT` FAILED로 정합화했다. 둘 다 running job 0을 확인했다. 실제 job이 없고 단계 11 DONE인 과거 RUNNING 잔여 row 3건은 변경하지 않았다.
+- SQLcl 저장 Source 연결 `DSNT`로 기존 `ASTA_SOURCE_PKG` DDL을 백업한 뒤 현재 source를 compile했다. PACKAGE/PACKAGE BODY 모두 VALID, USER_ERRORS=0, 배포 body는 DBA dictionary ref 4개/ALL ref 0개다. ADB/ORDS와 다른 package는 변경하지 않았다.
+- 직접 `DSNT.TGP_ORDER_D` smoke는 Source 계정에 direct SELECT 권한이 없어 ORA-00942였고, 이는 원 진단과 일치한다. Source 계정에 공개되고 해당 base table을 참조하는 `DSNT.VIF_WHOLESALE_S`를 이용한 1행 smoke로 최종 검증했다.
+- 최종 smoke `OBJDICT20260706163541`: run COMPLETED, object_info COMPLETED, `DSNT.TGP_ORDER_D` num_rows 2,698,893, blocks 69,980, columns 43, indexes 5를 반환했다. 최종 artifact/backup/log는 `reports/asta_object_dictionary_deploy/20260706T163541Z/`다. 앞선 두 smoke 실패 artifact도 같은 상위 디렉터리에 보존했다.
+- focused metadata `2 passed`, multibyte bridge `3 passed`, 전체 `418 passed, 기존 9 failed in 1.28s`, 신규 실패 0건. `git diff --check` 통과. 서비스 재시작/commit/push 없음.
+
+## ASTA 입력·결과 UI surface 통일 점검 — 2026-07-07 완료
+
+- `SQL 분석 입력`은 22px radius/강한 shadow/custom white였고 `ASTA 분석 결과`는 Redwood 10px radius/no-shadow surface여서 서로 다른 카드처럼 보였다. 두 영역에 공통 `.tuning-card, .tuning-report-card` 계약을 적용해 `var(--radius-lg)`, `var(--border)`, `var(--surface)`, `box-shadow:none`으로 통일했다.
+- 두 접힘 제목 행은 동일한 52px 최소 높이, spacing, section-title typography, chevron/focus를 사용한다. 입력 본문과 결과 본문 모두 동일 border 분리선을 사용한다. 720/390px portrait와 low-height landscape에서 입력만 16/14/12px로 바뀌던 override도 모두 Redwood radius로 고정했다.
+- 전체 점검에서 섞여 있던 blue custom input theme를 Redwood 토큰으로 정리했다. 화면 배경 accent, 입력/SQL border와 surface, primary/secondary 버튼을 `--primary/--surface/--border` 기반으로 바꾸고 form/button focus-visible 및 disabled 상태를 추가했다. 진행 성공/실패 의미색은 유지했다.
+- 모바일 결과 action은 다운로드 하나인데 2열 grid라 절반 폭이던 문제를 1열 full-width로 변경했다. 1100px 이하의 3번째 설정 필드는 2열의 반쪽이 아니라 전체 행을 차지하도록 했다. 모바일 shell 배경도 surface token을 사용한다.
+- cache-buster는 `tuning_assistant.js?v=20260707_ui_surface_unified1`. focused UI `64 passed`, Node DOM PASS, 전체 `420 passed, 기존 9 failed in 1.25s`, 신규 실패 0건. JS syntax/diff check 통과.
+- 실행 서비스 asset은 149,999 bytes, SHA-256 `cbf24a52...62582f9`로 workspace와 byte-identical이고 `/`도 새 cache version을 참조한다. DB/ORDS/서비스 재시작/commit/push 없음.
+
+## ASTA 드롭다운 화살표 inset 조정 — 2026-07-07 완료
+
+- 브라우저 기본 select 화살표가 오른쪽 테두리에 붙어 보이던 문제를 해결했다. ASTA의 세 select에 동일한 14px Redwood muted chevron을 적용하고 `background-position:right 16px center`, `padding-right:42px`로 위치와 텍스트 여백을 고정했다.
+- `appearance:none`과 data SVG를 사용해 브라우저별 native arrow 위치 차이를 제거했고 모바일의 shorthand padding보다 높은 selector specificity로 동일 inset을 유지한다.
+- cache-buster는 `tuning_assistant.js?v=20260707_dropdown_chevron1`. focused `58 passed`, 전체 `421 passed, 기존 9 failed in 1.24s`, 신규 실패 0건. JS syntax/diff check 통과.
+- 실행 서비스 asset은 150,474 bytes, SHA-256 `b968168e...db5d0d`로 workspace와 byte-identical이다. DB/ORDS/서비스 재시작/commit/push 없음.
+
+## 결론 판정 강조·판정 기준 도움말 — 2026-07-07 완료
+
+- 결과서 전체에서 canonical `비교 판정: verdict=...`를 우선 추출하고 legacy `최종 판정:`도 지원하는 allowlist parser를 추가했다. 허용 판정은 IMPROVED, NOT_IMPROVED, CANDIDATE_FAILED, NON_EQUIVALENT, NO_REWRITE, INSUFFICIENT_EVIDENCE 6개뿐이며 임의 문구는 판정으로 사용하지 않는다.
+- `요약` 탭의 `결론` 제목 옆에 접근 가능한 `?` 버튼을 추가했다. 현재 판정은 바로 아래 badge로 강조하고 의미와 권장 조치를 함께 표시한다. success/warning/danger 의미색을 사용한다.
+- `?`를 누르면 6개 판정의 `판정/의미/권장 조치` 표가 열리고 다시 누르면 닫힌다. 현재 판정 행은 강조하며 `aria-expanded`, `aria-controls`, `aria-current`를 제공한다. 모바일은 요약을 1열로 바꾸고 표는 640px 최소 폭의 가로 스크롤로 읽을 수 있게 했다.
+- 실제 저장 결과서 fixture 3개에서 IMPROVED, INSUFFICIENT_EVIDENCE, NO_REWRITE 추출을 확인했다. DOM 계약은 6개 행, 현재 badge/설명, toggle open/close와 6개 문구 정확성을 검증한다.
+- cache-buster는 두 자산 모두 `20260707_verdict_guide1`. focused `65 passed`, Node DOM PASS, 전체 `421 passed, 기존 9 failed in 1.26s`, 신규 실패 0건. 두 JS syntax/diff check 통과.
+- 실행 서비스 자산은 tabs 23,583 bytes/SHA-256 `3e13ebab...3f341`, assistant 153,309 bytes/SHA-256 `358005b1...476ba`로 workspace와 각각 byte-identical이다. DB/ORDS/서비스 재시작/commit/push 없음.
+
+## 결론 판정 도움말 말풍선 전환 — 2026-07-07 완료
+
+- `?` 클릭 시 결론 아래 문서 흐름을 밀어내던 inline 도움말을 버튼에 고정된 speech-bubble popover로 변경했다. 결론 heading row 안에 button anchor를 두고 표는 absolute overlay로 표시한다.
+- 말풍선은 border/shadow/꼬리, 최대 720px 폭, 최대 62vh 높이와 내부 스크롤을 사용한다. 꼬리는 scroll container에 잘리지 않도록 도움말 내부가 아니라 button anchor의 open state pseudo-element로 렌더링한다.
+- 모바일은 viewport 기준 폭과 위치를 보정하고 기존 640px 기준표 가로 스크롤을 유지한다. toggle의 aria-expanded/controls, 6개 판정, 현재 행 강조 동작은 그대로다.
+- cache-buster는 두 자산 모두 `20260707_verdict_popover1`. focused `65 passed`, Node DOM PASS, 전체 `421 passed, 기존 9 failed in 1.26s`, 신규 실패 0건. 두 JS syntax/diff check 통과.
+- 실행 서비스 자산은 tabs 24,053 bytes/SHA-256 `52cfed21...6755f`, assistant 154,237 bytes/SHA-256 `59c87bae...8f3bf`로 workspace와 각각 byte-identical이다. DB/ORDS/서비스 재시작/commit/push 없음.
+
+## 사이트 노출 상태 점검 — 2026-07-07
+
+- 사용자 제보에 따라 서버 측을 읽기 전용 점검했다. `select-ai-test.service`는 PID 822785로 active/running이고 `0.0.0.0:8000`에서 LISTEN 중이다.
+- `/`는 HTTP 200, 3,962 bytes이며 실행 응답과 workspace `static/index.html`의 SHA-256이 일치한다. 핵심 Redwood/layout CSS와 local JS 9개도 모두 HTTP 200이고 응답시간은 약 1~2ms다.
+- `tuning_assistant.js`, `asta_report_tabs.js`는 Node 문법 검사를 통과했고 report-tabs DOM 회귀도 PASS다. 외부 jsDelivr Chart.js/XLSX도 HTTP 200, 약 0.03~0.04초였다.
+- 당일 서비스 로그에 traceback/500은 없고 화면과 무관한 source map/favicon 404만 있다. 외부 10.100.4.162의 `/` health 요청도 계속 200이다.
+- 인증은 활성 상태다. 비로그인 `/api/auth/status`는 HTTP 200과 `authenticated=false`, 보호 API의 401은 정상 계약이며 브라우저에는 접근 키 입력 overlay가 표시되어야 한다.
+- 결론: 현재 서버/정적 자산/API 진입 경로에는 사이트 미노출을 재현할 장애가 없다. 남은 가능성은 기존 브라우저 탭 메모리/캐시, 인증 overlay 표시 상태, 사용자 브라우저 측 오류다. 서비스 재시작이나 코드/DB/ORDS 변경은 수행하지 않았다.
+- 변경 파일은 이 handoff뿐이며 commit/push는 없다.
+
+## BATCH 샘플 SQL 5개 추가 — 2026-07-07 완료
+
+- 요청/결론: 화면 샘플에 약 1분 실행되는 배치형 SQL 5개를 추가했다. 기존 OLTP `asta-awr-01~15` 뒤에 `asta-batch-01~05`가 표시되며 샘플 선택 시 workload가 자동으로 `BATCH`가 된다.
+- 패턴: 5개 보고서 섹션의 2025년 일판매 KPI 40개를 `UNION ALL`로 각각 재집계하는 원본이다. 차원은 브랜드, 상품분류, 성별, 라인, 판매기준이다. 결정론적 후보는 동일 지표를 월판매 요약에서 한 번 집계한 뒤 `UNPIVOT`한다.
+- 실환경 Source full-result 검증: B01 `54.968593s→1.032141s`(98.1223%, 280행), B02 `53.489044s→1.016196s`(98.1002%, 120행), B03 `52.045566s→1.067563s`(97.9488%, 560행), B04 `35.797556s→1.042021s`(97.0891%, 840행), B05 `53.537102s→1.061858s`(98.0166%, 80행)다. 5개 모두 원본/후보 row count, metadata digest, full-result digest가 일치했다.
+- 검증 artifact: `reports/asta_batch_samples_20260707/verification.json`. SQL 원문은 artifact에 넣지 않고 fingerprint와 수치만 기록했다. 실패한 보정 후보(아이템 8.86초, 시즌 222.06초)는 화면에 넣지 않았다.
+- 변경 파일: `static/js/extensions/tuning_assistant.js`, `static/index.html`, `tools/asta_batch_samples.py`, `tools/verify_asta_batch_samples.py`, `tests/test_asta_batch_samples.py`, 기존 샘플/cache/workload 계약 테스트, 사용자 매뉴얼, 이 handoff.
+- 테스트: 신규 TDD RED `2 failed` 후 관련 `82 passed, 기존 2 failed`. 전체 `423 passed, 기존 9 failed in 1.33s`, 신규 실패 0. Node JS syntax, report-tabs DOM, `git diff --check` 통과.
+- cache-buster는 `tuning_assistant.js?v=20260707_batch_samples1`. 마지막 localhost HTTP byte 검증은 권한 승인 거절로 수행하지 못했다. 서비스 재시작, DB package/ORDS/schema/business data 변경, commit/push 없음. Source evidence 함수가 정상 계약에 따라 검증 결과 row는 저장했다.
+
+## ASTA 문서 4종 현행화 — 2026-07-07 완료
+
+- 요청/결론: `docs/AI_SQL_TUNING_ASSISTANT_MANUAL.md`, `docs/asta_source_execution_flow.md`, `docs/OADT2_ASTA_ARCHITECTURE.md`, `docs/README.md`를 현재 Real ASTA 코드와 2026-07-06~07 실환경 변경 기준으로 현행화했다.
+- 과거 FastAPI `BackgroundTasks`/동기 `ANALYZE_SQL` 중심이던 1,322줄 실행 흐름 문서를 현재 `SUBMIT_RUN → DBMS_SCHEDULER → EXECUTE_RUN`, allowlisted DB Link, Source `AUTO/FULL_RESULT` evidence, deterministic gate, progress/report 조회 흐름으로 전면 재작성했다.
+- 사용자/아키텍처 문서에는 OLTP 15+BATCH 5 샘플, Advisor UI 기본 OFF와 badge 제거, 진행 상세 Drawer/timing, 접기 입력·결과, 6개 결과 탭과 좌우 SQL 변경, verdict popover, Source DBA_* 객체정보 수집을 반영했다. `docs/old/`로 이동한 품질 문서를 현재 운영 기준으로 참조하던 링크도 제거했다.
+- 변경 파일은 위 4개 문서와 이 handoff다. 코드, DB/ORDS, 서비스, static asset, commit/push 변경은 없다.
+- 검증: 문서/UI 관련 `39 passed`; 전체 회귀 `423 passed, 기존 9 failed in 1.31s`, 신규 실패 0; 대상 문서와 전체 `git diff --check` 통과.
+
+## ASTA 매뉴얼·아키텍처·11단계 Workflow 팝업 — 2026-07-07 완료
+
+- ASTA 상단에 `매뉴얼 및 사용설명` 버튼과 접근 가능한 `aria-modal` dialog를 추가했다. 팝업은 `아키텍처`, `11단계 Workflow` 두 탭이며 닫기/backdrop/Escape, 탭 Arrow/Home/End, focus trap·복원을 지원한다.
+- 아키텍처는 `User / 개발자`, `UI (VM)`, `OCI AI Lakehouse`, `OCI ERP Database (BaseDB)` 4개 영역별 제공 기능과 `운영 SQL 자동 변경 없음`, FastAPI thin proxy, ADB ORDS/Scheduler, allowlisted DB Link/Source package 경계를 카드형 흐름으로 표시한다.
+- Workflow는 11개 canonical step마다 실행 영역, 실제 package/procedure, 수행 내용, 생성 근거, 실패·차단 동작을 표시한다. 호환 번호와 실제 호출 의존 순서가 달라 `VECTOR_KB(9) → LLM_REWRITE(6)`, `VECTOR_SAVE(11) → FINAL_REPORT(10) 완성`임을 명시했다.
+- 모바일은 하단 sheet형 full-width 팝업, 아키텍처 1열, Workflow 상세 1열로 반응한다. cache-buster는 `tuning_assistant.js?v=20260707_manual_workflow1`이다.
+- 변경 파일: `static/js/extensions/tuning_assistant.js`, `static/index.html`, 신규 `tests/test_asta_manual_dialog.py`, cache 계약 테스트 4개, 문서 4종, 이 handoff. DB/ORDS/package/schema/service restart/commit/push는 변경하지 않았다.
+- TDD: 신규 계약 RED `4 failed` 확인 후 focused `62 passed`, UI runtime 경계 포함 `83 passed`. 전체 회귀 `427 passed, 기존 9 failed in 1.35s`, 신규 실패 0. JS syntax와 `git diff --check` 통과.
+- 실행 서비스 `/`는 새 cache URL을 참조하고 제공 JS는 workspace와 182,698 bytes로 byte-identical하다. 서비스 재시작 없이 정적 자산이 반영됐다.
+
+## ASTA 아키텍처 OCI 리소스 맵 — 2026-07-07 완료
+
+- 아키텍처 팝업에 `DEV compartment`, `PRO compartment`, `Shared / Regional OCI Services` 3개 그룹의 논리 리소스 맵을 추가했다. OCID는 표시하지 않는다.
+- DEV에는 `DK-AI-DEV-VM-01`, Autonomous Database 23ai, ORDS `asta.v1`, ASTA Vector KB와 각 역할을 표시한다. PRO에는 OCI ERP BaseDB, allowlisted DB Link, `ASTA_SOURCE_PKG`, ERP 업무 schema를 표시한다. Shared에는 VCN/Subnet/NSG, OCI IAM, OCI Generative AI를 표시한다.
+- OCI IAM의 live compartment 상세 조회는 현재 VM Instance Principal 권한으로 `NotAuthorizedOrNotFound`여서 실제 display name/OCID inventory를 추정하지 않았다. UI는 저장소와 실행 계약으로 확인된 논리 배치임을 명시하며 OCI Console inventory 대체가 아님을 문서에 기록했다.
+- cache-buster는 `tuning_assistant.js?v=20260707_manual_resources1`. 변경 파일은 assistant JS/index, 팝업/cache 계약 테스트, 문서 4종과 이 handoff다. DB/ORDS/package/schema/service restart/commit/push는 변경하지 않았다.
+- 신규 리소스 계약 RED `2 failed` 후 focused `73 passed`; 전체 회귀 `428 passed, 기존 9 failed in 1.33s`, 신규 실패 0. JS syntax와 `git diff --check` 통과.
+- 실행 서비스 `/`는 새 cache URL을 참조하고 제공 JS는 workspace와 188,020 bytes로 byte-identical하다.
+
+## ASTA OCI 리소스·상단 아키텍처 통합 — 2026-07-07 완료
+
+- 사용자 요청에 따라 별도 `OCI 리소스 배치` 하단 섹션과 `ASTA_OCI_RESOURCE_GROUPS`를 제거하고 상단 4개 책임 카드 데이터에 compartment/resources를 직접 통합했다.
+- 각 카드는 `영역 → compartment → 실행 경계 → OCI Resources(OCID 비표시) → 제공 기능` 순서로 읽힌다. UI(VM)는 DEV Compute, AI Lakehouse는 DEV ADB/ORDS/Vector와 Shared GenAI/IAM/Network, BaseDB는 PRO ERP DB/DB Link/Source package/schema를 표시한다.
+- cache-buster는 `tuning_assistant.js?v=20260707_manual_integrated1`. 관련 문서 4종도 별도 맵이 아니라 카드 통합형임을 반영했다.
+- 통합 계약 RED `2 failed` 후 focused `73 passed`; 전체 회귀 `428 passed, 기존 9 failed in 1.35s`, 신규 실패 0. JS syntax와 `git diff --check` 통과.
+- 실행 서비스 `/`는 새 cache URL을 참조하고 제공 JS는 workspace와 186,507 bytes로 byte-identical하다. DB/ORDS/package/schema/service restart/commit/push 없음.
+
+## ASTA ADB 리소스 명칭 26ai 변경 — 2026-07-07 완료
+
+- 사용자 요청에 따라 아키텍처 카드와 canonical 아키텍처 문서의 `Autonomous Database 23ai` 표시를 `Autonomous Database 26ai`로 변경했다. 실행 로직, DB 설정, package는 변경하지 않았다.
+- cache-buster는 `tuning_assistant.js?v=20260707_manual_adb26ai1`. 관련 cache/팝업 계약 테스트를 함께 갱신했다.
+- focused `38 passed`; 전체 회귀 `428 passed, 기존 9 failed in 1.35s`, 신규 실패 0. JS syntax와 `git diff --check` 통과.
+- 실행 서비스 `/`는 새 cache URL을 참조하고 제공 JS는 workspace와 186,507 bytes로 byte-identical하다. 서비스 재시작/commit/push 없음.
+
+## ASTA PoC 사용자·LB 아키텍처 정정 — 2026-07-07 완료
+
+- `User / 개발자`는 OCI Resource를 사용하지 않는 `PoC 샘플 화면`으로 정정했다. 해당 카드의 `resources`는 빈 배열이며 OCI Resources 블록을 조건부로 렌더링하지 않는다.
+- UI(VM)의 DEV compartment 리소스 앞단에 `OCI Load Balancer`를 추가하고 `HTTPS listener·backend health check → DK-AI-DEV-VM-01` 역할을 표시했다. 상단 흐름도 `PoC 샘플 화면 → OCI Load Balancer → DK-AI-DEV-VM-01 → ADB orchestration → Source evidence`로 변경했다.
+- 화면의 `· OCID 비표시` 문구와 활성 문서의 관련 표현을 제거했다. cache-buster는 `tuning_assistant.js?v=20260707_manual_lb1`이다.
+- 요구 계약 RED `2 failed` 후 focused `73 passed`; 전체 회귀 `428 passed, 기존 9 failed in 1.33s`, 신규 실패 0. JS syntax와 `git diff --check` 통과.
+- 실행 서비스 `/`는 새 cache URL을 참조하고 제공 JS는 workspace와 186,411 bytes로 byte-identical하다. DB/ORDS/package/schema/service restart/commit/push 없음.
+
+## ASTA 매뉴얼 탭 클릭 가능성 강조 — 2026-07-07 완료
+
+- 사용자 피드백에 따라 팝업의 `아키텍처`, `11단계 Workflow` 탭을 일반 텍스트형 pill에서 번호가 있는 카드형 선택 내비게이션으로 변경했다.
+- 각 탭은 `01/02` index, 굵은 label, 기본 `열기`, 선택 `선택됨 ✓`, primary border/하단 3px 강조선, hover 배경·shadow·translate 효과를 사용한다. 기존 role=tab, aria-selected, Arrow/Home/End와 focus 동작은 유지한다.
+- 모바일은 2열 동일 폭을 유지하고 좁은 공간에서는 상태 pseudo label만 숨겨 번호·테두리·선택 강조로 구분한다.
+- cache-buster는 `tuning_assistant.js?v=20260707_manual_tabs1`. 시각 계약 RED `2 failed` 후 focused `74 passed`; 전체 회귀 `429 passed, 기존 9 failed in 1.36s`, 신규 실패 0. JS syntax/diff check 통과.
+- 실행 서비스 `/`는 새 cache URL을 참조하고 제공 JS는 workspace와 187,827 bytes로 byte-identical하다. DB/ORDS/package/schema/service restart/commit/push 없음.

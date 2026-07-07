@@ -4,10 +4,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_active_run_id_is_visible_in_progress_header():
+def test_active_run_id_is_visible_in_progress_drawer_header():
     source = (ROOT / "static/js/extensions/tuning_assistant.js").read_text(encoding="utf-8")
     assert 'const runId = String(progress?.run_id || progress?.runId || "").trim();' in source
-    assert 'class="tuning-current-run-id"' in source
+    assert 'class="tuning-progress-drawer-run"' in source
     assert ">${escapeHtml(runId)}</code>" in source
     assert "user-select:all" in source
 

@@ -35,13 +35,14 @@ def test_ui_exposes_and_propagates_workload_context_and_resets_oltp():
     samples = load_samples()
     contract = json.loads(read("tests/fixtures/asta_sample_01_contract.json"))
     artifact = json.loads(read("reports/asta_sample_sqls_under_60s/verification.json"))
-    assert len(samples) == 15
+    assert len(samples) == 20
+    assert all(sample["workload"] == "BATCH" for sample in samples[15:])
     assert hashlib.sha256(samples[0]["sql"].encode("utf-8")).hexdigest() == contract["sql_sha256"]
     records = {item["sample_id"]: item for item in artifact["samples"]}
     assert set(records) == {
         f"asta-awr-{index:02d}" for index in range(2, 16)
     }
-    for sample in samples[1:]:
+    for sample in samples[1:15]:
         assert hashlib.sha256(sample["sql"].encode("utf-8")).hexdigest() == records[sample["id"]]["sql_sha256"]
 
 

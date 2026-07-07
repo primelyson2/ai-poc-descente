@@ -8,10 +8,21 @@
   const TAB_DEFINITIONS = Object.freeze([
     { id: "overview", label: "요약" },
     { id: "before", label: "튜닝 전" },
+    { id: "changes", label: "SQL 변경" },
     { id: "after", label: "튜닝 후" },
     { id: "details", label: "상세 분석" },
     { id: "objects", label: "객체 정보" },
   ]);
+
+  const VERDICT_GUIDE = Object.freeze([
+    { code: "IMPROVED", meaning: "결과가 일치하고 성능 기준 통과", action: "코드 리뷰와 별도 테스트 후 적용 검토", tone: "success" },
+    { code: "NOT_IMPROVED", meaning: "결과는 같지만 충분한 성능 개선 없음", action: "원본 SQL 유지", tone: "warning" },
+    { code: "CANDIDATE_FAILED", meaning: "개선 SQL 실행 중 오류 발생", action: "개선 SQL 사용 금지, Run ID 전달", tone: "danger" },
+    { code: "NON_EQUIVALENT", meaning: "원본과 개선 SQL 결과/컬럼 구성이 다름", action: "개선 SQL 사용 금지", tone: "danger" },
+    { code: "NO_REWRITE", meaning: "안전한 개선안을 생성하지 못함", action: "원본 SQL 유지, 참고사항 보완", tone: "warning" },
+    { code: "INSUFFICIENT_EVIDENCE", meaning: "결과 일치 또는 성능 검증 근거 부족", action: "원본 SQL 유지, 재검증 요청", tone: "warning" },
+  ]);
+  const VERDICT_BY_CODE = new Map(VERDICT_GUIDE.map((item) => [item.code, item]));
 
   const SECTION_RULES = Object.freeze([
     [2, "결론", "overview"],
@@ -42,6 +53,21 @@
       .replace(/튜닝\s+후/g, "튜닝후")
       .replace(/\s*-\s*/g, " - ")
       .toLowerCase();
+  }
+
+  function extractReportVerdict(markdown) {
+    const text = String(markdown || "");
+    const codePattern = "(IMPROVED|NOT_IMPROVED|CANDIDATE_FAILED|NON_EQUIVALENT|NO_REWRITE|INSUFFICIENT_EVIDENCE)";
+    const patterns = [
+      new RegExp("비교\\s*판정[^\\n]*?verdict\\s*=\\s*\\x60?" + codePattern, "i"),
+      new RegExp("(?:최종\\s*)?판정\\s*:\\s*(?:\\*\\*)?\\s*\\x60?" + codePattern, "i"),
+      new RegExp("\\bverdict\\s*=\\s*\\x60?" + codePattern, "i"),
+    ];
+    for (const pattern of patterns) {
+      const match = text.match(pattern);
+      if (match) return String(match[1]).toUpperCase();
+    }
+    return null;
   }
 
   const RULE_BY_KEY = new Map(SECTION_RULES.map(([level, heading, tab]) => [
@@ -112,6 +138,11 @@
     const reasonCodes = [];
     occurrences.forEach((entries, key) => {
       if (entries.length !== 1) {
+        const rule = RULE_BY_KEY.get(key);
+        if (rule.tab === "objects") {
+          entries.forEach((entry) => rangesByTab.objects.push({ start: entry.start, end: entry.end }));
+          return;
+        }
         if (!reasonCodes.includes("AMBIGUOUS_REPORT_SECTION")) reasonCodes.push("AMBIGUOUS_REPORT_SECTION");
         return;
       }
@@ -163,7 +194,70 @@
     return cursor - start;
   }
 
-  function renderSafeMarkdown(parent, markdown) {
+  function renderVerdictConclusion(parent, headingRow, verdict) {
+    const current = VERDICT_BY_CODE.get(verdict);
+    if (!current) return;
+    headingRow.className = "tuning-verdict-heading";
+    const helpId = "asta-verdict-help";
+    const anchor = document.createElement("div");
+    anchor.className = "tuning-verdict-help-anchor";
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "tuning-verdict-help-toggle";
+    toggle.textContent = "?";
+    toggle.setAttribute("aria-label", "판정 기준 설명 보기");
+    toggle.setAttribute("aria-controls", helpId);
+    toggle.setAttribute("aria-expanded", "false");
+    anchor.appendChild(toggle);
+    headingRow.appendChild(anchor);
+
+    const summary = document.createElement("section");
+    summary.className = `tuning-verdict-summary tuning-verdict-${current.tone}`;
+    summary.setAttribute("aria-label", `현재 판정 ${current.code}`);
+    appendTextElement(summary, "strong", current.code, "tuning-verdict-badge");
+    const copy = document.createElement("div");
+    appendTextElement(copy, "span", current.meaning, "tuning-verdict-meaning");
+    appendTextElement(copy, "span", `권장 조치 · ${current.action}`, "tuning-verdict-action");
+    summary.appendChild(copy);
+    parent.appendChild(summary);
+
+    const help = document.createElement("section");
+    help.id = helpId;
+    help.setAttribute("id", helpId);
+    help.className = "tuning-verdict-help";
+    help.hidden = true;
+    appendTextElement(help, "h3", "판정 기준");
+    const table = document.createElement("table");
+    table.className = "tuning-verdict-guide";
+    const thead = document.createElement("thead");
+    const headerRow = document.createElement("tr");
+    ["판정", "의미", "권장 조치"].forEach((label) => appendTextElement(headerRow, "th", label));
+    thead.appendChild(headerRow);
+    table.appendChild(thead);
+    const tbody = document.createElement("tbody");
+    VERDICT_GUIDE.forEach((item) => {
+      const row = document.createElement("tr");
+      row.className = `tuning-verdict-guide-row${item.code === verdict ? " tuning-verdict-guide-current" : ""}`;
+      if (item.code === verdict) row.setAttribute("aria-current", "true");
+      appendTextElement(row, "td", item.code);
+      appendTextElement(row, "td", item.meaning);
+      appendTextElement(row, "td", item.action);
+      tbody.appendChild(row);
+    });
+    table.appendChild(tbody);
+    help.appendChild(table);
+    anchor.appendChild(help);
+
+    toggle.addEventListener("click", () => {
+      help.hidden = !help.hidden;
+      toggle.setAttribute("aria-expanded", help.hidden ? "false" : "true");
+      anchor.className = help.hidden
+        ? "tuning-verdict-help-anchor"
+        : "tuning-verdict-help-anchor tuning-verdict-help-open";
+    });
+  }
+
+  function renderSafeMarkdown(parent, markdown, options = null) {
     const lines = String(markdown || "").replace(/\r\n?/g, "\n").split("\n");
     let index = 0;
     while (index < lines.length) {
@@ -189,7 +283,16 @@
       }
       const heading = line.match(/^(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$/);
       if (heading) {
-        appendTextElement(parent, `h${heading[1].length}`, heading[2].trim());
+        if (options?.verdict && !options.verdictRendered && heading[1].length === 2 && normalizeHeading(heading[2]) === "결론") {
+          options.verdictRendered = true;
+          const headingRow = document.createElement("div");
+          headingRow.className = "tuning-verdict-heading";
+          appendTextElement(headingRow, "h2", heading[2].trim());
+          parent.appendChild(headingRow);
+          renderVerdictConclusion(parent, headingRow, options.verdict);
+        } else {
+          appendTextElement(parent, `h${heading[1].length}`, heading[2].trim());
+        }
         index += 1;
         continue;
       }
@@ -220,8 +323,166 @@
     }
   }
 
+  function extractFirstSqlFence(sections) {
+    for (const section of sections || []) {
+      const match = String(section || "").match(/```sql\s*\n([\s\S]*?)\n```/i);
+      if (match) return match[1].replace(/\r\n?/g, "\n").trim();
+    }
+    return "";
+  }
+
+  function extractReportBullet(sections, label) {
+    const escaped = String(label).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const pattern = new RegExp(`^\\s*-\\s*${escaped}\\s*:\\s*(.+)$`, "mi");
+    for (const section of sections || []) {
+      const match = String(section || "").match(pattern);
+      if (match) return match[1].trim();
+    }
+    return "";
+  }
+
+  /** Small-lookahead line diff: bounded for long customer SQL and deterministic. */
+  function buildSqlLineDiff(beforeSql, afterSql) {
+    const before = String(beforeSql || "").replace(/\r\n?/g, "\n").split("\n");
+    const after = String(afterSql || "").replace(/\r\n?/g, "\n").split("\n");
+    const rows = [];
+    let oldIndex = 0;
+    let newIndex = 0;
+    const lookahead = 40;
+    const push = (type, text, oldLine, newLine) => rows.push({ type, text, oldLine, newLine });
+    while (oldIndex < before.length || newIndex < after.length) {
+      if (oldIndex < before.length && newIndex < after.length && before[oldIndex] === after[newIndex]) {
+        push("context", before[oldIndex], oldIndex + 1, newIndex + 1);
+        oldIndex += 1;
+        newIndex += 1;
+        continue;
+      }
+      if (oldIndex >= before.length) {
+        push("add", after[newIndex], null, newIndex + 1);
+        newIndex += 1;
+        continue;
+      }
+      if (newIndex >= after.length) {
+        push("remove", before[oldIndex], oldIndex + 1, null);
+        oldIndex += 1;
+        continue;
+      }
+      let removeCount = null;
+      let addCount = null;
+      for (let distance = 1; distance <= lookahead; distance += 1) {
+        if (removeCount == null && oldIndex + distance < before.length && before[oldIndex + distance] === after[newIndex]) removeCount = distance;
+        if (addCount == null && newIndex + distance < after.length && after[newIndex + distance] === before[oldIndex]) addCount = distance;
+        if (removeCount != null && addCount != null) break;
+      }
+      if (addCount != null && (removeCount == null || addCount <= removeCount)) {
+        for (let count = 0; count < addCount; count += 1) {
+          push("add", after[newIndex], null, newIndex + 1);
+          newIndex += 1;
+        }
+      } else if (removeCount != null) {
+        for (let count = 0; count < removeCount; count += 1) {
+          push("remove", before[oldIndex], oldIndex + 1, null);
+          oldIndex += 1;
+        }
+      } else {
+        push("remove", before[oldIndex], oldIndex + 1, null);
+        push("add", after[newIndex], null, newIndex + 1);
+        oldIndex += 1;
+        newIndex += 1;
+      }
+    }
+    return rows;
+  }
+
+  /** Align each contiguous remove/add block so both panes keep matching rows. */
+  function alignSqlDiffRows(rows) {
+    const aligned = [];
+    let index = 0;
+    while (index < rows.length) {
+      if (rows[index].type === "context") {
+        aligned.push({ before: rows[index], after: rows[index] });
+        index += 1;
+        continue;
+      }
+      const removed = [];
+      const added = [];
+      while (index < rows.length && rows[index].type !== "context") {
+        if (rows[index].type === "remove") removed.push(rows[index]);
+        if (rows[index].type === "add") added.push(rows[index]);
+        index += 1;
+      }
+      const count = Math.max(removed.length, added.length);
+      for (let offset = 0; offset < count; offset += 1) {
+        aligned.push({ before: removed[offset] || null, after: added[offset] || null });
+      }
+    }
+    return aligned;
+  }
+
+  function renderSqlDiffPane(title, side, alignedRows) {
+    const pane = document.createElement("section");
+    pane.className = `tuning-sql-diff-pane tuning-sql-diff-pane-${side}`;
+    appendTextElement(pane, "h3", title, "tuning-sql-diff-pane-title");
+    const body = document.createElement("div");
+    body.className = "tuning-sql-diff-pane-body";
+    alignedRows.forEach((pair) => {
+      const item = side === "before" ? pair.before : pair.after;
+      const counterpart = side === "before" ? pair.after : pair.before;
+      const line = document.createElement("div");
+      let state = "empty";
+      if (item?.type === "context") state = "context";
+      else if (item && side === "before") state = "remove";
+      else if (item && side === "after") state = "add";
+      line.className = `tuning-sql-diff-line tuning-sql-diff-${state}`;
+      const lineNumber = side === "before" ? item?.oldLine : item?.newLine;
+      appendTextElement(line, "span", lineNumber == null ? "" : String(lineNumber), "tuning-sql-diff-line-number");
+      appendTextElement(line, "span", state === "add" ? "+" : state === "remove" ? "-" : " ", "tuning-sql-diff-marker");
+      appendTextElement(line, "code", item?.text || (counterpart ? " " : " "), "tuning-sql-diff-code");
+      body.appendChild(line);
+    });
+    pane.appendChild(body);
+    return pane;
+  }
+
+  function renderSqlDiff(parent, beforeSql, afterSql, changeSummary, changeLocation) {
+    if (!beforeSql || !afterSql) {
+      appendTextElement(parent, "p", "비교할 원본 SQL과 튜닝 SQL이 모두 필요합니다.", "tuning-report-empty");
+      return;
+    }
+    const rows = buildSqlLineDiff(beforeSql, afterSql);
+    const added = rows.filter((row) => row.type === "add").length;
+    const removed = rows.filter((row) => row.type === "remove").length;
+    appendTextElement(parent, "h2", "SQL 변경 비교");
+    if (changeSummary || changeLocation) {
+      const explanation = document.createElement("div");
+      explanation.className = "tuning-sql-change-explanation";
+      appendTextElement(explanation, "h3", "무엇을 어디서 바꿨나");
+      const list = document.createElement("ul");
+      if (changeSummary) appendTextElement(list, "li", `변경 내용: ${changeSummary}`);
+      if (changeLocation) appendTextElement(list, "li", `변경 위치: ${changeLocation}`);
+      explanation.appendChild(list);
+      parent.appendChild(explanation);
+    }
+    appendTextElement(
+      parent,
+      "p",
+      added || removed
+        ? `${added}줄 추가 · ${removed}줄 삭제 — +는 튜닝 SQL에 추가, -는 원본 SQL에서 제거된 줄입니다.`
+        : "원본 SQL과 튜닝 SQL 사이에 줄 단위 변경이 없습니다.",
+      "tuning-sql-diff-summary",
+    );
+    const alignedRows = alignSqlDiffRows(rows);
+    const comparison = document.createElement("div");
+    comparison.className = "tuning-sql-side-by-side";
+    comparison.appendChild(renderSqlDiffPane("튜닝 전", "before", alignedRows));
+    comparison.appendChild(renderSqlDiffPane("튜닝 후", "after", alignedRows));
+    parent.appendChild(comparison);
+  }
+
   function renderReportTabs(container, markdown) {
     const classified = classifyReportSections(markdown);
+    const verdict = extractReportVerdict(markdown);
+    const overviewRenderOptions = { verdict, verdictRendered: false };
     const tabList = document.createElement("div");
     tabList.className = "tuning-report-tablist";
     tabList.setAttribute("role", "tablist");
@@ -263,8 +524,16 @@
       panel.setAttribute("data-asta-report-panel", definition.id);
       panel.hidden = index !== 0;
       const sections = classified.tabs[definition.id];
-      if (!sections.length) appendTextElement(panel, "p", "표시할 내용이 없습니다.", "tuning-report-empty");
-      else sections.forEach((section) => renderSafeMarkdown(panel, section));
+      if (definition.id === "changes") {
+        renderSqlDiff(
+          panel,
+          extractFirstSqlFence(classified.tabs.before),
+          extractFirstSqlFence(classified.tabs.after),
+          extractReportBullet(classified.tabs.overview, "SQL 변경 내용"),
+          extractReportBullet(classified.tabs.overview, "변경 위치"),
+        );
+      } else if (!sections.length) appendTextElement(panel, "p", "표시할 내용이 없습니다.", "tuning-report-empty");
+      else sections.forEach((section) => renderSafeMarkdown(panel, section, definition.id === "overview" ? overviewRenderOptions : null));
       tab.addEventListener("click", () => activate(index, false));
       tab.addEventListener("keydown", (event) => {
         const keys = { ArrowRight: (index + 1) % tabs.length, ArrowLeft: (index - 1 + tabs.length) % tabs.length, Home: 0, End: tabs.length - 1 };
@@ -281,5 +550,5 @@
     return { tabs, panels, reasonCodes: classified.reasonCodes };
   }
 
-  return { TAB_DEFINITIONS, normalizeHeading, classifyReportSections, renderSafeMarkdown, renderReportTabs };
+  return { TAB_DEFINITIONS, VERDICT_GUIDE, normalizeHeading, extractReportVerdict, classifyReportSections, buildSqlLineDiff, alignSqlDiffRows, renderSafeMarkdown, renderReportTabs };
 });

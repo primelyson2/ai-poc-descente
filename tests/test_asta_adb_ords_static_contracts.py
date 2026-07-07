@@ -400,10 +400,10 @@ def test_source_helper_collects_object_metadata_for_llm_evidence():
     for fragment in [
         "FUNCTION collect_object_info(",
         "v$sql_plan_statistics_all",
-        "all_tab_statistics",
-        "all_tab_columns",
-        "all_ind_columns",
-        "all_indexes",
+        "dba_tab_statistics",
+        "dba_tab_columns",
+        "dba_ind_columns",
+        "dba_indexes",
         '"object_info":',
         '"table_stats"',
         '"columns"',
@@ -415,6 +415,11 @@ def test_source_helper_collects_object_metadata_for_llm_evidence():
         "l_text := '0' || l_text;",
     ]:
         assert fragment in src
+
+    for visibility_limited_view in (
+        "all_tab_statistics", "all_tab_columns", "all_ind_columns", "all_indexes"
+    ):
+        assert visibility_limited_view not in src
 
     metrics_pos = src.index("collect_metrics(")
     object_pos = src.index("l_object_info := collect_object_info(l_sql_id, l_child_number)")

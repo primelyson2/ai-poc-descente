@@ -62,9 +62,10 @@ def test_sample_01_id_label_and_sql_bytes_are_immutable():
 
 def test_ui_has_protected_customer_sample_plus_fourteen_current_improved_samples():
     samples = load_samples()
-    assert [sample["id"] for sample in samples] == [f"asta-awr-{index:02d}" for index in range(1, 16)]
-    assert len({sample["label"] for sample in samples}) == 15
-    assert len({hashlib.sha256(sample["sql"].encode()).hexdigest() for sample in samples}) == 15
+    oltp_samples = samples[:15]
+    assert [sample["id"] for sample in oltp_samples] == [f"asta-awr-{index:02d}" for index in range(1, 16)]
+    assert len({sample["label"] for sample in oltp_samples}) == 15
+    assert len({hashlib.sha256(sample["sql"].encode()).hexdigest() for sample in oltp_samples}) == 15
 
 
 def test_remaining_samples_are_safe_selects_using_only_sample_01_objects():

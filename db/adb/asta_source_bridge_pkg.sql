@@ -39,7 +39,36 @@ CREATE OR REPLACE PACKAGE BODY asta_source_bridge_pkg AS
     RETURN '"' || l_v || '"';
   END json_str;
 
-  FUNCTION error_json(p_code IN VARCHAR2, p_message IN VARCHAR2) RETURN CLOB IS
+  -- DB Link helper accepts VARCHAR2, whose 32767 limit is bytes in the
+  -- AL32UTF8 database. Read the SQL CLOB in small character chunks and check
+  -- the accumulated byte length instead of requesting 32767 characters at
+  -- once (which raises ORA-06502 for sufficiently long multibyte SQL).
+  FUNCTION clob_to_dblink_varchar2(p_val IN CLOB) RETURN VARCHAR2 IS
+    l_out    VARCHAR2(32767);
+    l_chunk  VARCHAR2(16000);
+    l_offset PLS_INTEGER := 1;
+    l_length PLS_INTEGER := NVL(DBMS_LOB.GETLENGTH(p_val), 0);
+  BEGIN
+    WHILE l_offset <= l_length LOOP
+      l_chunk := DBMS_LOB.SUBSTR(p_val, 4000, l_offset);
+      EXIT WHEN l_chunk IS NULL;
+      IF NVL(LENGTHB(l_out), 0) + LENGTHB(l_chunk) > 32767 THEN
+        RAISE_APPLICATION_ERROR(
+          -20001,
+          'ASTA_SOURCE_BRIDGE: SQL exceeds DB Link VARCHAR2 payload limit (32767 bytes)'
+        );
+      END IF;
+      l_out := l_out || l_chunk;
+      l_offset := l_offset + LENGTH(l_chunk);
+    END LOOP;
+    RETURN l_out;
+  END clob_to_dblink_varchar2;
+
+  FUNCTION error_json(
+    p_code IN VARCHAR2,
+    p_message IN VARCHAR2,
+    p_backtrace IN VARCHAR2 DEFAULT NULL
+  ) RETURN CLOB IS
   BEGIN
     RETURN TO_CLOB(
       '{"status":"FAILED","code":' || json_str(p_code) ||
@@ -47,7 +76,8 @@ CREATE OR REPLACE PACKAGE BODY asta_source_bridge_pkg AS
       ',"execution_boundary":"ADB_SOURCE_BRIDGE_DBLINK"' ||
       ',"connection_source":"ASTA_SOURCE_CONNECTIONS"' ||
       ',"guard_policy":' || json_str(C_GUARD_POLICY) ||
-      ',"message":' || json_str(p_message) || '}'
+      ',"message":' || json_str(p_message) ||
+      ',"backtrace":' || json_str(p_backtrace) || '}'
     );
   END error_json;
 
@@ -218,7 +248,7 @@ CREATE OR REPLACE PACKAGE BODY asta_source_bridge_pkg AS
     l_result_evidence_mode := normalized_result_evidence_mode(p_result_evidence_mode);
     l_result_max_rows := normalized_result_max_rows(p_result_max_rows);
     l_source_prefix := CASE WHEN l_source_schema IS NULL THEN '' ELSE l_source_schema || '.' END;
-    l_sql_vc := DBMS_LOB.SUBSTR(p_sql, 32767, 1);
+    l_sql_vc := clob_to_dblink_varchar2(p_sql);
 
       l_stmt :=
       'BEGIN ' || l_source_prefix ||
@@ -270,6 +300,10 @@ CREATE OR REPLACE PACKAGE BODY asta_source_bridge_pkg AS
     RETURN l_result;
   EXCEPTION
     WHEN OTHERS THEN
+      DECLARE
+        l_error_message VARCHAR2(4000) := SUBSTR(SQLERRM, 1, 4000);
+        l_error_backtrace VARCHAR2(4000) := SUBSTR(DBMS_UTILITY.FORMAT_ERROR_BACKTRACE, 1, 4000);
+      BEGIN
       IF l_run_advisor = 'Y' AND l_db_link_name IS NOT NULL AND l_run_id IS NOT NULL THEN
         BEGIN
           DBMS_LOB.CREATETEMPORARY(l_result, TRUE);
@@ -297,7 +331,8 @@ CREATE OR REPLACE PACKAGE BODY asta_source_bridge_pkg AS
             NULL;
         END;
       END IF;
-      RETURN error_json('SOURCE_BRIDGE', SUBSTR(SQLERRM, 1, 4000));
+      RETURN error_json('SOURCE_BRIDGE', l_error_message, l_error_backtrace);
+      END;
   END run_source_evidence;
 
   FUNCTION get_connection_json(p_source_db_id IN VARCHAR2) RETURN CLOB IS

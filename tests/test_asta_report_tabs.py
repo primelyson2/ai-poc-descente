@@ -47,7 +47,10 @@ def test_result_renderer_integrates_existing_status_actions_and_tabs_in_one_head
     assert 'querySelector(".tuning-report-tablist")' in renderer
     assert "if (tabsHost && tabList) tabsHost.appendChild(tabList)" in renderer
     assert "if (statusSlot && progressTarget) statusSlot.appendChild(progressTarget)" in renderer
-    assert "if (reportActions && downloadButton && resetButton) reportActions.append(downloadButton, resetButton)" in renderer
+    assert "if (reportActions && downloadButton) reportActions.append(downloadButton)" in renderer
+    assert "reportActions.append(downloadButton, resetButton)" not in renderer
+    assert "asta-report-top" not in renderer
+    assert "asta-report-bottom" not in renderer
     assert 'id="asta-download-report"' not in renderer
     assert 'id="asta-reset"' not in renderer
     assert "topActions.insertBefore(resetButton, secretButton)" in reset
@@ -66,6 +69,12 @@ def test_report_card_uses_redwood_tokens_and_compact_segmented_tabs():
     assert "background:var(--surface)" in ui
     assert "border:1px solid var(--border)" in ui
     assert ".tuning-report-header {" in ui
+    assert ".tuning-verdict-summary {" in ui
+    assert ".tuning-verdict-help-toggle {" in ui
+    assert ".tuning-verdict-help {" in ui
+    assert "position:absolute" in ui[ui.index(".tuning-verdict-help {"):ui.index(".tuning-verdict-help h3")]
+    assert ".tuning-verdict-help-anchor::after" in ui
+    assert ".tuning-verdict-help-open::after" in ui
     assert ".tuning-report-tabs-host {" in ui
     tablist = ui[ui.index(".tuning-report-tablist {"):ui.index(".tuning-report-tab {", ui.index(".tuning-report-tablist {"))]
     assert "background:var(--surface-alt)" in tablist
@@ -97,3 +106,20 @@ def test_index_loads_report_tabs_before_tuning_assistant():
     tabs = index.index("/static/js/extensions/asta_report_tabs.js")
     assistant = index.index("/static/js/extensions/tuning_assistant.js")
     assert tabs < assistant
+
+
+def test_report_tabs_expose_safe_line_diff_for_before_and_tuned_sql():
+    tabs = (ROOT / "static/js/extensions/asta_report_tabs.js").read_text(encoding="utf-8")
+    ui = (ROOT / "static/js/extensions/tuning_assistant.js").read_text(encoding="utf-8")
+    assert '{ id: "changes", label: "SQL 변경" }' in tabs
+    assert tabs.index('{ id: "before", label: "튜닝 전" }') < tabs.index('{ id: "changes", label: "SQL 변경" }') < tabs.index('{ id: "after", label: "튜닝 후" }')
+    assert "function buildSqlLineDiff(beforeSql, afterSql)" in tabs
+    assert "function alignSqlDiffRows(rows)" in tabs
+    assert "function renderSqlDiff(parent, beforeSql, afterSql, changeSummary, changeLocation)" in tabs
+    assert "무엇을 어디서 바꿨나" in tabs
+    assert "tuning-sql-side-by-side" in tabs
+    assert "tuning-sql-diff-pane-${side}" in tabs
+    assert ".tuning-sql-diff-pane {" in ui
+    assert ".tuning-sql-diff-remove" in ui
+    assert ".tuning-sql-diff-add" in ui
+    assert ".tuning-sql-diff-line" in ui

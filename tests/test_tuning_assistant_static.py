@@ -90,7 +90,8 @@ def test_tuning_assistant_calls_astA_api_with_detailed_report_fallbacks():
     assert "const current = isOverallComplete ? null" in view
     assert "!isOverallComplete &&" in view
     assert "tuning-current-progress" in view
-    assert "steps.map((step)" not in view
+    assert 'class="tuning-progress-drawer" hidden' in view
+    assert "steps.map((step) => renderProgressDetailStep(step, isComplete))" in view
     assert "완료 단계" not in view
     assert '["READY", "IDLE", "PENDING"].includes(overall)' in view
 
@@ -177,8 +178,9 @@ def test_tuning_assistant_result_report_has_large_scroll_container():
 
     assert "tuning-report-scroll" in view
     assert "asta-report-scroll" in view
-    assert "asta-report-bottom" in view
-    assert "scrollTo({ top: reportScroller.scrollHeight" in view
+    assert "asta-report-bottom" not in view
+    assert "asta-report-top" not in view
+    assert "scrollTo({ top: reportScroller.scrollHeight" not in view
     assert "height:min(74vh, 900px)" in view
     assert "resize:vertical" in view
     assert "target.scrollIntoView" in view
@@ -279,13 +281,13 @@ def test_tuning_assistant_disables_advisor_in_top_level_and_options_payload():
     assert "use_sqltune: true" not in payload
 
 
-def test_tuning_assistant_shows_noninteractive_advisor_off_status():
+def test_tuning_assistant_hides_noninteractive_advisor_off_status():
     view = (ROOT / "static/js/extensions/tuning_assistant.js").read_text(encoding="utf-8")
 
-    assert 'id="asta-advisor-status"' in view
-    assert "Oracle 튜닝 권고: 사용 안 함" in view
-    assert 'aria-label="Oracle 튜닝 권고 사용 상태"' in view
-    assert 'type="checkbox"' not in view[view.index('id="asta-advisor-status"') - 200:view.index('id="asta-advisor-status"') + 300]
+    assert 'id="asta-advisor-status"' not in view
+    assert "Oracle 튜닝 권고: 사용 안 함" not in view
+    assert 'aria-label="Oracle 튜닝 권고 사용 상태"' not in view
+    assert ".tuning-advisor-state" not in view
 
 
 def test_tuning_assistant_has_iphone_mini_portrait_and_landscape_css():

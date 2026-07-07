@@ -429,7 +429,8 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
     l_pos PLS_INTEGER := 1;
     l_len PLS_INTEGER := LENGTH(l_sql);
     l_depth PLS_INTEGER := 0;
-    l_ch VARCHAR2(1);
+    -- VARCHAR2 length is bytes; one AL32UTF8 character may need four bytes.
+    l_ch VARCHAR2(4);
   BEGIN
     WHILE l_pos <= l_len LOOP
       IF SUBSTR(l_sql, l_pos, 2) = '/*' THEN
@@ -439,7 +440,7 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
       ELSE
         l_ch := SUBSTR(l_sql, l_pos, 1);
         IF l_ch IN ('''', '"') THEN
-          DECLARE l_quote VARCHAR2(1) := l_ch; BEGIN
+          DECLARE l_quote VARCHAR2(4) := l_ch; BEGIN
             l_pos := l_pos + 1;
             WHILE l_pos <= l_len LOOP
               IF SUBSTR(l_sql, l_pos, 1) = l_quote THEN
@@ -590,9 +591,11 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
     l_pos       PLS_INTEGER := 1;
     l_count     PLS_INTEGER := 0;
     l_state     VARCHAR2(20) := 'NORMAL';
-    l_char      VARCHAR2(1);
-    l_next      VARCHAR2(1);
-    l_q_close   VARCHAR2(1);
+    -- These variables hold one character, not one byte. VARCHAR2(1) raises
+    -- ORA-06502 as soon as a Korean/other multibyte character is encountered.
+    l_char      VARCHAR2(4);
+    l_next      VARCHAR2(4);
+    l_q_close   VARCHAR2(4);
   BEGIN
     WHILE l_pos <= l_len LOOP
       l_char := DBMS_LOB.SUBSTR(p_sql, 1, l_pos);
@@ -954,7 +957,7 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
              s.stale_stats,
              TO_CHAR(s.last_analyzed, 'YYYY-MM-DD"T"HH24:MI:SS') AS last_analyzed
       FROM   v$sql_plan_statistics_all p
-             LEFT JOIN all_tab_statistics s
+             LEFT JOIN dba_tab_statistics s
                ON s.owner = p.object_owner
               AND s.table_name = p.object_name
       WHERE  p.sql_id = p_sql_id
@@ -987,7 +990,7 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
                num_nulls,
                histogram,
                TO_CHAR(last_analyzed, 'YYYY-MM-DD"T"HH24:MI:SS') AS last_analyzed
-        FROM   all_tab_columns
+        FROM   dba_tab_columns
         WHERE  owner = t.owner
         AND    table_name = t.table_name
         ORDER  BY column_id
@@ -1019,7 +1022,7 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
                num_rows,
                status,
                TO_CHAR(last_analyzed, 'YYYY-MM-DD"T"HH24:MI:SS') AS last_analyzed
-        FROM   all_indexes
+        FROM   dba_indexes
         WHERE  table_owner = t.owner
         AND    table_name = t.table_name
         ORDER  BY index_name
@@ -1043,7 +1046,7 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
         l_first_idx_col := TRUE;
         FOR ic IN (
           SELECT column_name, column_position, descend
-          FROM   all_ind_columns
+          FROM   dba_ind_columns
           WHERE  index_owner = i.owner
           AND    index_name = i.index_name
           ORDER  BY column_position
@@ -1557,6 +1560,7 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
       DECLARE
         l_error_code NUMBER := SQLCODE;
         l_error_message VARCHAR2(4000) := SUBSTR(SQLERRM, 1, 4000);
+        l_error_backtrace VARCHAR2(4000) := SUBSTR(DBMS_UTILITY.FORMAT_ERROR_BACKTRACE, 1, 4000);
       BEGIN
         IF l_schema_changed THEN
           BEGIN
@@ -1594,7 +1598,8 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
         ',"object_info":{"status":"SKIPPED","source":"PLAN_OBJECTS","table_stats":[]}' ||
         ',"advisor":{"status":"SKIPPED","report":null}' ||
         ',"error":{"code":' || TO_CHAR(l_error_code) ||
-        ',"message":' || json_str(l_error_message) || '}}'
+        ',"message":' || json_str(l_error_message) ||
+        ',"backtrace":' || json_str(l_error_backtrace) || '}}'
       );
       END;
   END run_evidence;
@@ -1627,6 +1632,7 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
     l_advisor_error_message VARCHAR2(2000);
     l_outer_error_code NUMBER;
     l_outer_error_message VARCHAR2(4000);
+    l_outer_error_backtrace VARCHAR2(4000);
   BEGIN
     l_result := run_evidence(
       p_sql              => TO_CLOB(p_sql),
@@ -1750,6 +1756,7 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
     WHEN OTHERS THEN
       l_outer_error_code := SQLCODE;
       l_outer_error_message := SUBSTR(SQLERRM, 1, 4000);
+      l_outer_error_backtrace := SUBSTR(DBMS_UTILITY.FORMAT_ERROR_BACKTRACE, 1, 4000);
       ROLLBACK;
       cleanup_advisor_scheduler_job(l_job_name, l_cleanup_status, l_cleanup_detail);
       RETURN '{"status":"FAILED","contract_version":"asta.v1","run_id":' ||
@@ -1757,7 +1764,8 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
              ',"advisor_job_cleanup":{"status":' || json_str(l_cleanup_status) ||
              ',"detail":' || json_str(l_cleanup_detail) || '}' ||
              ',"error":{"code":' || TO_CHAR(l_outer_error_code) ||
-             ',"message":' || json_str(l_outer_error_message) || '}}';
+             ',"message":' || json_str(l_outer_error_message) ||
+             ',"backtrace":' || json_str(l_outer_error_backtrace) || '}}';
   END run_evidence_store_vc;
 
   PROCEDURE run_evidence_store_proc(
