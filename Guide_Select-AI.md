@@ -98,6 +98,67 @@ ORDER  BY attribute_name;
   FROM dual;
   ```
 
+### 다른 OCI Tenancy 의 Gen AI 사용 (크로스-테넌시)
+
+기본 프로필은 `OCI$RESOURCE_PRINCIPAL`(리소스 주체)로 인증하는데, 이는 **ADB 자신이 속한 tenancy 의 신원**이라 자기 tenancy 의 Gen AI 만 호출됩니다. **다른 tenancy 의 Gen AI** 를 쓰려면:
+1. **인증 주체(`credential_name`)** 를 그 tenancy 에 접근 권한이 있는 사용자로 바꾸고,
+2. **`oci_compartment_id`** 로 그 tenancy 의 Gen AI 컴파트먼트를 지정합니다.
+
+**1) (상대 tenancy 관리자) 사용자·정책·API 키 준비**
+- Gen AI 사용 권한 정책: `Allow group <genai-users> to use generative-ai-family in compartment <genai-compartment>`
+- 그 사용자의 **API 서명 키** 발급 → **fingerprint** 와 **개인키(PEM)** 확보.
+
+**2) 내 ADB 에 그 사용자 credential 생성**
+```sql
+BEGIN
+  DBMS_CLOUD.CREATE_CREDENTIAL(
+    credential_name => 'GENAI_OTHER_TNCY',
+    user_ocid       => 'ocid1.user.oc1..aaaa...(상대 tenancy 사용자)',
+    tenancy_ocid    => 'ocid1.tenancy.oc1..aaaa...(상대 tenancy)',
+    private_key     => 'MIIEvQIBADAN...(PEM 본문, -----BEGIN/END----- 줄 제외)',
+    fingerprint     => 'aa:bb:cc:...:zz');
+END;
+/
+```
+
+**3) 프로필 — credential 교체 + `oci_compartment_id` + `region`**
+```sql
+BEGIN
+    dbms_cloud_ai.drop_profile(profile_name => 'AIF_NL2SQL', force => true);
+
+    dbms_cloud_ai.create_profile(
+        profile_name => 'AIF_NL2SQL',
+        attributes => '{
+            "provider": "oci",
+            "credential_name": "GENAI_OTHER_TNCY",              -- ← OCI$RESOURCE_PRINCIPAL 대신
+            "oci_compartment_id": "ocid1.compartment.oc1..aaaa...(상대 tenancy 의 GenAI 컴파트먼트)",
+            "region": "us-chicago-1",                            -- 상대 tenancy 에서 그 모델이 제공되는 리전
+            "model": "openai.gpt-5.4",
+            "embedding_model": "cohere.embed-v4.0",
+            "annotations": "true", "comments": "true", "constraints": "true",
+            "enforce_object_list": "true", "object_list_mode": "all",
+            "max_tokens": 1500, "temperature": 0,
+            "object_list": [
+                {"owner": "DESCENTE1", "name": "DIMCOUPON"},
+                {"owner": "DESCENTE1", "name": "DIMMEMBERINFO"},
+                {"owner": "DESCENTE1", "name": "FACTMEMBERCOUPON"},
+                {"owner": "DESCENTE1", "name": "FACTMEMBERSHIPLEVELHISTORY"},
+                {"owner": "DESCENTE1", "name": "V_FACTSALESORDERFORCRM3YVR"}
+            ]
+        }');
+END;
+/
+```
+
+> 기본(자기 tenancy) 프로필과 **다른 점은 `credential_name`(리소스주체→상대 사용자 API키) + `oci_compartment_id`(상대 tenancy 컴파트먼트) 두 가지**뿐입니다. 나머지 속성은 동일합니다.
+
+**주의**
+- **리전**: 상대 tenancy 에서 그 `model`·`embedding_model` 이 실제 제공되는 리전이어야 합니다.
+- **컴파트먼트**: `oci_compartment_id` 는 상대 tenancy 안에서 그 사용자가 `generative-ai-family` 를 쓸 수 있는 컴파트먼트여야 합니다.
+- **전용 클러스터(dedicated) 모델**이면 `oci_endpoint_id`(엔드포인트 OCID)도 추가 지정합니다.
+- **네트워크**: 사설 서브넷 ADB 라면 아웃바운드(서비스 게이트웨이/NAT) 조건이 동일하게 적용됩니다.
+- 키를 DB 에 저장하기 싫으면, 리소스 주체 유지 + **크로스-테넌시 IAM(소스 `Endorse` / 타깃 `Admit`)** 정책으로도 가능하지만 양쪽 tenancy 관리자 권한이 필요합니다(위 API 키 방식이 더 간단).
+
 ---
 
 ## 2. 외부 LLM(OpenRouter 등 OpenAI 호환 엔드포인트) 활용 — AI Profile 생성
