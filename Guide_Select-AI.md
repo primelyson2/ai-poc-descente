@@ -153,6 +153,7 @@ BEGIN
         attributes =>
             '{"provider_endpoint": "https://openrouter.ai/api",
             "model": "google/gemma-4-26b-a4b-it",
+            "embedding_model": "google/gemini-embedding-001",
             "credential_name": "OPENROUTER_CRED",
             "comments":"true",
             "annotations": "true",
@@ -209,3 +210,56 @@ SELECT DBMS_CLOUD_AI.GENERATE(
          action       => 'showsql') AS sql_text
 FROM dual;
 ```
+
+## 3. Feedback 과 `v$mapped_sql` / `v$sql`
+
+SELECT AI 의 **Feedback**(사용자가 "이 질문엔 이 SQL이 맞다/틀리다"를 학습시키는 기능)은 두 동적성능뷰와 함께 이해하면 쉽습니다.
+
+### 두 뷰 개요
+
+| 뷰 | 무엇인가 | 주요 컬럼 |
+|---|---|---|
+| **`v$mapped_sql`** | **SQL Translation Framework** 의 변환 내역. SELECT AI 가 자연어(`select ai …` / `DBMS_CLOUD_AI.GENERATE`)를 실제 SQL 로 **번역한 기록**이 남는다. | `SQL_ID`(원본), `MAPPED_SQL_ID`(변환된 SQL의 ID), `SQL_TEXT`/`SQL_FULLTEXT`(원본), `MAPPED_SQL_TEXT`(변환문), `USE_COUNT`(사용횟수), `TRANSLATION_TIMESTAMP` |
+| **`v$sql`** | **공유 SQL 영역(커서 캐시)**. 실제로 **파싱·실행된 SQL** 이 SQL_ID 단위로 올라온다. | `SQL_ID`, `SQL_FULLTEXT`(전체문, CLOB), `SQL_TEXT`(앞 1000자), `EXECUTIONS`, `ELAPSED_TIME` 등 통계 |
+
+- `v$mapped_sql` = "무엇을 무엇으로 **번역**했나"(NL→SQL 매핑 이력)
+- `v$sql` = "그 SQL 이 실제로 **실행**된 흔적과 통계"
+
+### 두 뷰의 관계
+
+`v$mapped_sql.MAPPED_SQL_ID` 는 **변환되어 실제 실행된 SQL 의 `SQL_ID`** 이고, 이 값은 `v$sql.SQL_ID` 로 조회할 수 있습니다. 즉 두 뷰는 `MAPPED_SQL_ID = SQL_ID` 로 연결됩니다.
+
+```sql
+SELECT m.sql_id            AS original_sql_id,   -- 원본(select ai …) SQL_ID
+       m.mapped_sql_id,                          -- 변환·실행된 SQL 의 SQL_ID
+       s.sql_fulltext      AS mapped_full_sql,   -- v$sql 에서 가져온 실제 실행문 전체
+       s.executions, s.elapsed_time
+FROM   v$mapped_sql m
+LEFT JOIN v$sql s ON s.sql_id = m.mapped_sql_id
+WHERE  m.mapped_sql_id IS NOT NULL;
+```
+
+> `MAPPED_SQL_ID` 가 `NULL` 이거나 커서가 캐시에서 aging-out 되면 `v$sql` 에 없을 수 있습니다. 이때는 AWR(`DBA_HIST_SQLTEXT`, 캡처되어 있어야 함)에서 조회합니다.
+
+### Feedback 추가 시 어떻게 쓰이나
+
+이 도구의 **AI Profile Test → 4.Feedback 관리** 에서 두 경로로 피드백을 등록합니다:
+
+1. **실행된 내역에서(Positive)** — `v$mapped_sql` 을 조회해 **최근 NL2SQL 실행 목록(sql_id)** 을 보여주고, 특정 행의 `sql_id` 로 아래를 실행합니다.
+   ```sql
+   BEGIN
+     DBMS_CLOUD_AI.FEEDBACK(
+       profile_name  => 'AIF_NL2SQL',
+       sql_id        => '<v$mapped_sql 의 SQL_ID>',
+       feedback_type => 'positive',
+       operation     => 'add');
+   END;
+   /
+   ```
+   → SELECT AI 는 그 `sql_id` 로 **원본 질문 + 생성된 SQL** 을 식별해, 프로파일의 **피드백 벡터 테이블(`<PROFILE>_FEEDBACK_VECINDEX$VECTAB`)** 에 저장합니다. 이후 유사 질문에서 **few-shot 예시**로 재사용되어 정확도가 올라갑니다.
+
+2. **실행내역 없이 직접(Negative)** — 실행 이력(`v$mapped_sql`)이 없어도 `sql_text`(질문) + `response`(정답/오답 SQL) + `feedback_content` 를 직접 넣어 등록합니다.
+
+> 정리: **`v$mapped_sql` 은 "어떤 질문이 어떤 SQL 로 실행됐는지"의 출처**로서 Positive 피드백의 `sql_id` 를 제공하고, **`v$sql` 은 그 `MAPPED_SQL_ID` 로 실제 실행문·통계를 확인**하는 용도입니다. 같은 `sql_id` 에 대한 피드백은 1건만 유지됩니다(`operation => 'add'` 가 곧 update).
+
+> 권한: `v$mapped_sql`·`v$sql` 조회에는 각각 `GRANT READ ON SYS.V_$MAPPED_SQL`, `GRANT SELECT ON V_$SQL`(또는 ADMIN 권한)이 필요할 수 있습니다.
