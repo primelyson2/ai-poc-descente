@@ -44,7 +44,7 @@
 
   // 입력 필드 + (제목/추가/수정/콤보) 저장 프롬프트 콤보 연결.
   // shape: [{title, prompt}] — Profile Test 화면과 동일 규약.
-  function wireSavedPrompts(key, inputEl, titleEl, addBtn, updBtn, selEl) {
+  function wireSavedPrompts(key, inputEl, titleEl, addBtn, updBtn, delBtn, selEl) {
     const load = () => {
       try { return JSON.parse(window.Store.get(key)) || []; }
       catch (e) { return []; }
@@ -96,6 +96,16 @@
       window.Toast.show(`'${title}' 수정됨`, "success");
     });
 
+    delBtn.addEventListener("click", () => {
+      const title = selEl.value;
+      if (!title) { window.Toast.show("삭제할 항목을 콤보에서 선택하세요", "error"); return; }
+      if (!window.confirm(`저장된 프롬프트 '${title}' 를 삭제할까요?`)) return;
+      const list = load().filter((p) => p.title !== title);
+      window.Store.set(key, JSON.stringify(list));
+      refresh("");   // 선택 초기화(입력값은 유지)
+      window.Toast.show(`'${title}' 삭제됨`, "success");
+    });
+
     selEl.addEventListener("change", () => {
       const title = selEl.value;
       if (!title) return;
@@ -114,6 +124,7 @@
             <input type="text" id="${prefix}-title" placeholder="저장할 제목" style="width:120px;" />
             <button class="btn" id="${prefix}-add" type="button">추가</button>
             <button class="btn" id="${prefix}-update" type="button">수정</button>
+            <button class="btn" id="${prefix}-delete" type="button">삭제</button>
             <select id="${prefix}-saved" style="min-width:140px;"></select>
           </div>
         </div>
@@ -205,11 +216,14 @@
     const colInput = panel.querySelector("#nl-cols-input");
     const sortInput = panel.querySelector("#nl-sort-input");
     wireSavedPrompts(Q_KEY, qInput, panel.querySelector("#nl-q-title"),
-      panel.querySelector("#nl-q-add"), panel.querySelector("#nl-q-update"), panel.querySelector("#nl-q-saved"));
+      panel.querySelector("#nl-q-add"), panel.querySelector("#nl-q-update"),
+      panel.querySelector("#nl-q-delete"), panel.querySelector("#nl-q-saved"));
     wireSavedPrompts(COL_KEY, colInput, panel.querySelector("#nl-cols-title"),
-      panel.querySelector("#nl-cols-add"), panel.querySelector("#nl-cols-update"), panel.querySelector("#nl-cols-saved"));
+      panel.querySelector("#nl-cols-add"), panel.querySelector("#nl-cols-update"),
+      panel.querySelector("#nl-cols-delete"), panel.querySelector("#nl-cols-saved"));
     wireSavedPrompts(SORT_KEY, sortInput, panel.querySelector("#nl-sort-title"),
-      panel.querySelector("#nl-sort-add"), panel.querySelector("#nl-sort-update"), panel.querySelector("#nl-sort-saved"));
+      panel.querySelector("#nl-sort-add"), panel.querySelector("#nl-sort-update"),
+      panel.querySelector("#nl-sort-delete"), panel.querySelector("#nl-sort-saved"));
 
     const downloadBar = panel.querySelector("#nl-download-bar");
     const timingEl = panel.querySelector("#nl-timing");

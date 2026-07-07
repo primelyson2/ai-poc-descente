@@ -1925,6 +1925,7 @@ END;`;
                 <input type="text" id="ptm-prompt-title" placeholder="저장할 제목" style="width:130px;">
                 <button class="btn" id="ptm-prompt-add">추가</button>
                 <button class="btn" id="ptm-prompt-update">수정</button>
+                <button class="btn" id="ptm-prompt-delete">삭제</button>
                 <select id="ptm-prompt-saved" style="width:150px; flex:0 0 150px;"></select>
               </div>
             </div>
@@ -1985,6 +1986,7 @@ END;`;
     const titleInput = backdrop.querySelector("#ptm-prompt-title");
     const addBtn = backdrop.querySelector("#ptm-prompt-add");
     const updateBtn = backdrop.querySelector("#ptm-prompt-update");
+    const deleteBtn = backdrop.querySelector("#ptm-prompt-delete");
     const savedSel = backdrop.querySelector("#ptm-prompt-saved");
 
     const loadSaved = () => {
@@ -2039,6 +2041,17 @@ END;`;
       list[idx].prompt = prompt;
       window.Store.set(PROMPTS_KEY, JSON.stringify(list));
       window.Toast.show(`'${title}' 수정됨`, "success");
+    });
+
+    // 삭제 — 콤보에서 선택한 저장 프롬프트를 확인 후 제거
+    deleteBtn.addEventListener("click", () => {
+      const title = savedSel.value;
+      if (!title) { window.Toast.show("삭제할 항목을 콤보에서 선택하세요", "error"); return; }
+      if (!window.confirm(`저장된 프롬프트 '${title}' 를 삭제할까요?`)) return;
+      const list = loadSaved().filter((p) => p.title !== title);
+      window.Store.set(PROMPTS_KEY, JSON.stringify(list));
+      refreshCombo("");   // 선택 초기화(프롬프트 입력값은 유지)
+      window.Toast.show(`'${title}' 삭제됨`, "success");
     });
 
     savedSel.addEventListener("change", () => {
