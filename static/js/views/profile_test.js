@@ -1144,55 +1144,20 @@ END;
     vectabPanel.className = "panel";
     vectabPanel.innerHTML = `
       <div class="panel-header">
-        <h2>Vector Table 내용 <span class="muted" style="font-size:var(--fs-sm);">저장된 Feedback (display only)</span></h2>
-        <button class="btn btn-ghost" id="fb-vectab-reload">↻ 조회</button>
+        <h2>저장된 Feedback</h2>
+        <div class="row" style="gap:8px;">
+          <button class="btn btn-ghost" id="fb-vectab-reload">↻ 조회</button>
+          <button class="btn btn-primary" id="fb-add-positive">Feedback 추가 - Positive</button>
+          <button class="btn btn-primary" id="fb-add-negative">Feedback 추가 - Negative</button>
+        </div>
       </div>
       <div class="panel-body" id="fb-vectab-list"></div>
     `;
     wrap.appendChild(vectabPanel);
 
-    // ---- Feedback 추가 ① 실행된 내역에서 (v$mapped_sql) ----
-    const histPanel = document.createElement("div");
-    histPanel.className = "panel";
-    histPanel.innerHTML = `
-      <div class="panel-header">
-        <h2>Feedback 추가 — 실행된 내역에서 <span class="muted" style="font-size:var(--fs-sm);">v$mapped_sql</span></h2>
-        <button class="btn btn-ghost" id="fb-hist-reload">↻ 내역 조회</button>
-      </div>
-      <div class="panel-body" id="fb-hist"></div>
-    `;
-    wrap.appendChild(histPanel);
-
-    // ---- Feedback 추가 ② 실행내역 없이 (sql_text + response) ----
-    const directPanel = document.createElement("div");
-    directPanel.className = "panel";
-    directPanel.innerHTML = `
-      <div class="panel-header">
-        <h2>Feedback 추가 — 실행내역 없이 <span class="muted" style="font-size:var(--fs-sm);">sql_text + response + feedback_content</span></h2>
-        <button class="btn btn-primary" id="fb-gen-direct">추가</button>
-      </div>
-      <div class="panel-body stack-sm">
-        <div class="stack-sm">
-          <label>SQL Text <span class="muted" style="font-size:var(--fs-sm);">— content 만 입력하면 앞에 <code>select ai showsql</code> 가 자동으로 붙습니다 (예: <code>이번주 가장 매출이 큰 상품을 알려줘</code>)</span></label>
-          <textarea id="fb-sql-text" rows="2">이번주 가장 매출이 큰 상품을 알려줘</textarea>
-        </div>
-        <div class="row" style="gap:12px; align-items:center;">
-          <label style="width:90px;">Feedback</label>
-          <input type="hidden" id="fb-direct-type" value="negative">
-          <span>negative</span>
-          <span class="muted" style="font-size:var(--fs-sm);">— 고정</span>
-        </div>
-        <div class="stack-sm">
-          <label>Response <span class="muted" style="font-size:var(--fs-sm);">— Predefined SQL 입력</span></label>
-          <textarea id="fb-response" rows="3" style="font-family:var(--font-mono); font-size:var(--fs-sm);">SELECT SUM(1) FROM "ADB_USER"."MOVIES"</textarea>
-        </div>
-        <div class="stack-sm">
-          <label>Feedback Content <span class="muted" style="font-size:var(--fs-sm);">— 추가feedback</span></label>
-          <textarea id="fb-feedback-content" rows="2"></textarea>
-        </div>
-      </div>
-    `;
-    wrap.appendChild(directPanel);
+    // ※ [Feedback 추가 — 실행된 내역에서 / 실행내역 없이] 두 섹션은 위 '저장된 Feedback' 헤더의
+    //   [Feedback 추가 - Positive] / [Feedback 추가 - Negative] 버튼으로 여는 팝업으로 이동함
+    //   (openMappedSqlModal / openDirectFeedbackModal).
 
     const vectabInput = document.getElementById("fb-vectab");
 
@@ -1226,7 +1191,8 @@ END;
       // 행 끝에 액션(수정/삭제) 버튼 컬럼 추가.
       cols.push({ key: "_act", label: "", headerAlign: "center",
         format: (_v, row) => buildVectabActions(row, loadVectab) });
-      listHost.appendChild(window.SimpleTable.create(cols, data.rows || [], { className: "keep-case" }));
+      listHost.appendChild(window.SimpleTable.create(cols, data.rows || [],
+        { className: "keep-case", onRowClick: (row) => showVectabViewModal(row) }));
       if (!(data.rows || []).length) {
         listHost.appendChild(divFromHtml('<div class="empty-state muted">저장된 Feedback 이 없습니다.</div>'));
       }
@@ -1250,11 +1216,12 @@ END;
           { key: "sql_id", label: "sql_id" },
           { key: "mapped_sql_text", label: "Mapped_sql_text" },
           { key: "translation_timestamp", label: "timestamp", headerAlign: "center" },
+          { key: "use_count", label: "use_count", headerAlign: "center" },
           { key: "_add", label: "", headerAlign: "center",
             format: (_v, row) => buildMappedAddBtn(row, loadVectab) },
         ],
         rows || [],
-        { className: "keep-case" }
+        { className: "keep-case", onRowClick: (row) => showMappedViewModal(row) }
       ));
       if (!(rows || []).length) {
         histHost.appendChild(divFromHtml('<div class="empty-state muted">실행 내역이 없습니다 (v$mapped_sql 비어 있음).</div>'));
@@ -1267,7 +1234,8 @@ END;
       btn.className = "btn btn-primary";
       btn.textContent = "추가";
       btn.title = "feedback_type=positive, operation=add (같은 sql_id 는 1건만 유지되어 update 됨)";
-      btn.addEventListener("click", () => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();  // 행 클릭(상세 팝업)으로 전파 방지
         const profile = fbProfile();
         if (!profile) { window.Toast.show("Profile 을 선택하세요", "warn"); return; }
         if (!row.sql_id) { window.Toast.show("sql_id 가 없습니다", "warn"); return; }
@@ -1287,6 +1255,72 @@ END;
       return btn;
     }
 
+    // v$mapped_sql 행 클릭 → 읽기전용 상세 팝업 (모든 컬럼을 그대로 표시).
+    function showMappedViewModal(row) {
+      // 한 줄로 저장된 SQL 을 주요 절 앞에서 줄바꿈해 읽기 쉽게 만든다(표시용).
+      const prettySql = (s) => s == null ? s : String(s).replace(
+        /\s+(FROM|WHERE|AND|OR|GROUP\s+BY|ORDER\s+BY|HAVING|LEFT\s+JOIN|RIGHT\s+JOIN|FULL\s+JOIN|INNER\s+JOIN|JOIN|ON|UNION\s+ALL|UNION)\b/gi,
+        "\n$1");
+
+      // sql_fulltext 가 'select ai showsql' 이면 mapped_sql_text 는 SELECT '<실제 SQL>' <alias> 형태다.
+      // 이때 첫 리터럴('') 안의 실제 SQL 만 추출해 보여준다('' 이스케이프는 ' 로 복원).
+      const extractInnerSql = (mapped) => {
+        const s = String(mapped || "");
+        const start = s.indexOf("'");
+        if (start < 0) return null;
+        let out = "", i = start + 1;
+        while (i < s.length) {
+          if (s[i] === "'") {
+            if (s[i + 1] === "'") { out += "'"; i += 2; continue; }  // '' → '
+            return out;  // 닫는 따옴표
+          }
+          out += s[i++];
+        }
+        return out;  // 닫는 따옴표가 없으면 있는 데까지
+      };
+      let mappedText = row.mapped_sql_text;
+      if (/^\s*select\s+ai\s+showsql\b/i.test(row.sql_fulltext || "")) {
+        const inner = extractInnerSql(row.mapped_sql_text);
+        if (inner) mappedText = inner;
+      }
+
+      const roField = (label, value) => `
+        <div class="stack-sm">
+          <label style="font-size:var(--fs-sm); color:var(--text-muted);">${label}</label>
+          <pre style="white-space:pre-wrap; word-break:break-word; margin:0; font-family:var(--font-mono); font-size:var(--fs-sm); background:var(--surface-alt); padding:var(--space-2) var(--space-3); border-radius:var(--radius-md); max-height:240px; overflow:auto;">${window.escapeHtml(value != null && String(value).trim() !== "" ? String(value) : "—")}</pre>
+        </div>`;
+
+      const backdrop = document.createElement("div");
+      backdrop.className = "modal-backdrop";
+      backdrop.innerHTML = `
+        <div class="modal" style="width:900px; max-width:95vw;">
+          <div class="modal-header">
+            <h2>실행 내역 상세 <span class="muted" style="font-size:var(--fs-sm);">v$mapped_sql · 읽기전용</span></h2>
+            <button class="btn btn-ghost" id="mv-close">✕</button>
+          </div>
+          <div class="modal-body stack">
+            <div class="row" style="gap:12px;">
+              <div style="flex:1; min-width:0;">${roField("sql_id", row.sql_id)}</div>
+              <div style="flex:1; min-width:0;">${roField("use_count", row.use_count)}</div>
+              <div style="flex:1; min-width:0;">${roField("timestamp", row.translation_timestamp)}</div>
+            </div>
+            ${roField("sql_fulltext", row.sql_fulltext)}
+            ${roField("mapped_sql_text", prettySql(mappedText))}
+            <div class="row end">
+              <button class="btn btn-ghost" id="mv-close2">닫기</button>
+            </div>
+          </div>
+        </div>
+      `;
+      const close = () => { backdrop.remove(); document.removeEventListener("keydown", onKey); };
+      const onKey = (e) => { if (e.key === "Escape") close(); };
+      // 바깥 클릭으로는 닫지 않음 — 닫기는 X/닫기 버튼 또는 ESC 로만.
+      backdrop.querySelector("#mv-close").addEventListener("click", close);
+      backdrop.querySelector("#mv-close2").addEventListener("click", close);
+      document.addEventListener("keydown", onKey);
+      document.body.appendChild(backdrop);
+    }
+
     // vectab 행의 액션 셀 — [수정](response 편집) + [삭제] 버튼을 한 칸에 배치.
     function buildVectabActions(row, onDone) {
       const sqlId = (row.sql_id || "").trim();
@@ -1297,6 +1331,8 @@ END;
       box.className = "row";
       box.style.gap = "6px";
       box.style.justifyContent = "center";
+      // 액션 셀 클릭은 행 클릭(조회 팝업)으로 전파되지 않도록 차단.
+      box.addEventListener("click", (e) => e.stopPropagation());
 
       // 수정 — response 만 바꿔 재등록(operation=add). response 전달은 sql_text 모드만 가능하므로
       //        sql_text 가 있는 행에만 노출한다. 단 positive 는 response 가 시스템 파생값이고
@@ -1312,6 +1348,46 @@ END;
 
       box.appendChild(buildVectabDeleteBtn(row, onDone));
       return box;
+    }
+
+    // vectab 행 클릭 → 읽기전용 조회 팝업 (모든 컬럼을 그대로 표시).
+    function showVectabViewModal(row) {
+      const roField = (label, value) => `
+        <div class="stack-sm">
+          <label style="font-size:var(--fs-sm); color:var(--text-muted);">${label}</label>
+          <pre style="white-space:pre-wrap; word-break:break-word; margin:0; font-family:var(--font-mono); font-size:var(--fs-sm); background:var(--surface-alt); padding:var(--space-2) var(--space-3); border-radius:var(--radius-md); max-height:240px; overflow:auto;">${window.escapeHtml(value != null && String(value).trim() !== "" ? String(value) : "—")}</pre>
+        </div>`;
+
+      const backdrop = document.createElement("div");
+      backdrop.className = "modal-backdrop";
+      backdrop.innerHTML = `
+        <div class="modal" style="width:860px; max-width:95vw;">
+          <div class="modal-header">
+            <h2>Feedback 상세 <span class="muted" style="font-size:var(--fs-sm);">(읽기전용)</span></h2>
+            <button class="btn btn-ghost" id="fbv-close">✕</button>
+          </div>
+          <div class="modal-body stack">
+            ${roField("content", row.content)}
+            <div class="row" style="gap:12px;">
+              <div style="flex:1; min-width:0;">${roField("feedback_type", row.feedback_type)}</div>
+              <div style="flex:1; min-width:0;">${roField("sql_id", row.sql_id)}</div>
+            </div>
+            ${roField("sql_text", row.sql_text)}
+            ${roField("response", row.response)}
+            ${roField("feedback_content", row.feedback_content)}
+            <div class="row end">
+              <button class="btn btn-ghost" id="fbv-close2">닫기</button>
+            </div>
+          </div>
+        </div>
+      `;
+      const close = () => { backdrop.remove(); document.removeEventListener("keydown", onKey); };
+      const onKey = (e) => { if (e.key === "Escape") close(); };
+      // 바깥 클릭으로는 닫지 않음 — 닫기는 X/닫기 버튼 또는 ESC 로만.
+      backdrop.querySelector("#fbv-close").addEventListener("click", close);
+      backdrop.querySelector("#fbv-close2").addEventListener("click", close);
+      document.addEventListener("keydown", onKey);
+      document.body.appendChild(backdrop);
     }
 
     // vectab 행의 "수정" 팝업 — content/feedback_type/sql_id/sql_text 는 읽기전용으로 보여주고
@@ -1447,10 +1523,81 @@ END;
     });
 
     document.getElementById("fb-vectab-reload").addEventListener("click", loadVectab);
-    document.getElementById("fb-hist-reload").addEventListener("click", loadMappedSql);
+    document.getElementById("fb-add-positive").addEventListener("click", openMappedSqlModal);
+    document.getElementById("fb-add-negative").addEventListener("click", openDirectFeedbackModal);
 
-    // 직접 입력 → 스크립트 팝업을 띄우고 [반영] 클릭 시 FEEDBACK(sql_text) 실제 실행
-    document.getElementById("fb-gen-direct").addEventListener("click", () => {
+    // [Feedback 추가 - Positive] 팝업 — 실행된 내역(v$mapped_sql)에서 positive 피드백 등록.
+    function openMappedSqlModal() {
+      const backdrop = document.createElement("div");
+      backdrop.className = "modal-backdrop";
+      backdrop.innerHTML = `
+        <div class="modal" style="width:1000px; max-width:95vw;">
+          <div class="modal-header">
+            <h2>Feedback 추가 - 실행된 내역(v$mapped_sql)에서</h2>
+            <div class="row" style="gap:8px;">
+              <button class="btn btn-ghost" id="fb-hist-reload">↻ 내역 조회</button>
+              <button class="btn btn-ghost" id="fb-hist-close">✕</button>
+            </div>
+          </div>
+          <div class="modal-body"><div id="fb-hist"></div></div>
+        </div>
+      `;
+      const close = () => { backdrop.remove(); document.removeEventListener("keydown", onKey); };
+      const onKey = (e) => { if (e.key === "Escape") close(); };
+      backdrop.querySelector("#fb-hist-close").addEventListener("click", close);
+      backdrop.querySelector("#fb-hist-reload").addEventListener("click", loadMappedSql);
+      document.addEventListener("keydown", onKey);
+      document.body.appendChild(backdrop);
+      loadMappedSql();
+    }
+
+    // [Feedback 추가 - Negative] 팝업 — 실행내역 없이 sql_text + response + feedback_content 로 negative 등록.
+    function openDirectFeedbackModal() {
+      const backdrop = document.createElement("div");
+      backdrop.className = "modal-backdrop";
+      backdrop.innerHTML = `
+        <div class="modal" style="width:820px; max-width:95vw;">
+          <div class="modal-header">
+            <h2>Feedback 추가 - 실행내역 없이 직접</h2>
+            <button class="btn btn-ghost" id="fb-direct-close">✕</button>
+          </div>
+          <div class="modal-body stack-sm">
+            <div class="stack-sm">
+              <label>SQL Text <span class="muted" style="font-size:var(--fs-sm);">— content 만 입력하면 앞에 <code>select ai showsql</code> 가 자동으로 붙습니다 (예: <code>이번주 가장 매출이 큰 상품을 알려줘</code>)</span></label>
+              <textarea id="fb-sql-text" rows="2">이번주 가장 매출이 큰 상품을 알려줘</textarea>
+            </div>
+            <div class="row" style="gap:12px; align-items:center;">
+              <label style="width:90px;">Feedback</label>
+              <input type="hidden" id="fb-direct-type" value="negative">
+              <span>negative</span>
+              <span class="muted" style="font-size:var(--fs-sm);">— 고정</span>
+            </div>
+            <div class="stack-sm">
+              <label>Response <span class="muted" style="font-size:var(--fs-sm);">— Predefined SQL 입력</span></label>
+              <textarea id="fb-response" rows="3" style="font-family:var(--font-mono); font-size:var(--fs-sm);">SELECT SUM(1) FROM "ADB_USER"."MOVIES"</textarea>
+            </div>
+            <div class="stack-sm">
+              <label>Feedback Content <span class="muted" style="font-size:var(--fs-sm);">— 추가feedback</span></label>
+              <textarea id="fb-feedback-content" rows="2"></textarea>
+            </div>
+            <div class="row end" style="gap:8px;">
+              <button class="btn btn-ghost" id="fb-direct-cancel">닫기</button>
+              <button class="btn btn-primary" id="fb-gen-direct">추가</button>
+            </div>
+          </div>
+        </div>
+      `;
+      const close = () => { backdrop.remove(); document.removeEventListener("keydown", onKey); };
+      const onKey = (e) => { if (e.key === "Escape") close(); };
+      backdrop.querySelector("#fb-direct-close").addEventListener("click", close);
+      backdrop.querySelector("#fb-direct-cancel").addEventListener("click", close);
+      backdrop.querySelector("#fb-gen-direct").addEventListener("click", () => submitDirectFeedback(close));
+      document.addEventListener("keydown", onKey);
+      document.body.appendChild(backdrop);
+    }
+
+    // 직접 입력 → 스크립트 확인 팝업 → [반영] 시 FEEDBACK(sql_text) 실행. 성공 시 onSuccess 로 팝업 닫기.
+    function submitDirectFeedback(onSuccess) {
       const profile = fbProfile();
       if (!profile) { window.Toast.show("Profile 을 선택하세요", "warn"); return; }
       let sqlText = document.getElementById("fb-sql-text").value.trim();
@@ -1467,17 +1614,17 @@ END;
             { sql_text: sqlText, feedback_type: type, response, feedback_content: feedbackContent });
           window.Toast.show("피드백 등록됨", "success");
           loadVectab();
+          if (typeof onSuccess === "function") onSuccess();
         } catch (e) {
           window.Toast.show(errMsg(e, "피드백 등록 실패"), "error");
           throw e;  // 모달 유지 (사용자가 오류 확인 후 재시도)
         }
       });
-    });
+    }
 
-    // 진입 시 초기화 — Vector Table 명/내용 + 실행 내역 조회
+    // 진입 시 초기화 — Vector Table 명 + 저장된 Feedback 조회
     vectabInput.value = vectorTableName(fbProfile());
     loadVectab();
-    loadMappedSql();
   }
 
   // 간단 HTML → element (Tab3 보조)

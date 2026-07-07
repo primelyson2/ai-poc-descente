@@ -578,18 +578,16 @@ async def feedback_mapped_sql(database: str = Depends(current_db)) -> list[dict]
 
     조회 권한(GRANT READ ON SYS.V_$MAPPED_SQL)이 없으면 ORA 오류가 그대로 전파된다.
     """
-    # SELECT AI NL2SQL 만 — DBMS_CLOUD_AI.GENERATE 또는 'select ai' 가 포함된 행만 노출
-    # (내부 dbms_sql.parse 커서 등은 제외).
-    # 성능: 필터는 SQL_TEXT(VARCHAR2(1000)) 로 — 키워드는 문장 앞에 오므로 1000자 내 포함됨.
-    #       CLOB(SQL_FULLTEXT) 에 UPPER+LIKE 를 걸면 전 행의 CLOB 을 materialize 해 느림.
+    # SQL_FULLTEXT 가 'select ai' 로 '시작'하는 행만 노출(select ai 단축구문). GENERATE 호출은 제외.
+    # 성능: 시작 키워드라 SQL_TEXT(VARCHAR2(1000)) 로 판정해도 SQL_FULLTEXT 시작과 동일하다
+    #       (CLOB(SQL_FULLTEXT) 에 정규식을 걸면 전 행 materialize 되어 느림).
     #       표시용 sql_fulltext(CLOB) 는 매칭된 소수 행에만 fetch 된다.
     return await db.fetch_all(
         database,
-        "SELECT sql_id, sql_fulltext, mapped_sql_text, "
+        "SELECT sql_id, sql_fulltext, mapped_sql_text, use_count, "
         "       CAST(translation_timestamp AS TIMESTAMP) AS translation_timestamp "
         "  FROM v$mapped_sql "
-        " WHERE UPPER(sql_text) LIKE '%DBMS_CLOUD_AI.GENERATE%' "
-        "    OR UPPER(sql_text) LIKE '%SELECT AI %' "
+        " WHERE REGEXP_LIKE(sql_text, '^[[:space:]]*select[[:space:]]+ai[[:space:]]', 'i') "
         " ORDER BY translation_timestamp DESC",
     )
 

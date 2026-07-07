@@ -140,7 +140,7 @@
     const title = document.createElement("div");
     title.className = "view-title";
     title.innerHTML = `<h1>Select AI Test - Table list</h1>
-      <span class="sub">질문을 SQL 로 변환·실행해 표로 조회하고, 결과를 페르소나로 AI분석합니다.</span>`;
+      <span class="sub">질문을 SQL로 변환/실행해 표로 조회합니다</span>`;
     main.appendChild(title);
 
     const panel = document.createElement("div");
@@ -201,7 +201,7 @@
     refreshConfigs();
 
     panel.querySelector("#nl-config-add").addEventListener("click", () => {
-      openConfigModal("add", { name: "", profile: "", userPrompt: DEFAULT_USER_PROMPT }, refreshConfigs);
+      openConfigModal("add", { name: "", profile: "", userPrompt: DEFAULT_USER_PROMPT, mode: "dbms_cloud_ai" }, refreshConfigs);
     });
     panel.querySelector("#nl-config-update").addEventListener("click", () => {
       const name = configSel.value;
@@ -309,7 +309,7 @@
     try {
       res = await window.API.post("/api/nl2sql/run", {
         profile_name: cfg.profile, user_prompt: cfg.userPrompt || "",
-        message, columns, sort_by,
+        message, columns, sort_by, mode: cfg.mode || "dbms_cloud_ai",
       });
     } catch (err) {
       resultArea.innerHTML = "";
@@ -424,6 +424,17 @@
             <select id="cfg-profile"></select>
           </div>
           <div class="stack-sm">
+            <label>호출Mode</label>
+            <div class="row" style="gap:var(--space-4);">
+              <label style="font-weight:400; display:flex; align-items:center; gap:6px; cursor:pointer;">
+                <input type="radio" name="cfg-mode" value="dbms_cloud_ai"> dbms_cloud_ai
+              </label>
+              <label style="font-weight:400; display:flex; align-items:center; gap:6px; cursor:pointer;">
+                <input type="radio" name="cfg-mode" value="select_ai"> select ai
+              </label>
+            </div>
+          </div>
+          <div class="stack-sm">
             <label>User Prompt</label>
             <textarea id="cfg-prompt" rows="10" style="font-family:var(--font-mono); font-size:var(--fs-sm);"></textarea>
           </div>
@@ -447,6 +458,13 @@
     const promptEl = backdrop.querySelector("#cfg-prompt");
     nameEl.value = cfg.name || "";
     promptEl.value = cfg.userPrompt || "";
+
+    // 호출Mode 라디오 — 저장값(없으면 dbms_cloud_ai) 반영. getMode()로 현재 선택 읽음.
+    const initMode = cfg.mode === "select_ai" ? "select_ai" : "dbms_cloud_ai";
+    const modeRadio = backdrop.querySelector(`input[name="cfg-mode"][value="${initMode}"]`);
+    if (modeRadio) modeRadio.checked = true;
+    const getMode = () =>
+      (backdrop.querySelector('input[name="cfg-mode"]:checked') || {}).value || "dbms_cloud_ai";
 
     // AI Profile 드롭다운 — ENABLED 만. 현재 값이 목록에 없으면 보존.
     profileSel.innerHTML = `<option value="">불러오는 중…</option>`;
@@ -481,18 +499,32 @@
     // script 보기 — 이 Chat설정(Profile + User Prompt)으로 실행되는 DB 스크립트를 팝업으로.
     backdrop.querySelector("#cfg-script").addEventListener("click", () => {
       const profile = profileSel.value || "<AI Profile 미선택>";
-      const lit = (promptEl.value || "").replace(/'/g, "''");  // SQL 리터럴 이스케이프
-      const script =
-        "-- Select AI Test - Table list 실행 스크립트\n" +
+      const commonNote =
         "-- ##조회할 컬럼##, ##정렬기준##, ##메시지## 는 실행 시 화면 입력값으로 치환됩니다.\n" +
-        "-- ##기준일## 은 실행 시 오늘 날짜(YYYYMMDD)로 자동 치환됩니다.\n" +
-        "SELECT DBMS_CLOUD_AI.GENERATE(\n" +
-        "         prompt       => '" + lit + "',\n" +
-        "         profile_name => '" + profile + "',\n" +
-        "         action       => 'showsql'\n" +
-        "       ) AS r\n" +
-        "FROM dual;\n" +
-        "-- 위에서 생성된 SELECT 문을 앱이 실행해 결과(최대 100행)를 표시합니다.";
+        "-- ##기준일## 은 실행 시 오늘 날짜(YYYYMMDD)로 자동 치환됩니다.\n";
+      let script;
+      if (getMode() === "select_ai") {
+        script =
+          "-- Select AI Test - Table list 실행 스크립트 (호출Mode: select ai)\n" +
+          commonNote +
+          "EXEC DBMS_CLOUD_AI.SET_PROFILE('" + profile + "');\n" +
+          "select ai showsql \n" +
+          '"' + (promptEl.value || "") + '"\n' +
+          "-- 위 select ai showsql 이 생성한 SELECT 문을 앱이 실행해 결과(최대 100행)를 표시합니다.";
+      } else {
+        // q-quote 리터럴(q'~ … ~') — 내부 작은따옴표를 '' 로 이스케이프할 필요가 없다.
+        const lit = "q'~" + (promptEl.value || "") + "~'";
+        script =
+          "-- Select AI Test - Table list 실행 스크립트 (호출Mode: dbms_cloud_ai)\n" +
+          commonNote +
+          "SELECT DBMS_CLOUD_AI.GENERATE(\n" +
+          "         prompt       => " + lit + ",\n" +
+          "         profile_name => '" + profile + "',\n" +
+          "         action       => 'showsql'\n" +
+          "       ) AS r\n" +
+          "FROM dual;\n" +
+          "-- 위에서 생성된 SELECT 문을 앱이 실행해 결과(최대 100행)를 표시합니다.";
+      }
       openScriptModal(script);
     });
     backdrop.querySelector("#cfg-save").addEventListener("click", () => {
@@ -503,7 +535,7 @@
         window.Toast.show("이미 있는 이름입니다", "error");
         return;
       }
-      const entry = { name, profile: profileSel.value, userPrompt: promptEl.value };
+      const entry = { name, profile: profileSel.value, userPrompt: promptEl.value, mode: getMode() };
       if (mode === "edit") {
         const idx = list.findIndex((c) => c.name === origName);
         if (idx >= 0) list[idx] = entry; else list.push(entry);
