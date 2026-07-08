@@ -237,8 +237,10 @@
       if (res && res.total_ms != null) {
         timingEl.textContent = fmtTiming(res);
         const hasRows = (res.rows || []).length > 0;
-        analyzeBtn.style.display = hasRows ? "" : "none";
-        personaBtn.style.display = hasRows ? "" : "none";
+        // AI분석/페르소나 관리 버튼은 Tool관리 메뉴관리의 'AI분석' 하위옵션이 켜져 있을 때만 노출.
+        const analyzeOn = !window.MenuConfig || !window.MenuConfig.isAnalyzeOn || window.MenuConfig.isAnalyzeOn();
+        analyzeBtn.style.display = (hasRows && analyzeOn) ? "" : "none";
+        personaBtn.style.display = (hasRows && analyzeOn) ? "" : "none";
         downloadLink.style.display = hasRows ? "" : "none";
         downloadBar.style.display = "flex";
       } else {

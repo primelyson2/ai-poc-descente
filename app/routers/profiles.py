@@ -433,7 +433,7 @@ async def profile_objects(name: str, database: str = Depends(current_db)) -> lis
     # FROM JSON_TABLE 로 클라이언트 owner/name 쌍과 ALL_TAB_COMMENTS 조인
     payload_json = json.dumps(items)
     sql = (
-        "SELECT j.owner, j.name AS table_name, c.comments "
+        "SELECT j.owner, j.name AS table_name, c.comments, c.table_type "
         "  FROM JSON_TABLE(:payload, '$[*]' "
         "         COLUMNS (owner VARCHAR2(128) PATH '$.owner', "
         "                  name  VARCHAR2(128) PATH '$.name')) j "
@@ -446,6 +446,8 @@ async def profile_objects(name: str, database: str = Depends(current_db)) -> lis
         {
             "owner": r.get("owner"),
             "table": r.get("table_name"),
+            # ALL_TAB_COMMENTS.TABLE_TYPE = 'TABLE' | 'VIEW' (존재/권한 없으면 NULL→"")
+            "object_type": (r.get("table_type") or "").strip(),
             "table_comment": r.get("comments") or "",
         }
         for r in joined

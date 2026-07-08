@@ -29,6 +29,8 @@ router = APIRouter(prefix="/objects", tags=["objects"])
 IDENT_RE = re.compile(r"^[A-Z][A-Z0-9_$#]*$")
 # Annotation 이름은 mixed-case 허용
 ANNOT_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_$#]*$")
+# 프로시저 이름(뷰 재정의용) — 선택적 package/schema 한정자(1단계) 허용. 대문자 정규화 후 검증.
+PROC_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_$#]*(\.[A-Z][A-Z0-9_$#]*)?$")
 
 
 def _ident(name: str, label: str) -> str:
@@ -199,6 +201,54 @@ async def update_table_comment(
         logger.warning("table comment DDL failed: %s", _first_line(exc))
         raise HTTPException(status_code=400, detail={"error": _first_line(exc)})
     return {"ok": True, "owner": o, "table": t}
+
+
+@router.get("/{owner}/{view}/view-def")
+async def get_view_def(
+    owner: str, view: str,
+    database: str = Depends(current_db),
+) -> dict:
+    """뷰의 현재 정의(SELECT 텍스트)를 반환 — View수정 팝업 프리필용.
+    text_vc(VARCHAR2(4000))로 조회해 LONG 컬럼 처리 회피(4000자 초과 시 잘림)."""
+    o = _ident(owner, "owner")
+    v = _ident(view, "view")
+    rows = await db.fetch_all(
+        database,
+        "SELECT text_vc FROM all_views WHERE owner = :o AND view_name = :v",
+        o=o, v=v,
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail={"error": f"뷰를 찾을 수 없습니다: {o}.{v}"})
+    return {"owner": o, "view": v, "sql": (rows[0].get("text_vc") or "")}
+
+
+@router.post("/{owner}/{view}/replace-view")
+async def replace_view(
+    owner: str, view: str, body: dict,
+    database: str = Depends(current_db),
+) -> dict:
+    """<proc_name>(p_view_name, p_sql) 로 뷰를 재정의(코멘트/어노테이션 유지).
+    프로시저 이름은 사이트마다 다를 수 있어 요청에서 받는다(식별자 검증 후 직접 보간 — bind 불가).
+    p_sql(뷰 본문 SELECT)과 p_view_name 은 bind 로 전달(프로시저가 내부에서 DDL 수행)."""
+    o = _ident(owner, "owner")
+    v = _ident(view, "view")
+    sql = (body.get("sql") or "").strip()
+    proc = (body.get("proc_name") or "p_replace_view_keep_meta").strip().upper()
+    if not sql:
+        raise HTTPException(status_code=400, detail={"error": "뷰 SQL 을 입력하세요"})
+    if not PROC_NAME_RE.match(proc):
+        raise HTTPException(status_code=400,
+                            detail={"error": f"프로시저 이름 형식이 올바르지 않습니다: {body.get('proc_name')}"})
+    try:
+        await db.execute(
+            database,
+            f"BEGIN {proc}(p_view_name => :vn, p_sql => :vsql); END;",
+            vn=v, vsql=sql,
+        )
+    except Exception as exc:
+        logger.warning("replace view failed: db=%s view=%s proc=%s: %s", database, v, proc, _first_line(exc))
+        raise HTTPException(status_code=400, detail={"error": _first_line(exc)})
+    return {"ok": True, "owner": o, "view": v, "proc_name": proc}
 
 
 @router.put("/{owner}/{table}/columns/{column}/comment")
