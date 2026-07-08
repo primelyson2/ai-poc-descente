@@ -84,6 +84,9 @@
         [
           { key: "owner",         label: "Owner" },
           { key: "table",         label: "Table" },
+          { key: "_view_edit",    label: "", headerAlign: "center", align: "center",
+            format: (_v, row) => buildViewEditBtn(row) },
+          { key: "object_type",   label: "구분", headerAlign: "center", align: "center" },
           { key: "table_comment", label: "Table Comment" },
         ],
         objects,
@@ -257,6 +260,91 @@
   }
 
   // ───── 셀 에디터: Comment ─────
+  // 구분이 VIEW 인 행에만 [View수정] 버튼 — 행 클릭(상세 로드)과 분리(stopPropagation).
+  function buildViewEditBtn(row) {
+    if ((row.object_type || "").toUpperCase() !== "VIEW") {
+      return document.createElement("span"); // 테이블 행은 빈 셀
+    }
+    const btn = document.createElement("button");
+    btn.className = "btn btn-ghost";
+    btn.textContent = "View수정";
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openViewEditModal(row.owner, row.table);
+    });
+    return btn;
+  }
+
+  // View수정 팝업 — 상단 뷰명 + 뷰 SQL 편집 + [수정] → p_replace_view_keep_meta 로 재정의.
+  async function openViewEditModal(owner, view) {
+    const backdrop = document.createElement("div");
+    backdrop.className = "modal-backdrop";
+    backdrop.innerHTML = `
+      <div class="modal" style="width:900px; max-width:95vw;">
+        <div class="modal-header">
+          <h2>View 수정 — ${window.escapeHtml(owner)}.${window.escapeHtml(view)}</h2>
+          <button class="btn btn-ghost" id="vw-close">✕</button>
+        </div>
+        <div class="modal-body stack">
+          <div class="stack-sm">
+            <label>프로시저 이름 <span class="muted" style="font-size:var(--fs-sm);">— 뷰 재정의에 사용할 프로시저(사이트마다 다를 수 있음). 시그니처: (p_view_name, p_sql)</span></label>
+            <input type="text" id="vw-proc" value="p_replace_view_keep_meta" style="font-family:var(--font-mono); font-size:var(--fs-sm);" />
+          </div>
+          <div class="stack-sm">
+            <label>수정할 View SQL <span class="muted" style="font-size:var(--fs-sm);">— 위 프로시저로 재정의(코멘트/어노테이션 유지)</span></label>
+            <textarea id="vw-sql" rows="14" style="font-family:var(--font-mono); font-size:var(--fs-sm);" placeholder="불러오는 중…"></textarea>
+          </div>
+          <div class="row end" style="gap:8px;">
+            <button class="btn btn-ghost" id="vw-cancel">취소</button>
+            <button class="btn btn-primary" id="vw-save">수정</button>
+          </div>
+        </div>
+      </div>`;
+    const close = () => { backdrop.remove(); document.removeEventListener("keydown", onKey); };
+    const onKey = (e) => { if (e.key === "Escape") close(); };
+    // 바깥 클릭으로는 닫지 않음 — 닫기는 X/취소/ESC 로만.
+    backdrop.querySelector("#vw-close").addEventListener("click", close);
+    backdrop.querySelector("#vw-cancel").addEventListener("click", close);
+    document.addEventListener("keydown", onKey);
+    document.body.appendChild(backdrop);
+
+    const sqlEl = backdrop.querySelector("#vw-sql");
+    const procEl = backdrop.querySelector("#vw-proc");
+    // 프로시저 이름은 사이트/DB 마다 다르므로 마지막 입력값을 DB별 Store 에 기억(기본값 유지).
+    const PROC_KEY = "objectMeta.replaceViewProc";
+    const savedProc = (window.Store && window.Store.get(PROC_KEY)) || "";
+    if (savedProc) procEl.value = savedProc;
+
+    try {
+      const def = await window.API.get(
+        `/api/objects/${encodeURIComponent(owner)}/${encodeURIComponent(view)}/view-def`);
+      sqlEl.value = (def && def.sql) || "";
+      sqlEl.placeholder = "SELECT ...";
+    } catch (e) {
+      sqlEl.placeholder = "현재 정의를 불러오지 못했습니다 — 직접 입력하세요";
+    }
+
+    backdrop.querySelector("#vw-save").addEventListener("click", async () => {
+      const sql = sqlEl.value.trim();
+      const proc = procEl.value.trim();
+      if (!proc) { window.Toast.show("프로시저 이름을 입력하세요", "warn"); return; }
+      if (!sql) { window.Toast.show("View SQL 을 입력하세요", "warn"); return; }
+      const saveBtn = backdrop.querySelector("#vw-save");
+      saveBtn.disabled = true; saveBtn.textContent = "수정 중…";
+      try {
+        await window.API.post(
+          `/api/objects/${encodeURIComponent(owner)}/${encodeURIComponent(view)}/replace-view`,
+          { sql, proc_name: proc });
+        if (window.Store) window.Store.set(PROC_KEY, proc);  // 다음에 재사용
+        window.Toast.show(`뷰 '${owner}.${view}' 수정됨`, "success");
+        close();
+      } catch (err) {
+        window.Toast.show(errMsg(err, "뷰 수정 실패"), "error");
+        saveBtn.disabled = false; saveBtn.textContent = "수정";
+      }
+    });
+  }
+
   function makeCommentEditor(owner, tableName, dirty) {
     return (value, row) => {
       const wrap = document.createElement("div");

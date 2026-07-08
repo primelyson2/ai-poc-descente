@@ -226,13 +226,22 @@
       <div class="panel-body">
         <div class="stack" id="menu-toggles" style="gap:8px;">
           ${managed
-            .map(
-              (m) => `
+            .map((m) => {
+              const parent = `
           <label class="row" style="gap:8px; align-items:center; cursor:pointer;">
             <input type="checkbox" data-menu-route="${m.route}" ${hiddenMenus.includes(m.route) ? "" : "checked"} />
             <strong>${m.label}</strong>
-          </label>`
-            )
+          </label>`;
+              if (m.route !== "nl2sql") return parent;
+              // Select AI Test - Table list 하위 옵션: AI분석 버튼 노출 여부(자식 체크박스)
+              const analyzeOn = !window.MenuConfig || !window.MenuConfig.isAnalyzeOn || window.MenuConfig.isAnalyzeOn();
+              const parentVisible = !hiddenMenus.includes("nl2sql");
+              return parent + `
+          <label class="row" style="gap:8px; align-items:center; cursor:pointer; margin-left:26px;">
+            <input type="checkbox" data-menu-child="analyze" ${analyzeOn ? "checked" : ""} ${parentVisible ? "" : "disabled"} />
+            <span>AI분석 <span class="muted" style="font-size:var(--fs-sm);">— AI분석·페르소나 관리 버튼 노출</span></span>
+          </label>`;
+            })
             .join("")}
         </div>
         <span class="field-hint">체크한 메뉴만 좌측 메뉴에 노출됩니다. <strong>Database 관리·Tool관리</strong> 는 항상 노출됩니다. (이 설정은 이 브라우저에 저장됩니다.)</span>
@@ -265,14 +274,24 @@
     bindActionToggle("act-runsql", "runsql");
     bindActionToggle("act-narrate", "narrate");
 
+    const analyzeChildCb = menuPanel.querySelector('input[data-menu-child="analyze"]');
     menuPanel.querySelectorAll("input[data-menu-route]").forEach((cb) => {
       cb.addEventListener("change", () => {
         const route = cb.dataset.menuRoute;
         if (window.MenuConfig) window.MenuConfig.setHidden(route, !cb.checked);
+        // nl2sql 을 숨기면 하위 AI분석 옵션도 비활성화(무의미).
+        if (route === "nl2sql" && analyzeChildCb) analyzeChildCb.disabled = !cb.checked;
         const label = (managed.find((m) => m.route === route) || {}).label || route;
         window.Toast.show(`메뉴 '${label}' ${cb.checked ? "노출" : "숨김"}`, "success");
       });
     });
+    // 하위 옵션: AI분석 버튼 노출 여부
+    if (analyzeChildCb) {
+      analyzeChildCb.addEventListener("change", () => {
+        if (window.MenuConfig && window.MenuConfig.setAnalyzeOn) window.MenuConfig.setAnalyzeOn(analyzeChildCb.checked);
+        window.Toast.show(`AI분석 버튼 ${analyzeChildCb.checked ? "노출" : "숨김"}`, "success");
+      });
+    }
 
     document.getElementById("ls-export").addEventListener("click", exportLocalStorage);
     const importFile = document.getElementById("ls-import-file");

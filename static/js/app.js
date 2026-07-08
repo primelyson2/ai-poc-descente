@@ -24,6 +24,8 @@
   // Database 관리(databases)·Tool관리(access) 는 관리 진입점이라 항상 노출한다.
   // 설정은 전역 localStorage 키(DB 무관 도구 설정) 에 "숨긴 라우트 배열" 로 저장.
   const MENU_KEY = "oai.menu.hidden";
+  // nl2sql(Table list) 하위 옵션 — AI분석/페르소나 관리 버튼 노출 여부. 기본 ON(기존 동작 유지).
+  const ANALYZE_KEY = "oai.menu.nl2sql.analyze";
   const ALWAYS_ON = new Set(["databases", "access"]);
   // nav 순서(index.html)와 동일한 순서로 관리 대상 메뉴를 정의한다.
   const MANAGED_MENUS = [
@@ -44,6 +46,10 @@
   }
   function isMenuHidden(route) {
     return !ALWAYS_ON.has(route) && getHiddenMenus().includes(route);
+  }
+  function isAnalyzeOn() {
+    const v = localStorage.getItem(ANALYZE_KEY);
+    return v === null ? true : v === "1"; // 기본 ON
   }
   function firstVisibleRoute() {
     const hidden = getHiddenMenus();
@@ -136,6 +142,11 @@
     getHidden: getHiddenMenus,
     isHidden: isMenuHidden,
     apply: applyMenuVisibility,
+    // nl2sql 하위 옵션(AI분석 버튼 노출) — Tool관리 메뉴관리의 자식 체크박스와 nl2sql 뷰가 함께 사용.
+    isAnalyzeOn,
+    setAnalyzeOn(on) {
+      localStorage.setItem(ANALYZE_KEY, on ? "1" : "0");
+    },
     setHidden(route, hidden) {
       if (ALWAYS_ON.has(route)) return; // 항상 노출 메뉴는 무시
       const set = new Set(getHiddenMenus());
