@@ -115,7 +115,11 @@
   }
 
   // 필드 블록 HTML (라벨 + 저장 콤보 + 입력) — id 접두사로 구분
-  function fieldBlockHtml(prefix, label, placeholder) {
+  // rows > 1 이면 여러 줄 textarea, 아니면 한 줄 input 으로 입력칸을 렌더한다.
+  function fieldBlockHtml(prefix, label, placeholder, rows) {
+    const field = rows && rows > 1
+      ? `<textarea id="${prefix}-input" rows="${rows}" style="width:100%; resize:vertical; font-family:inherit;" placeholder="${placeholder}"></textarea>`
+      : `<input type="text" id="${prefix}-input" style="width:100%;" placeholder="${placeholder}" />`;
     return `
       <div class="stack-sm">
         <div class="row" style="justify-content:space-between; gap:var(--space-2);">
@@ -128,7 +132,7 @@
             <select id="${prefix}-saved" style="min-width:140px;"></select>
           </div>
         </div>
-        <input type="text" id="${prefix}-input" style="width:100%;" placeholder="${placeholder}" />
+        ${field}
       </div>
     `;
   }
@@ -154,7 +158,7 @@
       </div>
       <div class="row" style="align-items:stretch; gap:var(--space-4);">
         <div class="stack" style="flex:1;">
-          ${fieldBlockHtml("nl-q", "질문", "질문입력")}
+          ${fieldBlockHtml("nl-q", "질문", "질문입력", 3)}
           ${fieldBlockHtml("nl-cols", "조회할 컬럼", "예시: 판매일자, 나이, 브랜드, 채널, 사용 쿠폰, 등급, 제품코드, 제품명")}
           ${fieldBlockHtml("nl-sort", "정렬기준", "예시: 판매일자(오름차순), 나이(내림차순)")}
         </div>
