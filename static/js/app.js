@@ -10,13 +10,15 @@
     nl2sql:    { render: () => window.Views.nl2sql(),         label: "Select AI Test - Table list" },
     predefined:{ render: () => window.Views.predefinedQuery(), label: "Select AI Test - Predefined Query" },
     persona:   { render: () => window.Views.personaAnalysis(), label: "Select AI Test - 페르소나분석" },
+    vpd:       { render: () => window.Views.vpdSecurity(),    label: "Select AI Security - VPD" },
     api:       { render: () => window.Views.apiAdmin(),       label: "API관리" },
     databases: { render: () => window.Views.databaseAdmin(),  label: "Database 관리" },
     access:    { render: () => window.Views.accessAdmin(),    label: "Tool관리" },
   };
   // DB 비의존 라우트 — 접속 가능한 DB 가 없어도 진입 가능(등록/복구/키 관리 경로).
-  // 'api' 는 현재 서버 로직 없는 프런트 전용 테스트 버전이라 DB 없이도 진입 가능.
-  const DB_INDEPENDENT = new Set(["databases", "access", "api"]);
+  // 'api' 와 'vpd' 는 현재 서버 로직 없는 프런트 전용(mock) 테스트 버전이라 DB 없이도 진입 가능.
+  // (VPD 는 추후 백엔드 연동 시 이 목록에서 제거)
+  const DB_INDEPENDENT = new Set(["databases", "access", "api", "vpd"]);
   const DEFAULT_ROUTE = "profiles";
 
   // ── 메뉴 노출 관리 ──────────────────────────────────────────────
@@ -35,6 +37,7 @@
     { route: "nl2sql",     label: "Select AI Test - Table list" },
     { route: "predefined", label: "Select AI Test - Predefined Query" },
     { route: "persona",    label: "Select AI Test - 페르소나분석" },
+    { route: "vpd",        label: "Select AI Security - VPD" },
     { route: "chat",       label: "AI Chat" },
     { route: "api",        label: "API관리(개발중)" },
   ];
