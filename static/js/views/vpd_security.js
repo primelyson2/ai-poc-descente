@@ -9,8 +9,9 @@
  *   컨텍스트 OAC_{NAME} · 패키지 PKG_OAC_{NAME}(SET_OBJECT) · 함수 F_VPD_POLICY_{NAME} · 정책 VPD_POLICY_{NAME}
  */
 (function () {
-  const STATE_KEY = "oai.vpd.state.v3";   // 파라미터 + 편집한 단계 스크립트 + 테스트 입력
-  const DEFAULT_PARAMS = { NAME: "DEPT", SCHEMA: "SELECT_AI_USER", TABLE: "EMPLOYEE", STMT: "SELECT" };
+  const STATE_KEY = "oai.vpd.state.v4";   // 파라미터 + 편집한 단계 스크립트 + 테스트 입력
+  // 기본값은 플레이스홀더 그대로 — 초기 스크립트에 {NAME}/{SCHEMA}/{TABLE} 가 표시된다.
+  const DEFAULT_PARAMS = { NAME: "{NAME}", SCHEMA: "{SCHEMA}", TABLE: "{TABLE}", STMT: "SELECT" };
   const DEFAULT_TEST = { value: "개발부", question: "직원 목록을 주세요", profile: "" };
 
   const loadState = () => {
@@ -56,6 +57,7 @@
       ") RETURN VARCHAR2 AS",
       `  V_OBJECT VARCHAR2(100) := SYS_CONTEXT('OAC_${N}','${N}');`,
       "BEGIN",
+      "  -- ** 이 부분 수정 **",
       "  IF V_OBJECT IS NULL THEN",
       "    RETURN '1=0';",
       "  ELSIF V_OBJECT = '인사부' THEN",
