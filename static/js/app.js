@@ -17,9 +17,8 @@
   };
   Object.assign(ROUTES, window.AppExtensions?.routes || {});
   // DB 비의존 라우트 — 접속 가능한 DB 가 없어도 진입 가능(등록/복구/키 관리 경로).
-  // 'api' 와 'vpd' 는 현재 서버 로직 없는 프런트 전용(mock) 테스트 버전이라 DB 없이도 진입 가능.
-  // (VPD 는 추후 백엔드 연동 시 이 목록에서 제거)
-  const DB_INDEPENDENT = new Set(["databases", "access", "api", "vpd"]);
+  // 'api' 는 현재 서버 로직 없는 프런트 전용 테스트 버전이라 DB 없이도 진입 가능.
+  const DB_INDEPENDENT = new Set(["databases", "access", "api"]);
   Object.entries(window.AppExtensions?.routes || {}).forEach(([route, config]) => {
     if (config?.dbIndependent) DB_INDEPENDENT.add(route);
   });
