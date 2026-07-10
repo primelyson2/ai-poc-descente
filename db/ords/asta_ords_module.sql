@@ -188,6 +188,48 @@ END;
 
   ORDS.DEFINE_TEMPLATE(
     p_module_name => 'asta.v1',
+    p_pattern     => 'runs/:run_id/llm-calls/:call_id',
+    p_comments    => 'Fetch one ASTA LLM prompt and provider response lazily'
+  );
+
+  ORDS.DEFINE_HANDLER(
+    p_module_name => 'asta.v1',
+    p_pattern     => 'runs/:run_id/llm-calls/:call_id',
+    p_method      => 'GET',
+    p_source_type => ORDS.source_type_plsql,
+    p_source      => q'[
+DECLARE
+  l_response CLOB;
+  l_offset   PLS_INTEGER := 1;
+  l_chunk    VARCHAR2(32767);
+BEGIN
+  l_response := ASTA_PKG.GET_LLM_CALL(:run_id, TO_NUMBER(:call_id));
+
+  OWA_UTIL.mime_header('application/json; charset=utf-8', FALSE);
+  HTP.p('Cache-Control: no-store');
+  HTP.p('Pragma: no-cache');
+  HTP.p('X-Content-Type-Options: nosniff');
+  HTP.p('X-ASTA-Execution-Boundary: ADB_ORDS_PLSQL');
+  HTP.p('X-ASTA-FastAPI-Role: ORDS_PROXY_ONLY');
+  HTP.p('X-ASTA-Source-Runtime: SOURCE_BASEDB_DBLINK_ONLY');
+  HTP.p('X-ASTA-Guard-Policy: SELECT_WITH_SINGLE_STATEMENT');
+  HTP.p('X-ASTA-Api-Version: asta.v1');
+  HTP.p('X-ASTA-Contract-Version: asta.v1');
+  HTP.p('X-ASTA-Response-Mode: CLOB_CHUNKED_JSON');
+  OWA_UTIL.http_header_close;
+
+  WHILE l_offset <= NVL(DBMS_LOB.GETLENGTH(l_response), 0) LOOP
+    l_chunk := DBMS_LOB.SUBSTR(l_response, 2000, l_offset);
+    HTP.prn(l_chunk);
+    l_offset := l_offset + 2000;
+  END LOOP;
+END;
+]',
+    p_comments    => 'Calls ASTA_PKG.GET_LLM_CALL(:run_id, :call_id)'
+  );
+
+  ORDS.DEFINE_TEMPLATE(
+    p_module_name => 'asta.v1',
     p_pattern     => 'runs/:run_id/report',
     p_comments    => 'Fetch ASTA Markdown report wrapped as JSON'
   );
@@ -231,4 +273,3 @@ END;
 /
 
 COMMIT;
-

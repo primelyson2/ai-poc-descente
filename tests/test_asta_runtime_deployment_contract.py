@@ -43,7 +43,8 @@ def test_adb_comparison_is_fail_closed_before_performance_and_exposes_gate_field
     assert "optimizer_intent_status" in comparison
     assert "bind_stability_status" in comparison
     assert "measurement_status" in comparison
-    assert comparison.index("FULL_RESULT_EVIDENCE_REQUIRED") < comparison.index("OLTP_LATENCY_TARGET_NOT_MET")
+    assert "OLTP_LATENCY_TARGET_NOT_MET" not in comparison
+    assert comparison.index("FULL_RESULT_EVIDENCE_REQUIRED") < comparison.index("OLTP_BUFFER_READS_IMPROVED")
 
 
 def test_proxy_runtime_adapter_preserves_terminal_failure_and_never_invents_success():
@@ -153,5 +154,5 @@ def test_proxy_runtime_adapter_is_deterministic_and_masks_original_error():
 
 def test_ui_cache_buster_marks_report_tabs_runtime_asset():
     index = (ROOT / "static/index.html").read_text(encoding="utf-8")
-    assert "asta_report_tabs.js?v=20260707_verdict_popover1" in index
-    assert "tuning_assistant.js?v=20260707_manual_tabs1" in index
+    assert "asta_report_tabs.js?v=20260709_estimated_plan_tabs1" in index
+    assert "tuning_assistant.js?v=20260709_no_3s_latency1" in index

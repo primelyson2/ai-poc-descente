@@ -134,6 +134,29 @@ def test_workflow_manual_covers_exactly_eleven_canonical_steps_and_procedures():
     assert "실제 호출은 9 → 6" in text
 
 
+def test_workflow_manual_replaces_short_work_text_with_detailed_task_lists():
+    text = source()
+    workflow = text[text.index("const ASTA_WORKFLOW_GUIDE"):text.index("const ASTA_DEVELOPER_PLATFORMS")]
+    assert "work:" not in workflow
+    assert workflow.count("tasks: [") == 11
+    assert 'class="tuning-manual-step-task-list"' in text
+    assert "step.tasks.map" in text
+    for detail in (
+        "request_json과 QUEUED 상태",
+        "1초 간격 progress 조회",
+        "SUBMIT_RUN 접수 시 한 번",
+        "업무 SELECT를 실행하지 않고 EXPLAIN PLAN",
+        "4단계 Source response의 advisor.status",
+        "정상 LLM 호출은 보통 2회, fallback 포함 최대 6회",
+        "실제 실행 체크 시에만 PLAN_ONLY·ONCE",
+        "result digest",
+        "generate_sql_only_tuning prompt에는 p_vector_json을 넣지 않아",
+        "11단계 Vector 저장 결과",
+        "REJECTED_OBSERVATION",
+    ):
+        assert detail in workflow
+
+
 def test_manual_dialog_is_responsive_and_asset_cache_is_bumped():
     text = source()
     for selector in (
@@ -145,4 +168,4 @@ def test_manual_dialog_is_responsive_and_asset_cache_is_bumped():
     ):
         assert selector in text
     assert "@media (max-width: 700px)" in text
-    assert "tuning_assistant.js?v=20260707_manual_tabs1" in INDEX.read_text(encoding="utf-8")
+    assert "tuning_assistant.js?v=20260709_no_3s_latency1" in INDEX.read_text(encoding="utf-8")

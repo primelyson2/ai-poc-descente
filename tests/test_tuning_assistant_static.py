@@ -40,6 +40,8 @@ def test_tuning_assistant_uses_large_sql_editor_and_formats_before_report():
     assert 'logicalOperatorNewline: "before"' in view
     assert "preserving the original SQL" in view
     assert "id=\"asta-sql\"" in view
+    assert 'id="asta-sql" rows="10" spellcheck="false" placeholder="SELECT ..."></textarea>' in view
+    assert 'id="asta-sql" rows="10" spellcheck="false" placeholder="SELECT ...">select * from dual' not in view
     assert "SQL Formatting" in view
     assert "height: clamp(520px" in view
     assert "tuning-grid" in view
@@ -91,7 +93,7 @@ def test_tuning_assistant_calls_astA_api_with_detailed_report_fallbacks():
     assert "!isOverallComplete &&" in view
     assert "tuning-current-progress" in view
     assert 'class="tuning-progress-drawer" hidden' in view
-    assert "steps.map((step) => renderProgressDetailStep(step, isComplete))" in view
+    assert "steps.map((step) => renderProgressDetailStep(step, isComplete, llmCalls, runId))" in view
     assert "완료 단계" not in view
     assert '["READY", "IDLE", "PENDING"].includes(overall)' in view
 

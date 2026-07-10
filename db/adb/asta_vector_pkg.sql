@@ -360,6 +360,9 @@ CREATE OR REPLACE PACKAGE BODY asta_vector_pkg AS
        AND LOWER(json_vc(p_metadata_json, '$.all_representative_binds_passed')) = 'true'
        AND json_vc(p_metadata_json, '$.measurement_status') = 'ACCEPTED'
       THEN 'POSITIVE_VERIFIED'
+      WHEN json_vc(p_metadata_json, '$.learning_class') = 'ANALYSIS_OBSERVATION'
+       AND json_vc(p_metadata_json, '$.verdict') = 'ANALYSIS_ONLY'
+      THEN 'ANALYSIS_OBSERVATION'
       ELSE 'REJECTED_OBSERVATION'
     END;
     l_rejection_reason := CASE WHEN l_learning_class = 'POSITIVE_VERIFIED' THEN NULL ELSE
@@ -427,6 +430,11 @@ CREATE OR REPLACE PACKAGE BODY asta_vector_pkg AS
         TO_CLOB(' -> ') || TO_CLOB(json_vc(l_safe_metadata, '$.after_buffer_gets', '-')) ||
         TO_CLOB('; elapsed_us=') || TO_CLOB(json_vc(l_safe_metadata, '$.before_elapsed_time_us', '-')) ||
         TO_CLOB(' -> ') || TO_CLOB(json_vc(l_safe_metadata, '$.after_elapsed_time_us', '-')));
+    ELSIF l_learning_class = 'ANALYSIS_OBSERVATION' THEN
+      l_chunks_saved := l_chunks_saved + save_case_chunk(l_case_id, 'ANALYSIS_OBSERVATION',
+        TO_CLOB('learning_class=ANALYSIS_OBSERVATION; estimated-plan analysis retained without SQL or bind literals'));
+      l_chunks_saved := l_chunks_saved + save_case_chunk(l_case_id, 'ANALYSIS_SCOPE',
+        TO_CLOB('source_runtime_metrics=NOT_MEASURED; result_equivalence=NOT_EVALUATED; repeat_performance=NOT_MEASURED'));
     ELSE
       l_chunks_saved := l_chunks_saved + save_case_chunk(l_case_id, 'REJECTED_OBSERVATION',
         TO_CLOB('learning_class=REJECTED_OBSERVATION; gate evidence retained without SQL or bind literals'));
@@ -441,7 +449,8 @@ CREATE OR REPLACE PACKAGE BODY asta_vector_pkg AS
       ',"execution_boundary":"ADB_VECTOR_PLSQL"' ||
       ',"search_strategy":' || json_str(C_SEARCH_STRATEGY) ||
       ',"learning_class":' || json_str(l_learning_class) ||
-      ',"rejection_reason":' || json_str(l_rejection_reason) ||
+      ',"rejection_reason":' || json_str(CASE WHEN l_learning_class = 'REJECTED_OBSERVATION' THEN l_rejection_reason ELSE NULL END) ||
+      ',"observation_reason":' || json_str(l_rejection_reason) ||
       ',"chunks_saved":' || TO_CHAR(l_chunks_saved) ||
       ',"source_fingerprint":' || json_str(l_source_fingerprint) || '}'
     );

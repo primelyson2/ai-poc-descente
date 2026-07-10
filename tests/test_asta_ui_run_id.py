@@ -41,6 +41,7 @@ def test_terminal_failure_keeps_authoritative_failed_stage_and_throws():
 
 def test_before_evidence_uses_single_unambiguous_message():
     source = (ROOT / "static/js/extensions/tuning_assistant.js").read_text(encoding="utf-8")
-    assert 'observationDetail = "Source SQL 실행 요청 처리 중";' in source
+    assert 'observationDetail = "원본 SQL 최대 3회 실행 및 실행계획·결과 검증 중";' in source
+    assert "maxCalls" not in source
     assert "Source DB 세션 관측 불가" not in source
     assert "Source SQL 진척은 직접 확인되지 않음" not in source

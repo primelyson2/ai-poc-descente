@@ -313,6 +313,14 @@ def _bool_option(payload: dict[str, Any], key: str, default: bool) -> bool:
     return bool(value)
 
 
+def _before_evidence_mode(payload: dict[str, Any]) -> str:
+    """Normalize the selectable stage-4 Source execution policy."""
+    options = _options(payload)
+    value = str(payload.get("before_evidence_mode", options.get("before_evidence_mode", "MINIMAL")))
+    mode = value.strip().upper()
+    return mode if mode in {"MINIMAL", "FAST_PLAN", "THOROUGH"} else "MINIMAL"
+
+
 def _coerce_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """Normalize OADT2's UI payload to the ADB ORDS ASTA contract."""
     options = _options(payload)
@@ -357,6 +365,8 @@ def _coerce_payload(payload: dict[str, Any]) -> dict[str, Any]:
             "use_llm": _bool_option(payload, "use_llm", True),
             "run_advisor": run_advisor,
             "use_sqltune": run_advisor,
+            "execute_source_sql": _bool_option(payload, "execute_source_sql", False),
+            "before_evidence_mode": _before_evidence_mode(payload),
             "llm_profile": llm_profile,
             "ai_profile": payload.get("ai_profile") or llm_profile,
             "tuning_context": tuning_context,
@@ -541,7 +551,9 @@ async def _audited_run_lookup(run_id: str, database: str, endpoint_kind: str, su
     request_id = asta_audit.new_request_id()
     encoded_run_id = _validate_run_id(run_id)
     async_record = await _get_async_run(run_id)
-    if async_record is not None:
+    # LLM raw detail is never served from the legacy in-memory run snapshot;
+    # it must remain scoped to the authoritative ADB run_id + call_id row.
+    if async_record is not None and endpoint_kind != "llm_call":
         async_response = _async_progress_response(async_record)
         status = str(async_response.get("status") or "").upper()
         if status in {"COMPLETED", "DONE", "FAILED"}:
@@ -788,6 +800,14 @@ async def get_run(run_id: str, database: str = Depends(current_db)) -> dict[str,
 async def get_run_progress(run_id: str, database: str = Depends(current_db)) -> dict[str, Any]:
     """ASTA 처리 흐름에서 get run progress 작업을 수행한다."""
     return await _audited_run_lookup(run_id, database, "progress", "progress")
+
+
+@router.get("/runs/{run_id}/llm-calls/{call_id}")
+async def get_run_llm_call(run_id: str, call_id: int, database: str = Depends(current_db)) -> dict[str, Any]:
+    """인증된 same-origin 요청에서 선택한 LLM prompt/응답 원문만 지연 조회한다."""
+    if call_id < 1:
+        raise HTTPException(status_code=400, detail={"error": "invalid call_id"})
+    return await _audited_run_lookup(run_id, database, "llm_call", f"llm-calls/{call_id}")
 
 
 @router.get("/runs/{run_id}/report")

@@ -15,14 +15,16 @@ def body(source: str, start: str, end: str) -> str:
 
 def test_c1_report_stage_table_matches_canonical_order():
     section = body(REPORT, "PROCEDURE append_stage_check(", "END append_stage_check;")
-    rows = re.findall(r"append_stage_row\(p_out,\s*(\d+),\s*'([^']+)'", section)
-    assert rows == [
-        ("1", "요청 접수"), ("2", "ORDS 호출"), ("3", "SQL Guard"),
-        ("4", "원본 SQL/XPLAN/metrics"), ("5", "SQL Tuning Advisor"),
-        ("6", "LLM SQL-only 구조 재작성"), ("7", "후보 SQL evidence"),
-        ("8", "Before/After deterministic 비교"), ("9", "Vector KB 조회"),
-        ("10", "Final report"), ("11", "Vector KB 저장"),
-    ]
+    sequences = re.findall(r"append_stage_row\(p_out,\s*(\d+),", section)
+    assert sequences == [str(value) for value in range(1, 12)]
+    for label in [
+        "요청 접수", "ORDS 호출", "SQL Guard", "SQL Tuning Advisor",
+        "LLM SQL-only 구조 재작성", "Vector KB 조회", "Final report", "Vector KB 저장",
+    ]:
+        assert label in section
+    assert "CASE WHEN l_estimated_plan_only THEN '원본 SQL/예상 Plan' ELSE '원본 SQL/XPLAN/metrics' END" in section
+    assert "CASE WHEN l_estimated_plan_only THEN '후보 SQL/예상 Plan' ELSE '후보 SQL evidence' END" in section
+    assert "CASE WHEN l_estimated_plan_only THEN '예상 Plan 범위 비교' ELSE 'Before/After deterministic 비교' END" in section
     assert "p_comparison_json" in section
 
 
@@ -43,7 +45,7 @@ def test_c2b_candidate_syntax_repair_preserves_failure_evidence_and_before_metri
     assert "ORIGINAL SQL (semantic contract):" in LLM
     orchestration = body(PKG, "FUNCTION run_pipeline(", "END run_pipeline;")
     assert "asta_llm_pkg.repair_sql_candidate(" in orchestration
-    assert "l_run_id || '-REPAIRED'" in orchestration
+    assert "l_run_id || '-REPAIRED-SCREEN'" in orchestration
     assert '"rejected_candidate_sql":' in PKG
     assert '"generation":' in PKG
     failure = orchestration[orchestration.index('"verdict":"CANDIDATE_FAILED"'):]
@@ -65,12 +67,14 @@ def test_c2c_response_isolates_malformed_json_artifacts():
 def test_c2d_candidate_execution_has_adaptive_watchdog():
     assert "PROCEDURE enforce_candidate_timeout(p_run_id IN VARCHAR2);" in PKG
     assert "FUNCTION candidate_timeout_seconds" in PKG
-    assert "GREATEST(60, LEAST(900" in PKG
+    assert "p_expected_executions IN PLS_INTEGER DEFAULT 1" in PKG
+    assert "1800" in PKG
     assert "ASTA_PKG.ENFORCE_CANDIDATE_TIMEOUT" in PKG
     orchestration = body(PKG, "FUNCTION run_pipeline(", "END run_pipeline;")
     assert "arm_candidate_watchdog(" in orchestration
     assert "disarm_candidate_watchdog(" in orchestration
-    assert "Adaptive candidate runtime limit:" in orchestration
+    assert "PLAN_ONLY candidate screen timeout:" in orchestration
+    assert "AUTO + FULL_RESULT timeout:" in orchestration
     assert "CANDIDATE_RUNTIME_LIMIT" in PKG
 
 
@@ -82,7 +86,7 @@ def test_c3_candidate_failure_verdict_survives_original_fallback():
     assert '\"equivalence_status\":\"UNKNOWN\"' in failure
     assert '\"retain_original_sql\":true' in failure
     compare_assignment = "l_comparison_json := build_comparison_json(l_source_json, l_after_json, l_workload_type);"
-    assert "IF l_candidate_failed <> 'Y' THEN\n        " + compare_assignment in orchestration
+    assert "IF l_candidate_failed <> 'Y' AND l_candidate_screen_rejected <> 'Y' THEN\n        " + compare_assignment in orchestration
 
 
 def test_c4_smoke_accepts_sql_only_code_mode_or_prompt_mode():

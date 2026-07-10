@@ -16,6 +16,7 @@
 
   const VERDICT_GUIDE = Object.freeze([
     { code: "IMPROVED", meaning: "결과가 일치하고 성능 기준 통과", action: "코드 리뷰와 별도 테스트 후 적용 검토", tone: "success" },
+    { code: "ANALYSIS_ONLY", meaning: "튜닝 후보 제안/분석 완료, 성능 개선 여부 미검증", action: "운영 적용 전 Source 실측·동등성 검증", tone: "warning" },
     { code: "NOT_IMPROVED", meaning: "결과는 같지만 충분한 성능 개선 없음", action: "원본 SQL 유지", tone: "warning" },
     { code: "CANDIDATE_FAILED", meaning: "개선 SQL 실행 중 오류 발생", action: "개선 SQL 사용 금지, Run ID 전달", tone: "danger" },
     { code: "NON_EQUIVALENT", meaning: "원본과 개선 SQL 결과/컬럼 구성이 다름", action: "개선 SQL 사용 금지", tone: "danger" },
@@ -31,8 +32,10 @@
     [2, "oracle sql tuning advisor 요약", "overview"],
     [2, "튜닝전 sql", "before"],
     [2, "튜닝전 xplan", "before"],
+    [2, "튜닝전 예상 plan", "before"],
     [2, "튜닝후 sql", "after"],
     [2, "튜닝후 xplan", "after"],
+    [2, "튜닝후 예상 plan", "after"],
     [3, "사용자 참고사항 반영", "details"],
     [3, "과거 유사 튜닝 사례 - 참고 정보", "details"],
     [3, "oracle sql tuning advisor 요약", "overview"],
@@ -57,7 +60,7 @@
 
   function extractReportVerdict(markdown) {
     const text = String(markdown || "");
-    const codePattern = "(IMPROVED|NOT_IMPROVED|CANDIDATE_FAILED|NON_EQUIVALENT|NO_REWRITE|INSUFFICIENT_EVIDENCE)";
+    const codePattern = "(IMPROVED|ANALYSIS_ONLY|NOT_IMPROVED|CANDIDATE_FAILED|NON_EQUIVALENT|NO_REWRITE|INSUFFICIENT_EVIDENCE)";
     const patterns = [
       new RegExp("비교\\s*판정[^\\n]*?verdict\\s*=\\s*\\x60?" + codePattern, "i"),
       new RegExp("(?:최종\\s*)?판정\\s*:\\s*(?:\\*\\*)?\\s*\\x60?" + codePattern, "i"),

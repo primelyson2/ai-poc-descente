@@ -1,6 +1,6 @@
 # AI SQL Tuning Assistant 개발자용 사용자 매뉴얼
 
-최종 업데이트: 2026-07-07
+최종 업데이트: 2026-07-08
 
 ## 1. 먼저 알아둘 내용
 
@@ -59,10 +59,11 @@ Browser
 3. **실행 유형**을 선택한다.
    - `OLTP`: 화면 조회처럼 빠른 응답과 낮은 DB 부하가 중요한 SQL
    - `BATCH`: 배치처럼 전체 작업 완료시간이 중요한 SQL
-4. 직접 SQL을 입력하거나 **샘플 튜닝대상 SQL**을 선택한다. 샘플을 고르면 SQL과 해당 workload가 함께 반영된다.
-5. 필요한 경우 **AI 참고사항**에 반드시 유지해야 하는 조건, 중점적으로 볼 테이블, 의심되는 느린 구간을 적는다. 실제 실행 결과와 참고사항이 다르면 실제 결과를 우선한다.
-6. **AI 분석 실행**을 누른다. 버튼이 `분석중`으로 바뀌고 run이 제출된다.
-7. 완료 후 결과서와 Run ID를 확인한다. 새 입력으로 돌아가려면 **신규분석(초기화)**, 원문 Markdown을 보관하려면 **보고서 다운로드**를 누른다.
+4. 운영 DB에서 SQL 실행을 허용할 때만 **소스 DB에서 SQL을 실제 실행하여 검증**을 체크한다. 기본은 해제이며, 이때는 EXPLAIN PLAN 예상계획과 객체 통계·인덱스만 수집한다.
+5. 직접 SQL을 입력하거나 **샘플 튜닝대상 SQL**을 선택한다. 샘플을 고르면 SQL과 해당 workload가 함께 반영된다.
+6. 필요한 경우 **AI 참고사항**에 반드시 유지해야 하는 조건, 중점적으로 볼 테이블, 의심되는 느린 구간을 적는다. 실제 실행 결과와 참고사항이 다르면 실제 결과를 우선한다.
+7. **AI 분석 실행**을 누른다. 버튼이 `분석중`으로 바뀌고 run이 제출된다.
+8. 완료 후 결과서와 Run ID를 확인한다. 새 입력으로 돌아가려면 **신규분석(초기화)**, 원문 Markdown을 보관하려면 **보고서 다운로드**를 누른다.
 
 입력 SQL의 마지막 세미콜론 하나는 화면이 자동 제거한다. 여러 SQL을 세미콜론으로 연결했거나 데이터를 변경하는 문장, `FOR UPDATE`가 포함된 경우에는 안전을 위해 실행하지 않는다.
 
@@ -79,7 +80,6 @@ Browser
 ### OLTP
 
 - 주 지표: DB가 메모리에서 읽은 데이터 블록 수(Buffer Gets)
-- 개선 SQL의 대표 실행시간: 3초 이하
 - 후보가 원본보다 느린 경우: Buffer Gets가 20% 이상 줄고, 후보가 1초 이하이거나 elapsed 증가가 300ms 이하여야 채택 가능
 - 후보가 원본보다 빠른 경우: Buffer Gets가 5% 이상 줄어야 채택 가능
 
@@ -123,6 +123,10 @@ BATCH 샘플은 2025년 일판매 상세에서 보고서 KPI 40개를 반복 집
 
 분석을 시작하면 현재 단계, 전체 경과시간, Run ID가 한 줄로 표시된다. **진행 상세**를 누르면 우측 Drawer(모바일은 하단 sheet)에서 11단계별 상태·시작/완료 시각·소요시간·안전하게 축약된 로그를 볼 수 있다. 저장 timing이 없는 단계는 `미측정`, 명시적으로 생략된 단계는 `생략`, 아직 시작하지 않은 단계는 `-`로 표시한다.
 
+6단계 `LLM_REWRITE`를 열면 `DIAGNOSIS`, `CANDIDATE_SQL`, `REPAIR_SQL` 호출별 attempt, AI profile, 요청/응답/실패 상태, prompt·응답 문자 수와 소요시간을 볼 수 있다. 목록은 `/progress`에서 조회하며 prompt와 provider 응답 원문은 포함하지 않는다. 원문은 **Prompt·응답 원문 보기**를 명시적으로 눌렀을 때 Run ID와 call ID로 별도 조회되고, 운영 SQL과 XPLAN이 포함될 수 있으므로 각 원문 영역도 기본 접힘 상태다.
+
+`4단계 원본 SQL 수집`은 기본적으로 **SQL 미실행 안전 모드**다. Source에서 EXPLAIN PLAN 예상계획과 PLAN_TABLE에 나타난 객체의 통계·인덱스만 수집하며 업무 SELECT를 열거나 fetch하지 않는다. 체크박스를 명시적으로 켠 경우에만 기존 MINIMAL 정책으로 제한 실행 1회와 전체 count/digest를 수행한다. 미실행 모드에서 후보가 생성되면 API verdict는 `ANALYSIS_ONLY`, analysis_mode는 `ESTIMATED_PLAN_ONLY`가 되며 성능·동등성·반복 측정은 미검증으로 남는다. 이는 오류나 개선 실패가 아니라 분석 전용 완료 상태다.
+
 화면에서는 `대기 중`, `진행 중`, `완료`, `확인 필요`로 상태를 표시한다. `확인 필요`가 나오면 원본 SQL은 변경되지 않은 상태다. 화면의 다음 행동을 읽고 Run ID를 보관한다.
 
 영문 상태와 내부 단계 번호는 API 호환을 위해 유지한다. 내부 orchestration은 deterministic하며 `BEFORE_AFTER_COMPARE`, Vector, XPLAN 정보는 결과서 생성과 담당자 진단에 사용한다.
@@ -146,11 +150,14 @@ ASTA는 다음 순서로 확인한다. 앞 단계가 끝나지 않으면 성능 
 
 내부적으로는 위 절차를 deterministic fail-closed 방식으로 처리한다. 이는 “확실하지 않으면 적용하지 않는다”는 뜻이다.
 
+7단계 개선 SQL 검증은 먼저 PLAN_ONLY로 한 번 실행한다. 실행계획 의도와 기본 성능을 통과한 후보만 전체 결과 및 반복 측정을 수행하므로, 원본과 비슷하게 느리거나 Buffer Gets가 개선되지 않은 후보는 추가 실행 없이 원본 유지로 종료한다.
+
 ## 7. 결과 메시지 읽기
 
 | 화면 결과 | 의미 | 개발자가 할 일 |
 |---|---|---|
 | 개선 성공 (`IMPROVED`) | 결과가 같고 실제 성능이 좋아짐 | 개선 SQL을 코드 리뷰와 배포 절차에 따라 검토 |
+| 미실행 분석 완료 (`ANALYSIS_ONLY`) | 후보와 예상 Plan은 생성됐지만 Source runtime metrics, Before/After XPLAN, 결과 동등성, 반복 성능은 미측정 | 운영 적용 전 실측 모드 또는 비운영 환경에서 별도 검증 |
 | 성능 개선 없음 (`NOT_IMPROVED`) | 결과는 같지만 충분히 빨라지지 않음 | 원본 SQL 유지 |
 | 개선 SQL 실행 실패 (`CANDIDATE_FAILED`) | 자동 생성 SQL에서 오류 발생 | 원본 SQL 유지, Run ID 전달 |
 | 결과가 다름 (`NON_EQUIVALENT`) | 원본과 개선 SQL의 데이터 또는 컬럼이 다름 | 개선 SQL 사용 금지 |
@@ -268,3 +275,53 @@ Run ID를 복사하고 잠시 기다린다. 브라우저를 반복해서 새로 
 - 저장소 소스와 실행 서비스가 다를 수 있으므로 장애 진단 시 Run ID, 제공 중인 JS cache version, package 배포 시각을 함께 기록한다.
 
 내부 코드와 상세 운영 계약이 필요한 담당자는 단일 기준 문서 `OADT2_ASTA_ARCHITECTURE.md`와 코드 추적 문서 `asta_source_execution_flow.md`를 참고한다. 이전 품질-agent/개선 이력 문서는 `docs/old/`의 참고 기록이며 현재 운영 계약이 아니다.
+
+## 13. 개발자 실행 추적
+
+팝업의 **03 개발자 실행 추적**은 고객용 설명과 분리된 코드 지도다. 아래 이름은 실제 저장소에서 확인한 심볼이며 접속 주소, credential, DB 비밀번호는 표시하지 않는다.
+
+### 플랫폼별 역할과 실제 코드
+
+| 플랫폼 | 실제 파일·진입점 | 역할 |
+|---|---|---|
+| 브라우저/프런트엔드 | `static/js/extensions/tuning_assistant.js`: `tuningAssistant`, `formatSql`, `stripTrailingSqlTerminator`, `pollRunProgress`, `fetchReport`, `renderResult`, `downloadText` | 입력 검증, 요청 생성, progress poll, 결과 표시와 로컬 Markdown 저장 |
+| 결과서 DOM | `static/js/extensions/asta_report_tabs.js`: `classifyReportSections`, `renderSafeMarkdown`, `renderReportTabs` | ADB가 만든 Markdown을 6개 탭의 안전한 DOM으로 표시 |
+| 애플리케이션/API 서버 | `app/routers/asta_proxy.py`: `analyze`, `_coerce_payload`, `_post_json_to_ords`, `_audited_run_lookup`, `get_run_progress`, `get_run_report`, `download_run_report` | same-origin API, ORDS thin proxy, 조회 감사. Source 실측이나 결과서 작성은 하지 않음 |
+| ORDS | `db/ords/asta_ords_module.sql`: `ASTA_PKG.SUBMIT_RUN`, `GET_PROGRESS`, `GET_RUN`, `GET_REPORT` handler | HTTP를 ADB PL/SQL에 연결하는 adapter |
+| Target ADB | `db/adb/asta_pkg.sql`과 `ASTA_SOURCE_BRIDGE_PKG`, `ASTA_VECTOR_PKG`, `ASTA_LLM_PKG`, `ASTA_REPORT_PKG` | Scheduler orchestration, allowlist bridge, AI 후보, deterministic gate, Vector, 결과서 생성 |
+| Source DB | `db/source/asta_source_pkg.sql`: `RUN_EVIDENCE_STORE_PROC`, `RUN_EVIDENCE`, `COLLECT_METRICS`, `COLLECT_XPLAN`, `COLLECT_OBJECT_INFO`, `BUILD_FULL_COUNT_SQL`, `BUILD_FULL_DIGEST_SQL` | 원본/후보 실제 실행, XPLAN·metric·객체·전체 결과 근거 수집 |
+| AI/LLM | `ASTA_LLM_PKG.GENERATE_SQL_ONLY_TUNING`, `REPAIR_SQL_CANDIDATE`, `DBMS_CLOUD_AI.GENERATE` | 근거 기반 후보 생성. 최종 판정이나 자동 적용은 하지 않음 |
+
+### 버튼 클릭부터 보고서 다운로드까지
+
+1. 브라우저가 `stripTrailingSqlTerminator`와 `formatSql`을 적용하고 빈 SQL을 차단한다.
+2. `POST /api/asta/analyze` → FastAPI `asta_proxy.analyze` → `_coerce_payload` → `_post_json_to_ords` 순서로 제출한다.
+3. ORDS가 `ASTA_PKG.SUBMIT_RUN`을 호출한다. ADB는 `ASTA_RUNS`에 `QUEUED`를 저장하고 `DBMS_SCHEDULER.CREATE_JOB`으로 `ASTA_PKG.EXECUTE_RUN`을 예약한다.
+4. `EXECUTE_RUN`이 저장 요청으로 private `RUN_PIPELINE`을 시작한다.
+5. `ASTA_SQL_GUARD_PKG.ASSERT_SAFE_SELECT` 후 `ASTA_SOURCE_BRIDGE_PKG.RUN_SOURCE_EVIDENCE`가 DB Link로 Source `ASTA_SOURCE_PKG.RUN_EVIDENCE_STORE_PROC`를 호출한다.
+6. Source `RUN_EVIDENCE`가 원본을 반복 실측하고 `DBMS_XPLAN.DISPLAY_CURSOR`, metric, 객체정보, full count/digest를 만든다. Advisor opt-in이면 `DBMS_SQLTUNE`도 Source에서 수행한다.
+7. ADB가 `ASTA_VECTOR_PKG.SEARCH_SIMILAR_CASES`를 먼저 호출하고, 그 근거를 넣어 `ASTA_LLM_PKG.GENERATE_SQL_ONLY_TUNING`으로 후보를 만든다.
+8. 후보를 같은 Source 경로로 다시 실측한다. 제한된 Oracle 오류는 `REPAIR_SQL_CANDIDATE` 후 재검증한다.
+9. `ASTA_PKG.BUILD_COMPARISON_JSON`이 intent → full-result/metadata → bind/plan → 반복 측정/noise → workload 성능 gate 순서로 최종 verdict를 만든다.
+10. `ASTA_VECTOR_PKG.SAVE_CASE` 후 `ASTA_REPORT_PKG.BUILD_REPORT`와 `BUILD_RESPONSE_JSON`이 Markdown/API 결과를 만들고 `ASTA_RUNS`에 저장한다. 즉, 결과서 생성의 기준 구현은 Python이 아니라 ADB PL/SQL이다.
+11. 브라우저 `pollRunProgress`가 `/progress`를 조회하다 terminal이면 `fetchReport`로 `/report`를 한 번 가져와 `renderResult`/`renderReportTabs`로 표시한다. **보고서 다운로드**는 `downloadText`가 보존된 raw Markdown을 로컬 파일로 저장한다.
+
+### 실패·차단·원본 유지 분기
+
+- `SQL_GUARD_REJECTED`: Source 실행 전 차단한다.
+- `ANALYSIS_ONLY`: `execute_source_sql=false`에서 후보와 예상 Plan을 만들었지만 Source runtime metrics, Before/After XPLAN, 결과 동등성, 반복 성능은 측정하지 않은 정상 분석 완료다.
+- `NO_REWRITE`: 후보가 없어 After를 생략하고 `retain_original_sql=true`로 남긴다.
+- `CANDIDATE_FAILED`, `CANDIDATE_RUNTIME_LIMIT`: repair 후에도 후보가 실패하면 실패 artifact와 원본 유지 결론을 보존한다.
+- `NON_EQUIVALENT`: 결과 또는 metadata가 달라 후보 사용을 금지한다.
+- `INSUFFICIENT_EVIDENCE`: intent, full-result, bind/plan, 반복 측정 중 하나라도 불완전하면 fail-closed 처리한다.
+- `NOT_IMPROVED`: 결과는 같아도 workload 성능 기준을 통과하지 못해 원본을 유지한다.
+- `IMPROVED`: 모든 gate를 통과한 후보를 표시하지만 코드 리뷰·업무 테스트·승인 없이 자동 반영하지 않는다.
+
+### Run ID로 추적하는 방법
+
+1. 화면에서 Run ID와 최초 실패/차단 단계 code를 확보한다.
+2. `/api/asta/runs/{run_id}/progress` → `/report` → 필요 시 `/runs/{run_id}` 순서로 조회한다. 특정 LLM 원문은 화면에서 선택한 경우에만 `/api/asta/runs/{run_id}/llm-calls/{call_id}`로 지연 조회한다.
+3. API 서버에서는 `logs/asta/asta_request_audit.jsonl`의 run prefix/hash와 endpoint event를 확인한다. 이 audit에는 SQL 원문을 저장하지 않는다.
+4. ADB에서는 `ASTA_RUNS`, `ASTA_RUN_PROGRESS`, `ASTA_LLM_CALL_LOG`와 해당 Scheduler job을 확인한다. Source에서는 `ASTA_RUN_ID` marker의 소유 관계를 확인한다.
+5. 최소 정적 회귀는 `pytest -q tests/test_asta_manual_dialog.py tests/test_asta_developer_manual_contract.py`, `node --check static/js/extensions/tuning_assistant.js`, `node --check static/js/extensions/asta_report_tabs.js`, `git diff --check`다.
+6. 조회만 필요한 진단에서 job 중단, run 갱신, DB/ORDS/package 배포를 수행하지 않는다.

@@ -98,7 +98,9 @@ def test_three_selects_are_direct_semantic_children_of_one_controls_row_and_text
         selects = [node for node in label.descendants() if node.tag == "select"]
         assert len(selects) == 1
         direct_select_ids.append(selects[0].attrs.get("id"))
-    assert direct_select_ids == ["asta-ai-profile", "asta-workload-type", "asta-sample-sql"]
+    assert direct_select_ids == [
+        "asta-ai-profile", "asta-workload-type", "asta-sample-sql"
+    ]
 
     wrapper_textarea_ids = {
         node.attrs.get("id") for node in wrapper.descendants() if node.tag == "textarea"
@@ -107,12 +109,12 @@ def test_three_selects_are_direct_semantic_children_of_one_controls_row_and_text
     assert "asta-sql" not in wrapper_textarea_ids
 
 
-def test_controls_row_has_three_desktop_columns_and_safe_responsive_fallbacks():
+def test_controls_row_has_three_column_desktop_grid_and_safe_responsive_fallbacks():
     text = source()
     desktop = css_rule(text, ".tuning-controls-row")
     assert "display:grid" in desktop
     assert "grid-template-columns:" in desktop
-    assert desktop.count("minmax(") >= 3
+    assert "repeat(3, minmax(180px, 1fr))" in desktop
     assert "min-width:0" in desktop
 
     tablet_start = text.index("@media (max-width: 1100px)")

@@ -33,19 +33,20 @@ def test_digest_failure_is_explicit_and_never_becomes_shape_equivalence():
     assert 'equivalent = comparison.get("semantic_equivalent") is True' in quality
 
 
-def test_oltp_hard_latency_guard_precedes_buffer_improvement():
+def test_oltp_comparison_has_no_absolute_three_second_latency_guard():
     adb = read("db/adb/asta_pkg.sql")
-    latency = adb.index("ELSIF l_after_elapsed > 3000000 THEN")
-    buffer_win = adb.index("ELSIF l_after_elapsed <= l_before_elapsed AND l_gets_pct >= 5 THEN")
-    assert latency < buffer_win
-    assert "OLTP_LATENCY_TARGET_NOT_MET" in adb
+    comparison = adb[adb.index("FUNCTION build_comparison_json("):adb.index("END build_comparison_json;")]
+    assert "ELSIF l_after_elapsed > 3000000 THEN" not in comparison
+    assert "OLTP_LATENCY_TARGET_NOT_MET" not in comparison
+    assert "ELSIF l_after_elapsed <= l_before_elapsed AND l_gets_pct >= 5 THEN" in comparison
 
 
 def test_adb_comparison_requires_matching_result_digest_before_performance():
     adb = read("db/adb/asta_pkg.sql")
+    comparison = adb[adb.index("FUNCTION build_comparison_json("):adb.index("END build_comparison_json;")]
     required = adb.index("RESULT_DIGEST_REQUIRED")
     mismatch = adb.index("RESULT_DIGEST_MISMATCH")
-    performance = adb.index("OLTP_LATENCY_TARGET_NOT_MET")
+    performance = adb.index("OLTP_BUFFER_READS_IMPROVED")
     assert required < performance
     assert mismatch < performance
     assert "result_digest_matches" in adb

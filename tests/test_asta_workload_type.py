@@ -29,7 +29,7 @@ def test_ui_exposes_and_propagates_workload_context_and_resets_oltp():
                   "OLTP — Buffer Reads 최소화", "배치 — Elapsed Time 최소화",
                   'workloadSelect.value = "OLTP"', "optimizationGoalForWorkload"]:
         assert token in ui
-    assert "채택 latency는 3초 이하, 기존 대비 증가는 300ms 이하" in ui
+    assert "후보가 원본보다 느려지는 경우에만 1초/300ms tradeoff를 제한" in ui
     assert ui.count("workload_type:") >= 2  # normal and hidden SQL-only payloads
     assert ui.count("optimization_goal:") >= 2
     samples = load_samples()
@@ -115,12 +115,14 @@ def test_oltp_tradeoff_boundaries_and_report_wording():
     assert "고빈도·동시 실행에서 의미" in report
 
 
-def test_oltp_comparison_enforces_three_second_latency_target_before_buffer_win():
+def test_oltp_comparison_does_not_use_three_second_hard_latency_target():
     main = read("db/adb/asta_pkg.sql")
-    target = "l_after_elapsed > 3000000"
     improvement = "l_after_elapsed <= l_before_elapsed AND l_gets_pct >= 5"
-    assert target in main
-    assert "OLTP_LATENCY_TARGET_NOT_MET" in main
-    assert "WHEN l_after_elapsed > 3000000 THEN 'HIGH'" in main
-    assert '\"oltp_latency_target_us\":3000000' in main
-    assert main.index(target) < main.index(improvement)
+    comparison = main[main.index("FUNCTION build_comparison_json("):main.index("END build_comparison_json;")]
+    screen = main[main.index("FUNCTION candidate_plan_screen_reason("):main.index("END candidate_plan_screen_reason;")]
+    assert "OLTP_LATENCY_TARGET_NOT_MET" not in comparison
+    assert "PLAN_SCREEN_OLTP_LATENCY_TARGET_NOT_MET" not in screen
+    assert "l_after_elapsed > 3000000" not in comparison
+    assert "l_after_elapsed > 3000000" not in screen
+    assert '\"oltp_latency_target_us\":3000000' not in comparison
+    assert improvement in comparison

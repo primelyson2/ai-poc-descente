@@ -137,7 +137,7 @@ def test_ords_handlers_emit_runtime_ownership_headers_for_all_json_routes():
         "X-ASTA-Contract-Version: asta.v1",
         "X-ASTA-Response-Mode: CLOB_CHUNKED_JSON",
     ]:
-        assert src.count(header) == 5, f"{header!r} must be emitted by every ORDS JSON handler"
+        assert src.count(header) == 6, f"{header!r} must be emitted by every ORDS JSON handler"
 
 
 def test_fastapi_and_ui_surfaces_still_forbid_python_local_asta_runtime_terms():
@@ -163,6 +163,13 @@ def test_fastapi_and_ui_surfaces_still_forbid_python_local_asta_runtime_terms():
     for rel_path in ["app/routers/asta_proxy.py", "static/js/extensions/tuning_assistant.js"]:
         src = _read(rel_path)
         for fragment in forbidden:
+            # The customer-visible developer manual names the real Oracle owner
+            # APIs as inert text.  They remain forbidden in FastAPI and in the
+            # UI execution handler; only the manual code-map constants may name them.
+            if rel_path.endswith("tuning_assistant.js") and fragment in {"DBMS_XPLAN", "DBMS_SQLTUNE", "DBMS_CLOUD_AI"}:
+                runtime = src[src.index('document.getElementById("asta-run").addEventListener'):]
+                assert fragment not in runtime
+                continue
             assert fragment not in src, f"{fragment!r} leaked into {rel_path}"
 
 
@@ -177,7 +184,7 @@ def test_guard_and_response_contract_markers_cross_plsql_and_ords_boundaries():
     ords = _read("db/ords/asta_ords_module.sql")
 
     assert "C_GUARD_POLICY" in source
-    assert source.count(',"guard_policy":') == 2
+    assert source.count(',"guard_policy":') == 3
     assert "C_GUARD_POLICY" in guard
     assert guard.count(',"guard_policy":') == 2
     assert '"guard_policy":' in bridge
@@ -189,7 +196,7 @@ def test_guard_and_response_contract_markers_cross_plsql_and_ords_boundaries():
     assert '"response_contract":"CLOB_CHUNKED_JSON"' in report
     assert '"guard_policy":"SELECT_WITH_SINGLE_STATEMENT"' in main
     assert '"response_contract":"CLOB_CHUNKED_JSON"' in main
-    assert ords.count("X-ASTA-Guard-Policy: SELECT_WITH_SINGLE_STATEMENT") == 5
+    assert ords.count("X-ASTA-Guard-Policy: SELECT_WITH_SINGLE_STATEMENT") == 6
 
 
 def test_vector_kb_saves_searchable_chunks_and_searches_fingerprint_first():

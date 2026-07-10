@@ -1,6 +1,6 @@
 # ASTA 소스코드 실행 흐름
 
-최종 업데이트: 2026-07-07
+최종 업데이트: 2026-07-08
 
 이 문서는 Real ASTA 저장소에서 사용자가 **AI 분석 실행**을 누른 뒤 브라우저, FastAPI, ADB ORDS, ADB package, DB Link, Source package가 실제로 어떤 순서로 동작하는지 추적한다. 정책과 판정의 단일 기준은 `OADT2_ASTA_ARCHITECTURE.md`이며, 이 문서는 구현 위치를 찾기 위한 companion 문서다.
 
@@ -46,7 +46,7 @@ Browser polling
 - FastAPI는 SQL, XPLAN, Advisor, LLM, Vector를 로컬에서 실행하지 않는다.
 - 현재 `/api/asta/analyze`는 FastAPI `BackgroundTasks`에 장기 분석을 등록하지 않는다. ORDS 제출을 기다린 뒤 ADB의 `QUEUED` 응답을 전달한다.
 - 장기 실행의 소유자는 ADB `DBMS_SCHEDULER`다. 프로세스 재시작이나 브라우저 종료와 무관하게 ADB 저장 상태를 기준으로 조회한다.
-- Source SQL은 ADB가 allowlist에서 고른 DB Link를 통해서만 Source `ASTA_SOURCE_PKG`에서 실행된다.
+- Source SQL은 사용자가 실행 체크박스를 명시적으로 켠 경우에만 ADB가 allowlist에서 고른 DB Link를 통해 Source `ASTA_SOURCE_PKG`에서 실행된다. 기본 안전 모드는 같은 경로에서 EXPLAIN PLAN만 수행한다.
 - Python direct DB/SSH/subprocess fallback은 운영 경로가 아니다.
 
 ## 2. 화면 생성과 입력
@@ -103,7 +103,7 @@ Content-Type: application/json
 }
 ```
 
-일반 UI는 `run_advisor=false`, `use_sqltune=false`다. Advisor를 명시적으로 켜는 API 계약은 남아 있지만 화면 기본 실행에서는 사용하지 않는다. 사용자가 DB Link 이름이나 Source schema를 직접 지정할 수 없다.
+일반 UI는 `execute_source_sql=false`, `run_advisor=false`, `use_sqltune=false`다. 실행 체크박스를 켜지 않으면 원본과 후보 SQL 모두 실제 실행하지 않고 예상 Plan만 수집한다. 사용자가 DB Link 이름이나 Source schema를 직접 지정할 수 없다.
 
 제출 직후 브라우저는 임시 진행 정보를 표시한다. ADB가 run ID를 반환하면 `/progress` polling으로 전환한다. `QUEUED`와 `RUNNING`은 처리 상태이며 개선 성공 판정이 아니다.
 
@@ -228,26 +228,43 @@ Scheduler는 `QUEUED` 또는 승인된 `RETRY` row를 잠그고 상태를 `RUNNI
 
 Vector 검색 결과가 LLM prompt에 들어가므로 9단계가 6단계보다 먼저 실행된다. 번호는 API 호환 때문에 바꾸지 않는다.
 
+`GET_PROGRESS`는 11단계 배열과 함께 `llm_calls` 요약을 반환한다. 요약에는 `call_id`, stage, attempt, profile, `SENT/RECEIVED/FAILED`, 문자 수와 timing만 들어가며 prompt/응답 CLOB은 포함하지 않는다. 브라우저는 6단계 상세에서 이 목록을 표시하고 사용자가 원문 보기를 선택한 호출만 `GET_LLM_CALL(run_id, call_id)` ORDS 경로로 지연 조회한다. 조회 조건에 Run ID와 call ID를 모두 사용해 다른 Run의 호출이 섞이지 않게 한다.
+
 ### 7.1 Before evidence
 
 `RUN_PIPELINE`은 `ASTA_SOURCE_CONNECTIONS`의 logical source를 확인하고 bridge에 다음 핵심 값을 전달한다.
 
 - 원본 SQL과 run marker
-- `repeat_policy=AUTO`
-- `result_evidence_mode=FULL_RESULT`
+- `before_evidence_mode`에 따른 반복/결과 정책
+  - `ESTIMATED_PLAN`(UI 기본): SQL 미실행, EXPLAIN PLAN + 객체 통계·인덱스
+  - `MINIMAL`(실행 opt-in 기본): `ONCE + FULL_RESULT`, 원본 SQL 최대 3회
+  - `FAST_PLAN`: `ONCE + BOUNDED`, 원본 SQL 최대 2회. 전체 결과 동등성 확정은 제한됨
+  - `THOROUGH`: `AUTO + FULL_RESULT`, 원본 SQL 최대 6회
 - fetch/result 행 예산
 - Advisor opt-in 여부
 - 선택적 원본 `source_sql_id`
 
 실패하면 4단계를 FAILED로 기록하고 fail-closed error를 반환한다.
+일반 화면은 `before_evidence_mode=MINIMAL`과 별도로 `execute_source_sql=false`를 보낸다. 실행 체크박스를 켜야 MINIMAL 실제 실행이 활성화된다.
 
 ### 7.2 Vector 검색과 LLM
 
 `ASTA_VECTOR_PKG`는 positive verified 사례만 검색 근거로 사용한다. `ASTA_LLM_PKG`는 원본 SQL 외에 XPLAN, 실제 metrics, object 정보, Advisor 상태, 유사 사례, workload와 사용자 참고사항을 받아 JSON-only 구조 후보를 만든다.
 
-후보 SQL은 SQL Guard를 다시 통과해야 한다. 제한된 repair 후에도 안전한 후보가 없으면 7·8단계를 `SKIPPED`, verdict를 `NO_REWRITE`로 처리한다.
+후보 SQL은 SQL Guard를 다시 통과해야 한다. 제한된 repair 후에도 안전한 후보가 없으면 7·8단계를 `SKIPPED`, verdict를 `NO_REWRITE`로 처리한다. `execute_source_sql=false`에서 후보와 예상 Plan이 만들어진 경우는 `ANALYSIS_ONLY / ESTIMATED_PLAN_ONLY`로 완료하며, 성능 개선 성공/실패를 판정하지 않는다.
 
 ### 7.3 After evidence와 watchdog
+
+후보는 즉시 AUTO + FULL_RESULT로 실행하지 않는다.
+
+1. ADB candidate guard가 ANSI JOIN과 구식 (+) 외부 조인 혼용을 차단한다.
+2. 기본 미실행 모드는 후보도 `ESTIMATED_PLAN`으로 EXPLAIN PLAN만 수집하고 `ANALYSIS_ONLY`로 종료한다.
+3. 실행 opt-in에서는 Source PLAN_ONLY + ONCE가 후보 SQL을 한 번만 수행해 XPLAN과 metric을 반환하고 digest pass는 생략한다.
+4. optimizer intent와 workload별 1차 성능 기준을 통과한 후보만 AUTO + FULL_RESULT 정밀 검증으로 넘어간다.
+5. watchdog은 PLAN_ONLY 1회와 정밀 검증 최대 6회의 예상 실행 횟수, 20% 여유와 후처리 시간을 포함해 별도 계산한다.
+6. Source에서는 ALTER SYSTEM을 사용하지 않는다. timeout 시 cancel API는 `SOURCE_CANCEL_NOT_AVAILABLE`을 기록하고 ADB parent Scheduler job을 종료한다.
+
+PLAN_ONLY에서 거절된 후보는 전체 count/digest와 반복 측정을 수행하지 않으며 원본 SQL을 유지한다.
 
 후보가 있으면 7단계에서 동일 Source 경로로 실행한다. adaptive candidate runtime limit를 계산하고 watchdog job을 arm한다. timeout은 후보를 `CANDIDATE_RUNTIME_LIMIT`로 실패시키고 원본을 유지한다.
 
@@ -394,6 +411,7 @@ terminal progress를 받은 뒤 UI는 전체 run/report를 조회한다. 결과 
 
 - `QUEUED/RUNNING/COMPLETED/FAILED`는 pipeline 처리 상태다.
 - `COMPLETED`가 곧 `IMPROVED`는 아니다. 최종 comparison verdict를 확인한다.
+- `ANALYSIS_ONLY`는 `execute_source_sql=false`에서 후보와 예상 Plan을 만든 정상 분석 완료다. Source runtime metrics, Before/After XPLAN, result equivalence, 반복 성능은 미측정이므로 자동 적용하지 않는다.
 - `NO_REWRITE`, `NOT_IMPROVED`, `NON_EQUIVALENT`, `CANDIDATE_FAILED`, `INSUFFICIENT_EVIDENCE`는 모두 원본 SQL 유지다.
 - 6단계 장기 실행은 모델 HTTP 대기인지 LLM 응답 후 PL/SQL 후처리 CPU인지 LLM audit와 session stack을 함께 확인한다.
 - 7단계 timeout은 ADB watchdog 완료와 Source session 종료를 구분해 확인한다.
@@ -444,3 +462,29 @@ Source `ASTA_SOURCE_PKG`, ADB package, schema migration, ORDS module, Python ser
 11. `static/js/extensions/asta_report_tabs.js`
 
 이 순서로 읽으면 제출 owner, Source 실행 경계, evidence, 판정, 저장, 화면 표시를 혼동하지 않고 따라갈 수 있다.
+
+## 16. 개발자 실행 추적
+
+### 플랫폼별 역할과 실제 코드
+
+- 브라우저: `tuning_assistant.js`의 `formatSql`, `stripTrailingSqlTerminator`, `fetchJson`, `pollRunProgress`, `fetchReport`, `renderResult`, `downloadText`; 결과 DOM은 `asta_report_tabs.js`의 `classifyReportSections`, `renderSafeMarkdown`, `renderReportTabs`.
+- API: `asta_proxy.py`의 `analyze`, `_coerce_payload`, `_post_json_to_ords`, `_audited_run_lookup`, `get_run_progress`, `get_run_report`, `download_run_report`.
+- ORDS/Target ADB: `ASTA_PKG.SUBMIT_RUN`, `EXECUTE_RUN`, private `RUN_PIPELINE`, `RECORD_PROGRESS`, `BUILD_COMPARISON_JSON`.
+- Source: bridge `RUN_SOURCE_EVIDENCE`/`GET_CONNECTION_JSON`과 Source `RUN_EVIDENCE_STORE_PROC`, `RUN_EVIDENCE`, `COLLECT_METRICS`, `COLLECT_XPLAN`, `COLLECT_OBJECT_INFO`, `BUILD_FULL_COUNT_SQL`, `BUILD_FULL_DIGEST_SQL`.
+- AI/report: `ASTA_VECTOR_PKG.SEARCH_SIMILAR_CASES`/`SAVE_CASE`, `ASTA_LLM_PKG.GENERATE_SQL_ONLY_TUNING`/`REPAIR_SQL_CANDIDATE`, `ASTA_REPORT_PKG.BUILD_REPORT`/`BUILD_RESPONSE_JSON`.
+
+### 버튼 클릭부터 보고서 다운로드까지
+
+2~11절이 전체 call stack이다. 핵심은 제출이 ADB Scheduler로 비동기 분리되고, 원본/후보 실측은 Source PL/SQL, 후보 생성은 ADB의 `DBMS_CLOUD_AI.GENERATE`, 판정·결과서 생성은 ADB PL/SQL, 렌더링/다운로드만 브라우저에서 이루어진다는 점이다. UI는 terminal 전 `/progress`만 반복 조회하고 `/report`는 terminal 후 한 번 조회한다.
+
+### 실패·차단·원본 유지 분기
+
+Guard 거절은 Source 미실행, 후보 없음은 7단계 생략, 미실행 후보 분석은 `ANALYSIS_ONLY`, 후보 오류/timeout은 repair 또는 실패 verdict, digest 불일치는 `NON_EQUIVALENT`, 근거 누락은 `INSUFFICIENT_EVIDENCE`, 성능 미달은 `NOT_IMPROVED`다. `ANALYSIS_ONLY`는 실패가 아니라 성능·동등성 미검증 분석 완료이고, 나머지 원본 유지 분기는 후속 좋은 수치나 Vector/Advisor 결과가 앞선 terminal 결정을 덮지 않는다.
+
+### Run ID로 추적하는 방법
+
+1. `/api/asta/runs/{run_id}/progress`에서 최초 실패/차단 code와 timing을 찾는다.
+2. terminal이면 `/report`, 필요할 때만 `/runs/{run_id}` artifact를 대조한다.
+3. `logs/asta/asta_request_audit.jsonl`의 sanitized event, ADB `ASTA_RUNS`/`ASTA_RUN_PROGRESS`/`ASTA_LLM_CALL_LOG`, 해당 Scheduler job을 순서대로 확인한다.
+4. Source 장기 SQL은 `ASTA_RUN_ID` marker와 ADB run/job 소유 관계를 확인한다. 승인 없이 중단하지 않는다.
+5. 계약 회귀는 `pytest -q tests/test_asta_manual_dialog.py tests/test_asta_developer_manual_contract.py`, JS 문법은 `node --check` 두 파일, 변경 whitespace는 `git diff --check`로 확인한다.

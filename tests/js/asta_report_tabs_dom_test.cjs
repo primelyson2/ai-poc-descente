@@ -169,7 +169,7 @@ assert.equal(verdictToggle.textContent, "?");
 assert.equal(verdictToggle.getAttribute("aria-expanded"), "false");
 assert.equal(verdictHelp.hidden, true);
 assert.ok(verdictHelp.parentNode.className.includes("tuning-verdict-help-anchor"));
-assert.equal(verdictHelp.querySelectorAll(".tuning-verdict-guide-row").length, 6);
+assert.equal(verdictHelp.querySelectorAll(".tuning-verdict-guide-row").length, 7);
 verdictToggle.dispatchEvent({ type: "click" });
 assert.equal(verdictToggle.getAttribute("aria-expanded"), "true");
 assert.equal(verdictHelp.hidden, false);
@@ -179,10 +179,12 @@ assert.equal(verdictHelp.hidden, true);
 assert.ok(!verdictHelp.parentNode.className.includes("tuning-verdict-help-open"));
 
 assert.equal(tabsApi.extractReportVerdict("- 비교 판정: verdict=`NON_EQUIVALENT`"), "NON_EQUIVALENT");
+assert.equal(tabsApi.extractReportVerdict("- 비교 판정: verdict=`ANALYSIS_ONLY`, equivalence=`NOT_EVALUATED`"), "ANALYSIS_ONLY");
 assert.equal(tabsApi.extractReportVerdict("- 최종 판정: `NO_REWRITE`"), "NO_REWRITE");
 assert.equal(tabsApi.extractReportVerdict("## 결론\n판정 정보 없음"), null);
 assert.deepEqual(tabsApi.VERDICT_GUIDE.map(({ code, meaning, action }) => [code, meaning, action]), [
   ["IMPROVED", "결과가 일치하고 성능 기준 통과", "코드 리뷰와 별도 테스트 후 적용 검토"],
+  ["ANALYSIS_ONLY", "튜닝 후보 제안/분석 완료, 성능 개선 여부 미검증", "운영 적용 전 Source 실측·동등성 검증"],
   ["NOT_IMPROVED", "결과는 같지만 충분한 성능 개선 없음", "원본 SQL 유지"],
   ["CANDIDATE_FAILED", "개선 SQL 실행 중 오류 발생", "개선 SQL 사용 금지, Run ID 전달"],
   ["NON_EQUIVALENT", "원본과 개선 SQL 결과/컬럼 구성이 다름", "개선 SQL 사용 금지"],
@@ -227,6 +229,29 @@ const duplicateAdvisor = tabsApi.classifyReportSections(
 );
 assert.equal(duplicateAdvisor.tabs.overview.length, 0, "duplicate Advisor heading must fail closed");
 assert.ok(duplicateAdvisor.reasonCodes.includes("AMBIGUOUS_REPORT_SECTION"));
+
+const estimatedReport = [
+  "## 튜닝 전 SQL",
+  "```sql",
+  "SELECT 1 FROM dual",
+  "```",
+  "## 튜닝 전 예상 Plan",
+  "```text",
+  "Plan hash value: 123",
+  "| 0 | SELECT STATEMENT |",
+  "```",
+  "## 튜닝 후 예상 Plan",
+  "```text",
+  "Plan hash value: 456",
+  "```",
+].join("\n");
+const estimatedRoot = new FakeElement("div");
+tabsApi.renderReportTabs(estimatedRoot, estimatedReport);
+const estimatedPanels = estimatedRoot.querySelectorAll('[role="tabpanel"]');
+assert.match(allText(estimatedPanels[1]), /튜닝 전 예상 Plan/);
+assert.match(estimatedPanels[1].querySelectorAll("pre code").map((node) => node.textContent).join("\n"), /Plan hash value: 123/);
+assert.match(allText(estimatedPanels[3]), /튜닝 후 예상 Plan/);
+assert.match(estimatedPanels[3].querySelectorAll("pre code").map((node) => node.textContent).join("\n"), /Plan hash value: 456/);
 
 assert.equal(result.tabs.length, 6);
 console.log("asta_report_tabs_dom_test: PASS");

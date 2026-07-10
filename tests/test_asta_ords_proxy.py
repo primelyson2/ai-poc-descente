@@ -228,6 +228,53 @@ def test_run_routes_proxy_to_ords_with_encoded_run_id(monkeypatch):
     ]
 
 
+def test_llm_call_detail_route_is_run_scoped_and_lazy(monkeypatch):
+    """선택한 호출 원문은 run_id와 call_id가 모두 포함된 별도 GET에서만 조회한다."""
+    deps.set_config(_cfg())
+    calls = []
+
+    async def fake_get(url, timeout):
+        calls.append((url, timeout))
+        return {
+            "run_id": "OADT2-ASTA-TRACE-1",
+            "status": "COMPLETED",
+            "call_id": 17,
+            "prompt": "prompt",
+            "response": "response",
+        }
+
+    async def fake_async_snapshot(run_id):
+        return {"run_id": run_id, "status": "COMPLETED", "progress": []}
+
+    monkeypatch.setattr(asta_proxy, "_get_json_from_ords", fake_get)
+    monkeypatch.setattr(asta_proxy, "_get_async_run", fake_async_snapshot)
+
+    result = asyncio.run(
+        asta_proxy.get_run_llm_call("OADT2-ASTA-TRACE-1", 17, database="devdoADB")
+    )
+
+    assert result["call_id"] == 17
+    assert result["proxy"]["source"] == "ADB_ORDS"
+    assert calls == [
+        ("https://example.com/ords/asta/runs/OADT2-ASTA-TRACE-1/llm-calls/17", 2100),
+    ]
+
+
+def test_llm_call_detail_route_rejects_non_positive_call_id(monkeypatch):
+    deps.set_config(_cfg())
+
+    async def fake_get(url, timeout):  # pragma: no cover - must not be called
+        raise AssertionError("invalid call_id must not reach ORDS")
+
+    monkeypatch.setattr(asta_proxy, "_get_json_from_ords", fake_get)
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(asta_proxy.get_run_llm_call("OADT2-ASTA-TRACE-1", 0, database="devdoADB"))
+
+    assert exc.value.status_code == 400
+    assert "invalid call_id" in str(exc.value.detail)
+
+
 def test_run_lookup_writes_sanitized_audit_for_not_found(monkeypatch, tmp_path):
     """ASTA 계약/회귀 조건을 검증한다: run lookup writes sanitized audit for not found."""
     deps.set_config(_cfg())
@@ -280,6 +327,8 @@ def test_proxy_exposes_all_fetchjson_run_urls_used_by_static_ui():
     for suffix in ["progress", "report"]:
         assert f"/runs/${{encodedRunId}}/{suffix}" in view
         assert f"@router.get(\"/runs/{{run_id}}/{suffix}\")" in router_src
+    assert "/runs/${encodeURIComponent(runId)}/llm-calls/${callId}" in view
+    assert '@router.get("/runs/{run_id}/llm-calls/{call_id}")' in router_src
 
 
 
@@ -529,6 +578,4 @@ def test_proxy_preserves_payload_contract_but_drops_deprecated_prompt_mode():
     assert "prompt_mode" not in payload
     assert "prompt_mode" not in payload["tuning_context"]
     assert payload["tuning_context"]["user_notes"] == "keep"
-
-
 

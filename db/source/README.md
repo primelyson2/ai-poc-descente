@@ -29,11 +29,12 @@ GRANT EXECUTE ON dbms_sqltune               TO <helper_owner>;
 ```
 
 `DBMS_SQLTUNE`은 ADB가 `p_run_advisor => 'Y'`를 전달한 경우에만 사용한다.
+Source 환경에서는 `ALTER SYSTEM`을 사용하지 않는다. 원격 취소 API는 `SKIPPED / SOURCE_CANCEL_NOT_AVAILABLE`을 반환하고 watchdog은 ADB parent Scheduler job만 종료한다.
 ADB가 `DEVDO.asta_source_pkg@DB0903_LINK`와 같이 스키마를 명시한 DB Link 호출을 사용하는 경우, DB Link 사용자에게 `ASTA_SOURCE_PKG`의 `EXECUTE` 권한을 부여하거나 해당 스키마 자체를 Source helper 소유자로 사용한다.
 
 ## 런타임 계약
 
-`ASTA_SOURCE_PKG.RUN_EVIDENCE`는 SELECT 또는 WITH SQL을 입력받아 `ASTA_RUN_ID` 표식을 삽입하고, 제한된 `COUNT(*)` 래퍼를 실행한 뒤 다음 정보를 JSON으로 반환한다.
+`ASTA_SOURCE_PKG.RUN_EVIDENCE`는 SELECT 또는 WITH SQL을 입력받는다. `p_result_evidence_mode=ESTIMATED_PLAN`이면 업무 SQL을 실행하지 않고 EXPLAIN PLAN, 예상 DBMS_XPLAN, PLAN_TABLE 객체의 통계·인덱스만 반환한다. 다른 모드에서는 `ASTA_RUN_ID` 표식을 삽입하고 제한된 `COUNT(*)` 래퍼를 실행한다.
 
 - 명시적인 `status`
 - 커서 실행 통계

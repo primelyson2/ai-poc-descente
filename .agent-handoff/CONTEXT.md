@@ -1,5 +1,440 @@
 # Real ASTA 작업 인계
 
+## 작업 트리 변경 Git 커밋 — 2026-07-10
+
+- 요청/결론: 사용자가 요청한 현재 작업 트리 변경 전체를 단일 Git 커밋으로 반영했다. 기존 변경을 되돌리거나 제외하지 않았다.
+- 변경 파일: ASTA ADB/Source/ORDS package, UI, 문서, 테스트 및 이 handoff를 포함한 현재 worktree 전체.
+- 검증: 커밋 직전 `git diff --check` 통과. 새 기능 테스트는 이번 Git 반영 작업에서 별도 실행하지 않았으며, 이전 구현·배포 검증 결과는 아래 항목을 참조한다.
+- 통합: `origin/ASTA`의 VPD/Select AI 보안 작업 기준점 `2a36f64` 위로 충돌 없이 rebase했다. 이 작업 트리는 해당 원격 변경과 ASTA 변경을 함께 포함한다.
+- 관련 커밋: 이 handoff를 포함한 현재 브랜치의 최신 커밋.
+
+## GPT5.4 fallback 우선순위 상향 — 2026-07-10 ADB 배포 완료
+
+- 요청/결론: SQL 생성 실패 시 성능이 좋은 LLM을 먼저 쓰는 방향이 맞고, 현재 관찰상 `ASTA_GPT54_PROFILE`이 가장 좋아 보인다는 사용자 의견을 반영했다. 기본 primary profile은 그대로 두고, 실패 fallback resolver에서 GPT5.4를 첫 번째 fallback으로 우선 선택하도록 수정하고 Real ASTA ADB에 배포했다.
+- 변경: `ASTA_LLM_PKG.available_fallback_profile`의 우선순위를 `GPT5.4 → Grok Reasoning → Grok GenAI → Gemini → GPT5.2 → GPT5.1 → mini/nano`로 조정했다. 호출자가 이미 GPT5.4를 primary로 쓴 경우에는 기존 로직대로 GPT5.4를 제외하고 다음 fallback을 고른다. 존재하지 않는 profile은 계속 `USER_CLOUD_AI_PROFILES` 기반으로 제외된다.
+- 변경 파일: `db/adb/asta_llm_pkg.sql`, `tests/test_asta_llm_candidate_recovery.py`, 이 handoff.
+- 검증: `tests/test_asta_llm_candidate_recovery.py tests/test_asta_ords_migration_contract.py` 결과 `25 passed`; `git diff --check` 통과.
+- 배포: 사용자 승인 후 active Run/Scheduler/running progress 0건에서 `ASTA_LLM_PKG` spec/body를 백업 후 컴파일했다. PACKAGE/PACKAGE BODY 모두 `VALID`, `USER_ERRORS=0`, 배포 후 active Run/job/progress 0건이다.
+- 배포 smoke: 원격 `USER_SOURCE`에서 `available_fallback_profile` 내 GPT5.4 우선순위가 Grok Reasoning/Grok GenAI/Gemini보다 앞선 것을 확인했다. `USER_CLOUD_AI_PROFILES`에는 `ASTA_GPT54_PROFILE`이 존재하고 legacy `ASTA_DB_GENAI_TEST`는 없다.
+- artifact: `reports/asta_gpt54_fallback_deploy/20260709T151529Z/`에 배포 전 spec/body 백업, backup manifest, `deploy_summary.json`을 보존했다. SQL 원문, credential, LLM prompt/response는 저장하지 않았다.
+- 미수행: 외부 LLM 호출, 신규 Run 실행, 서비스 재시작, commit/push는 수행하지 않았다.
+- 관련 커밋: 없음.
+
+## OLTP 3초 hard guard 제거 — 2026-07-09 ADB/UI 배포 완료
+
+- 요청/결론: `OADT2-ASTA-2388a8ae9aa040ed9ef97133d855881f`는 후보가 실제로 빨라졌는데도 `NOT_IMPROVED`로 표시됐다. 저장 comparison은 `PLAN_SCREEN_OLTP_LATENCY_TARGET_NOT_MET`였고, 원본 elapsed `139,709,652us`, 후보 PLAN screen elapsed `3,863,987us`, Buffer Gets `9,323,247 → 1,086,788`였다. 즉 3초 hard guard 하나 때문에 전체 검증 전에 탈락한 것이 원인이다.
+- 정책 변경: `ASTA_PKG.build_comparison_json`에서 OLTP `l_after_elapsed > 3000000` absolute latency 탈락과 `oltp_latency_target_us/oltp_latency_target_met` JSON 출력을 제거했다. 후보가 원본보다 빠르고 Buffer Gets가 5% 이상 줄면 3초를 넘어도 `IMPROVED`가 될 수 있다. 후보가 원본보다 느려진 경우의 1초/300ms tradeoff 제한은 유지했다.
+- Stage 7 선별 변경: `candidate_plan_screen_reason`에서 `PLAN_SCREEN_OLTP_LATENCY_TARGET_NOT_MET` 반환을 제거했다. PLAN_ONLY screen은 Source 오류, metric 누락, optimizer intent, Buffer Gets 5% 개선 여부만 보고 다음 FULL_RESULT 검증으로 넘긴다.
+- 보고서/UI: `ASTA_REPORT_PKG`의 별도 PLAN_SCREEN 3초 초과 추천문을 제거하고 일반 PLAN_SCREEN 문구로 처리한다. 화면 OLTP 설명은 “Buffer Reads 우선, 후보가 원본보다 느려지는 경우에만 1초/300ms tradeoff 제한”으로 변경했고 cache-buster는 `tuning_assistant.js?v=20260709_no_3s_latency1`이다.
+- 변경 파일: `db/adb/asta_pkg.sql`, `db/adb/asta_report_pkg.sql`, `static/js/extensions/tuning_assistant.js`, `static/index.html`, `docs/AI_SQL_TUNING_ASSISTANT_MANUAL.md`, `docs/OADT2_ASTA_ARCHITECTURE.md`, 관련 테스트와 이 handoff. 기존 dirty worktree는 보존했다.
+- 로컬 검증: 직접 관련 `49 passed`; 전체 `476 passed, 기존 기준선 8 failed in 1.49s`, 신규 실패 0건. `node --check` 2개 JS와 `git diff --check` 통과.
+- 배포: 사용자 승인에 따라 active Run/Scheduler/running progress 0건에서 `ASTA_REPORT_PKG`, `ASTA_PKG` spec/body를 백업 후 컴파일했다. 두 package의 PACKAGE/PACKAGE BODY 모두 `VALID`, `USER_ERRORS=0`, 배포 후 active Run/job/progress 0건이다.
+- 배포 smoke: 원격 `USER_SOURCE`에서 comparison/screen 모두 3초 elapsed guard와 `OLTP_LATENCY_TARGET_NOT_MET` 신규 생성 marker가 없고 Buffer Gets gate는 유지됨을 확인했다. 실행 서비스 `/`는 새 cache URL을 참조하며 제공 `tuning_assistant.js`는 workspace와 236,703 bytes로 byte-identical이다.
+- artifact: `reports/asta_no_3s_latency_guard_deploy/20260709T143905Z/`에 백업 manifest와 `deploy_summary.json`을 보존했다. 기존 2388 저장 row/report는 갱신하지 않았다. SQL 원문, credential, LLM prompt/response는 저장하지 않았다.
+- 관련 커밋: 없음.
+
+## Run e81056 후보 복구 경로 보강 — 2026-07-09 ADB 배포 완료
+
+- 요청/결론: e81056에서 유일한 생성 후보가 ORA-25156 precheck로 탈락하고, 두 모델은 NO_REWRITE, 마지막 하드코딩 profile은 미존재해 후보가 0건이 된 문제를 줄이도록 후보 생성 복구 경로 3개를 구현하고 Real ASTA ADB에 배포했다. 외부 LLM 호출과 신규 분석 Run 실행은 수행하지 않았다.
+- 동적 fallback: `ASTA_DB_GENAI_TEST` 하드코딩을 제거했다. `ASTA_LLM_PKG.available_fallback_profile`이 `USER_CLOUD_AI_PROFILES`에 실제 존재하는 ASTA profile만 우선순위(Grok Reasoning/GenAI, Gemini, GPT-5.4/5.2/5.1/mini/nano)로 선택하며 없는 ordinal은 호출하지 않는다. diagnosis/candidate/repair 모두 이 resolver를 사용한다.
+- guard repair: Stage 2 후보가 `assert_candidate_compatible`에서 ORA-25156 등 구조 안전 검사에 실패하면 후보와 정확한 오류, Source column dictionary를 `REPAIR_SQL`에 전달해 내부 repair round를 한 번 수행한다. 성공 후보는 `candidate_source=GUARD_REPAIR`, artifact에 `guard_repair_attempted=true`를 남긴다. repair 내부 provider fallback도 실제 존재 profile만 사용한다.
+- 검증 이력 재사용: `ASTA_PKG.verified_history_candidate`가 동일 Source DB/workload, 원본 CLOB 길이+내용 완전 일치, 과거 `IMPROVED`, optimizer intent `VERIFIED`, result scope `FULL_RESULT`, equivalence `VERIFIED`, measurement `ACCEPTED`를 모두 만족하는 최신 후보만 가져온다. 후보 Guard를 다시 통과해야 하며 현재 Run과 원본 동일 SQL은 제외한다. validation candidate 다음, 새 LLM 호출 전에 `VERIFIED_HISTORY_REUSE`로 사용하고 progress에 원본 Run ID를 남긴다.
+- 안전 계약: history 재사용 후보도 기존 Stage 7 예상 Plan/PLAN_ONLY/전체 검증 흐름을 그대로 거친다. API top-level `candidate_sql`은 여전히 최종 `IMPROVED` 채택 SQL만 노출하고 ANALYSIS_ONLY에서는 성능·동등성 미검증 상태를 유지한다.
+- 변경 파일: `db/adb/asta_llm_pkg.sql`, `db/adb/asta_pkg.sql`, 신규 `tests/test_asta_llm_candidate_recovery.py`, `tests/test_asta_ords_migration_contract.py`, 이 handoff. 기존 dirty worktree는 보존했다.
+- 로컬 검증: 2026-07-09 재확인 결과 candidate recovery/ORDS migration/annotation/linear scanner/column dictionary 관련 `61 passed`; 전체 `476 passed, 기존 기준선 8 failed in 1.49s`, 신규 실패 0건. `node --check` 2개 JS와 `git diff --check` 통과.
+- 배포: 사용자 승인 후 precheck에서 활성 `ASTA_RUNS`/Scheduler/running progress 0건을 확인했다. `ASTA_LLM_PKG`, `ASTA_PKG` spec/body를 백업하고 두 package를 순서대로 컴파일했다. 최종 두 package의 PACKAGE/PACKAGE BODY 모두 `VALID`, `USER_ERRORS=0`, 배포 후 활성 Run/job/progress 0건이다.
+- 배포 smoke: 원격 `USER_SOURCE` marker 9건(`available_fallback_profile`, `user_cloud_ai_profiles`, legacy `ASTA_DB_GENAI_TEST` 부재, guard repair, `GUARD_REPAIR`, source evidence 전달, `verified_history_candidate`, `VERIFIED_HISTORY_REUSE`, `candidate_source`)을 확인했다. `USER_CLOUD_AI_PROFILES`에는 ASTA profile 8개가 있고 `ASTA_DB_GENAI_TEST`는 0건이며 `ASTA_PKG.LIST_PROFILES` 응답에도 legacy profile이 없다.
+- artifact: `reports/asta_candidate_recovery_deploy/20260709T141703Z/`에 백업 manifest와 `deploy_summary.json`을 보존했다. credential, SQL 원문, LLM prompt/response는 저장하지 않았다.
+- 관련 커밋: 없음.
+
+## Run e81056 개선 SQL 미생성 진단 — 2026-07-09
+
+- 대상 `OADT2-ASTA-e81056213d5d4caaab11bb00eaffba65`; ADB Run/Progress/LLM audit/결과서를 읽기 전용으로 대조했다. 코드·DB·배포 상태는 변경하지 않았다.
+- 실행 모드: `ANALYSIS_ONLY / ESTIMATED_PLAN_ONLY / SOURCE_SQL_NOT_EXECUTED`, `source_sql_executed=false`. 원본 SQL을 실행하지 않아 A-Time, Buffer Gets, Starts, elapsed, result equivalence 실측이 없었다. 진단 LLM도 `반복 작업 식별 불가`, `dominant repeated-work operation 확정 불가`, target_operations 빈 배열을 반환했다.
+- 후보 시도: 1차 `ASTA_GROK_REASONING_PROFILE`은 `NO_REWRITE`; 2차 `ASTA_GROK_GENAI_PROFILE`은 18,291자 SQL을 생성했지만 ANSI JOIN과 구식 `(+)`를 혼용해 `ASTA_SQL_GUARD` ORA-25156 precheck에서 차단; 3차 `ASTA_GEMINI_PROFILE`은 `NO_REWRITE`; 4차 `ASTA_DB_GENAI_TEST`는 존재하지 않는 profile이라 `ORA-20046`으로 즉시 실패했다.
+- 최종: 유효 후보가 0건이라 `NO_REWRITE / No structural rewrite candidate`, AFTER_EVIDENCE와 비교는 SKIPPED, tuned_sql null이다. 직접 원인은 유일한 생성 후보의 구조 안전성 실패이며, 실측 없는 estimated plan에서 두 모델이 fail-closed한 점과 존재하지 않는 하드코딩 fallback이 성공 가능성을 더 낮췄다.
+- 권장 조치: fallback을 실제 ENABLED profile에서 동적으로 구성하고 `ASTA_DB_GENAI_TEST`를 제거/교체한다. candidate guard 실패도 analysis-only에서 오류를 포함한 REPAIR_SQL로 1회 보정한다. 동일 SQL의 과거 검증 후보가 있으면 새 생성 전에 fingerprint 기반 재사용 후보로 제시하되 ANALYSIS_ONLY에서는 성능·동등성 미검증 표시는 유지한다.
+- 관련 커밋: 없음.
+
+## Source 미실행 ANALYSIS_ONLY 운영 배포 완료 — 2026-07-09
+
+- 요청/결론: 사용자가 이전 precheck의 stale `RUNNING` 3건 종료 처리를 명시 승인했고, 이후 `ANALYSIS_ONLY` 변경을 Real ASTA ADB에 배포했다. ORDS/Source package/service restart/commit/push는 수행하지 않았다.
+- stale cleanup: `ASTA_PKG` public subprogram metadata에는 `SUBMIT_RUN`, `EXECUTE_RUN`, `ENFORCE_CANDIDATE_TIMEOUT`, `ANALYZE_SQL`, `LIST_PROFILES`, `GET_RUN`, `GET_PROGRESS`, `GET_LLM_CALL`, `GET_REPORT`만 있었고 일반 cancel/cleanup API는 없었다. `ENFORCE_CANDIDATE_TIMEOUT`은 reason이 `CANDIDATE_TIMEOUT`인 timeout API라 stale cleanup에 사용하지 않았다. 이전 precheck의 정확한 3건만 `FAILED / STALE_ORPHAN_CLEANUP`으로 최소 갱신했다. 영향은 `ASTA_RUNS` 3행, `ASTA_RUN_PROGRESS` 0행, Scheduler job drop 0건이다. SQL 원문/request/response/report는 갱신하거나 artifact에 저장하지 않았다.
+- stale 대상: `OADT2-ASTA-fad861d08a98493b95afdd0c2e570e46`, `OADT2-ASTA-5edea6e6cd3f4a53949fefda0459e105`, `OADT2-ASTA-7eef2527f0b249c2a9cb4f48d1fa9fcc`. 관련 Scheduler job은 존재하지 않았고 running job도 0건이었다. cleanup 후 활성 Run/job/progress는 모두 0건이다.
+- 배포 전/백업: predeploy 활성 Run/job/progress 0건을 확인했다. `ASTA_VECTOR_PKG`, `ASTA_REPORT_PKG`, `ASTA_PKG`의 spec/body를 `reports/asta_analysis_only_deploy/20260709T094134Z/backup/`에 분리 백업했다. DBMS_METADATA의 PACKAGE DDL이 spec 뒤에 body까지 붙는 현상을 감지해 `PACKAGE BODY` 헤더 기준으로 강제 분리했고, 6개 백업 모두 kind 검증과 SHA-256 기록을 통과했다.
+- 배포: 의존 순서 `ASTA_VECTOR_PKG -> ASTA_REPORT_PKG -> ASTA_PKG`로 workspace SQL을 컴파일했다. 최종 6개 객체 PACKAGE/PACKAGE BODY 모두 VALID, `USER_ERRORS=0`, rollback 수행 없음. USER_SOURCE marker는 `ANALYSIS_ONLY`, `ESTIMATED_PLAN_ONLY`, `SOURCE_SQL_NOT_EXECUTED`, `source_runtime_metrics_status`, `runtime_verification_status`, `튜닝 후보 제안/분석 완료`, `확보된 근거`, `미확보 근거`, `미측정`, `ANALYSIS_OBSERVATION`, `ANALYSIS_SCOPE`, `observation_reason` 모두 존재한다.
+- smoke: 외부 LLM 호출과 Source 업무 SQL 실행 없이 합성 JSON으로 `ASTA_REPORT_PKG.BUILD_REPORT`/`BUILD_RESPONSE_JSON`를 호출했다. 결과는 `analysis_mode=ESTIMATED_PLAN_ONLY`, `execution_mode=SOURCE_SQL_NOT_EXECUTED`, `source_sql_executed=false`, `runtime_verification_status=NOT_EXECUTED`, comparison `verdict=ANALYSIS_ONLY`, `source_runtime_metrics_status=NOT_MEASURED`, `equivalence_status=NOT_EVALUATED`, 측정 metric null이다. 보고서는 결론/확보된 근거/미확보 근거/미측정 문구를 모두 포함했다.
+- Vector smoke: savepoint 이후 `ASTA_VECTOR_PKG.SAVE_CASE`를 호출해 `learning_class=ANALYSIS_OBSERVATION`, `observation_reason=ESTIMATED_PLAN_ONLY_RUNTIME_NOT_EXECUTED`, `rejection_reason=null`을 확인했다. insert row는 savepoint rollback으로 제거되어 `rows_after_rollback=0`이다.
+- HTTP/UI: same-origin login/profile API 200, `/` cache marker 2개 확인, `tuning_assistant.js`와 `asta_report_tabs.js` 모두 HTTP 제공 파일이 workspace 파일과 byte-identical이다. JS에는 `ANALYSIS_ONLY`와 미실행 분석 mode badge/guide marker가 존재한다.
+- 사후 상태: 활성 Run/job/progress 0건, 3개 package 6개 객체 VALID, USER_ERRORS 0. `select-ai-test.service`는 active이고 uvicorn은 0.0.0.0:8000 listen 중이다. 서비스 재시작 없음.
+- artifact: 전체 비민감 배포 기록은 `reports/asta_analysis_only_deploy/20260709T094134Z/`에 있다. 주요 파일은 `stale_cleanup_summary.json`, `backup_manifest.json`, `deploy_summary.json`, `smoke_summary.json`, `http_verification.json`, `post_status.json`, `service_status.json`이다. credential, 업무 SQL 원문, LLM prompt/response는 저장하지 않았다.
+
+## Source 미실행 ANALYSIS_ONLY 운영 배포 보류 — 2026-07-09
+
+- 요청/결론: 사용자가 `ANALYSIS_ONLY` 변경의 Real ASTA 운영 배포를 승인했으나, 배포 전 안전 precheck에서 `ASTA_RUNS.status='RUNNING'` 3건이 확인되어 사용자 지정 절차에 따라 배포를 보류했다. Scheduler running job은 0건, running progress는 0건이지만 “활성 Run·job 0건” 조건을 충족하지 못했다.
+- 활성 Run: `OADT2-ASTA-fad861d08a98493b95afdd0c2e570e46`(2026-07-03 13:25:50), `OADT2-ASTA-5edea6e6cd3f4a53949fefda0459e105`(2026-07-04 09:33:39), `OADT2-ASTA-7eef2527f0b249c2a9cb4f48d1fa9fcc`(2026-07-04 13:10:47)이 `RUNNING` 상태다. 관련 Scheduler job은 현재 실행 중이 아니다.
+- 현재 DB 상태: ADB 접속 user는 `ASTA`. `ASTA_PKG`, `ASTA_REPORT_PKG`, `ASTA_VECTOR_PKG`의 PACKAGE/PACKAGE BODY는 모두 VALID이고 `USER_ERRORS=0`이다.
+- 수행/미수행: precheck만 수행했다. package spec/body 백업, workspace SQL 컴파일, rollback, smoke, ORDS/Source/service 변경은 전혀 수행하지 않았다. 기존 Run row/report도 수정하지 않았다. 외부 LLM 호출, Source 업무 SQL 실행, commit/push 없음.
+- artifact: `reports/asta_analysis_only_deploy/20260709T094134Z/precheck.json`에 비민감 precheck 결과만 저장했다. SQL 원문·credential·LLM prompt/response는 저장하지 않았다.
+- 서비스 상태: `select-ai-test.service`는 active이고 `uvicorn` PID 1355243이 0.0.0.0:8000에서 listen 중이다. 재시작은 수행하지 않았다.
+- 다음 단계: 위 3개 `RUNNING` row를 stale orphan으로 볼지, 별도 정리/상태 변경 승인을 받을지 결정해야 배포를 재개할 수 있다. 현재 사용자 절차 기준으로는 활성 Run 0건이 아니므로 배포를 진행하면 안 된다.
+
+## Source 미실행 ANALYSIS_ONLY 계약/API/UI/보고서 정합성 — 2026-07-09 로컬 완료, 배포 안 함
+
+- 요청/결론: 직전 timeout 이후 작업을 이어서 `execute_source_sql=false` 후보 생성 경로를 실패/개선실패가 아닌 정상 분석 전용 모드로 완성했다. 후보와 예상 Plan이 생성되지만 Source DB에서 원본·후보 SQL을 실행하지 않은 경우 verdict는 `ANALYSIS_ONLY`, analysis_mode는 `ESTIMATED_PLAN_ONLY`, execution_mode는 `SOURCE_SQL_NOT_EXECUTED`가 된다. 성능 개선 여부와 결과 동등성은 미검증으로 표시한다.
+- ADB 계약: `ASTA_PKG`의 미실행 후보 비교 JSON이 `NOT_IMPROVED` 대신 `ANALYSIS_ONLY`를 반환한다. Source runtime metrics, Before/After 실제 XPLAN, result equivalence, 반복 성능 상태는 각각 `NOT_MEASURED`/`NOT_AVAILABLE`/`NOT_EVALUATED` 등으로 분리했고 수치 metric은 null로 둔다. 실측 ON의 기존 PLAN_ONLY/비교 판정 흐름은 그대로 유지한다.
+- API/보고서: `ASTA_REPORT_PKG.BUILD_RESPONSE_JSON`는 top-level `analysis_mode`, `execution_mode`, `source_sql_executed`, `runtime_verification_status`를 반환한다. Markdown 결론은 “튜닝 후보 제안/분석 완료, 성능 개선 여부 미검증”으로 표시하고, 확보된 근거와 미확보 근거를 분리한다. 미측정 metric은 0/추정치가 아니라 `미측정`/N/A 의미로 출력한다.
+- UI/다운로드: `tuning_assistant.js`는 `isEstimatedPlanAnalysisOnly`로 미실행 분석 모드를 감지하고 성공 흐름으로 처리하되, mode badge와 한국어 안내문으로 성능·동등성 미검증을 표시한다. 미실행 분석 toast는 별도 문구를 사용하고, 기존 실측 성공 toast 계약도 유지했다. `asta_report_tabs.js`의 verdict guide/download 파싱에도 `ANALYSIS_ONLY`를 추가했다.
+- Vector/문서: `ASTA_VECTOR_PKG`는 `ANALYSIS_ONLY`를 검증 성공 사례가 아닌 `ANALYSIS_OBSERVATION`으로 저장한다. 사용자/개발자 문서와 source execution flow, architecture 문서에 두 모드의 근거 차이와 `ANALYSIS_ONLY` 의미를 반영했다.
+- 변경 파일: 이번 보완의 핵심은 `db/adb/asta_pkg.sql`, `db/adb/asta_report_pkg.sql`, `db/adb/asta_vector_pkg.sql`, `static/js/extensions/tuning_assistant.js`, `static/js/extensions/asta_report_tabs.js`, `docs/AI_SQL_TUNING_ASSISTANT_MANUAL.md`, `docs/README.md`, `docs/asta_source_execution_flow.md`, `docs/OADT2_ASTA_ARCHITECTURE.md`, `tests/test_asta_estimated_plan_safe_mode.py`, `tests/js/asta_report_tabs_dom_test.cjs`, `tests/test_asta_developer_manual_contract.py`, `tests/test_asta_adb_ords_static_contracts.py`, 이 handoff다. 기존 dirty worktree와 사용자가 만든 누적 변경은 되돌리지 않았다.
+- TDD/검증: 신규 계약 RED를 먼저 확인했다. 이후 선별 `tests/test_asta_phase8_ui_vector_contract.py tests/test_asta_estimated_plan_safe_mode.py`는 `15 passed`; 관련 묶음은 `90 passed`; Node는 `node --check static/js/extensions/tuning_assistant.js`, `node --check static/js/extensions/asta_report_tabs.js`, `node tests/js/asta_report_tabs_dom_test.cjs`, `node tests/js/asta_llm_trace_render_test.cjs` 모두 통과했다. `git diff --check` 통과.
+- 전체 회귀: `PYTHONPATH=/home/opc/.cache/uv/archive-v0/uV3M1hTXKn5DvRqO/lib/python3.11/site-packages .venv/bin/python -m pytest -q` 결과 `472 passed, 기존 기준선 8 failed in 1.47s`. 실패는 기존 handoff와 같은 정적 계약 4, proxy 2, workload 2이며 이번 `ANALYSIS_ONLY`/UI 신규 실패는 없다.
+- HTTP 정적 제공: 서비스 재시작 없이 `http://127.0.0.1:8000/static/js/extensions/tuning_assistant.js`와 `asta_report_tabs.js`를 받아 workspace 파일과 `cmp -s` byte equality를 확인했다. 크기는 각각 236,605 bytes, 24,342 bytes로 로컬/HTTP가 동일하다.
+- 배포/커밋: 사용자 지시에 따라 DB package, ORDS, 서비스 재시작, commit/push는 수행하지 않았다. 운영 반영에는 ADB package/ORDS 및 정적 자산 배포 승인이 별도로 필요하다.
+
+## Source 미실행 + 튜닝 후보 생성 결과서 문구 정합성 — 2026-07-09 ADB 배포 완료
+
+- 요청/결론: `OADT2-ASTA-b70c843cbda04836ad0d5e6ebb912285`는 LLM 튜닝 후보와 원본/후보 예상 Plan이 생성됐지만 Source DB에서 두 SQL 모두 실행하지 않았다. 기존 결과서의 “성능이 충분히 좋아지지 않음”, “Buffer Gets 증가”, “Before/After 실제 실행 결과” 표현은 evidence 범위와 맞지 않아 예상 Plan 안전 모드 전용 문구로 수정했다.
+- 결과서 변경: 후보가 있으면 “튜닝 후보 SQL 생성 / 실제 성능·결과 동등성·채택 여부 미판정”으로 결론을 표시한다. 실행시간·Buffer Gets·Disk Reads는 `미측정`으로 표시하고, 병목은 `EXPLAIN PLAN 기반 예상 병목`으로 한정한다. 후보 SQL 제목/주의문, 과거 유사 사례, DBA 검토, 작업 수행 이력도 원본·후보 SQL 미실행과 예상 Plan 수집 사실에 맞췄다.
+- 단계 표: 안전 모드에서는 4단계를 `원본 SQL/예상 Plan`, 7단계를 `후보 SQL/예상 Plan`, 8단계를 `예상 Plan 범위 비교`로 표시한다. `DONE`은 EXPLAIN PLAN/evidence 단계 완료일 뿐 업무 SQL 실행 완료가 아님을 명시한다. 실제 PLAN_ONLY/전체 실행 결과서 분기는 유지했다.
+- 변경 파일: `db/adb/asta_report_pkg.sql`, `tests/test_asta_estimated_plan_safe_mode.py`, `tests/test_claude_review_regressions.py`, 이 handoff. 기존 dirty worktree와 동시 작업 변경은 보존했다.
+- 검증: 결과서/안전 모드 관련 선별 `30 passed`; 전체 `470 passed, 기존 8 failed in 1.48s`, 신규 실패 0. 기존 실패는 정적 계약 4, proxy 2, workload 계약 2이며 이번 변경과 무관하다. `git diff --check` 통과.
+- 배포: 사용자 승인 후 활성 ASTA Scheduler 0건에서 기존 `ASTA_REPORT_PKG` spec/body를 분리 백업하고 수정본을 컴파일했다. PACKAGE/PACKAGE BODY 모두 VALID, `USER_ERRORS=0`, 배포 marker 2건이며 배포 후 활성 job도 0건이다.
+- b70 smoke: 저장된 source/LLM/after/comparison artifact로 결과서를 메모리에서 재생성했다. `source_sql_executed=false`, `plan_kind=ESTIMATED`, `screen_mode=ESTIMATED_PLAN`, `equivalence=NOT_EVALUATED`를 확인했다. 새 후보 생성 결론, 실행시간/Buffer Gets 미측정, 예상 병목, 후보 SQL/예상 Plan, 유사 사례 범위, 단계 표, 잘못된 “성능 미개선” 문구 부재 등 15개 검증이 모두 통과했다.
+- 배포 artifact: `reports/asta_estimated_candidate_report_deploy/20260709T074830Z/`에 배포 전 spec/body와 비민감 요약을 보존했다. 기존 b70의 저장 결과서(`ASTA_RUNS.DETAILED_REPORT_MD`)는 배포 전후 길이/hash가 동일하며 갱신하지 않았다. 신규 Run부터 새 문구가 적용된다. 기존 b70 저장 결과서를 바꾸려면 별도 데이터 변경 승인이 필요하다. 서비스/ORDS/외부 LLM/commit/push 변경 없음.
+
+## LLM 실제 컬럼 dictionary 전달 — 2026-07-09 Source/ADB 배포 완료
+
+- 요청/결론: Run 98e의 `TGP_STYDE_L.BRAND_CD` 같은 base-table identifier hallucination을 줄이기 위해 deterministic lineage validator는 추가하지 않고 실제 Source column dictionary를 Stage 2 후보 생성과 ORA repair prompt에 전달하도록 구현했다.
+- Source: `collect_estimated_object_info`가 예상 Plan의 TABLE ACCESS 객체마다 `DBA_TAB_COLUMNS`에서 최대 120개 컬럼을 `column_name/data_type/nullable/column_id`로 수집해 `object_info.table_stats[*].columns`에 포함한다. SQL은 실행하지 않으며 기존 통계·인덱스 수집은 유지한다.
+- ADB LLM: 신규 `compact_column_dictionary`가 Source object_info를 `owner/table_name/columns`만 남긴 JSON으로 축약한다. 통계·인덱스는 제외하고 최대 30개 테이블/총 600개 컬럼으로 제한한다. Stage 2에는 listed table에서 dictionary에 있는 column만 사용하고 유사 테이블의 correlation key를 복사하지 말라는 계약과 함께 전달한다.
+- Repair: `repair_sql_candidate`에 optional `p_source_evidence_json`을 추가하고 두 repair 호출 모두 `l_source_json`을 전달한다. repair prompt에도 동일 dictionary를 넣어 ORA-00904 식별자를 원본 SQL과 실제 컬럼 목록으로만 수정하도록 했다.
+- 변경 파일: `db/source/asta_source_pkg.sql`, `db/adb/asta_llm_pkg.sql`, `db/adb/asta_pkg.sql`, 신규 `tests/test_asta_llm_column_dictionary_prompt.py`, 이 handoff. 기존 dirty worktree와 동시 작업 변경은 보존했다.
+- 검증: 신규 dictionary 계약 4건 포함 관련 `81 passed`, 전체 `469 passed, 기존 8 failed in 1.48s`, 신규 실패 0. 기존 실패는 정적 계약 4, proxy 2, workload 2이며 이번 변경과 무관하다. `git diff --check` 통과.
+- Source 배포: 사용자 승인 후 ORCLAI 저장 연결에서 기존 `ASTA_SOURCE_PKG` spec/body를 분리 백업하고 수정본을 컴파일했다. PACKAGE/PACKAGE BODY 모두 VALID, USER_ERRORS=0, estimated column limit marker 1건이다. 첫 smoke는 index-only plan이라 TABLE ACCESS object_info가 비어 실패했지만 package는 VALID였다. 이어 ADB→DB Link `FULL` hint 예상 Plan smoke가 `COMPLETED / ESTIMATED / source_sql_executed=false`로 성공했다.
+- Source dictionary smoke: `DSNT.TGP_STYDE_L`를 대상 테이블로 확인했고 27개 컬럼을 반환했다. `COMP_CD`, `STYLE_CD`, `FIRS_IN_DE`, `USE_YN`이 존재하고 `BRAND_CD`는 존재하지 않았다. 업무 SELECT는 실행하지 않았고 EXPLAIN PLAN만 수행했다.
+- ADB 배포: 기존 `ASTA_LLM_PKG`와 `ASTA_PKG` spec/body를 분리 백업한 뒤 두 package를 연속 컴파일했다. 4개 PACKAGE/PACKAGE BODY가 모두 VALID, USER_ERRORS=0이다. dictionary helper 1, Stage 2/repair prompt 2, nested columns 1, source evidence parameter 4, pipeline source evidence 전달 8 marker를 확인했고 기존 LLM trace API marker 2도 보존했다. 배포 전후 활성 ASTA Scheduler job은 0건이다.
+- 배포 artifact: `reports/asta_column_dictionary_deploy/20260709T070313Z/`에 Source/ADB 백업, 로그, 배포 요약, bridge smoke, 최종 검증 JSON을 보존했다. 외부 LLM 재호출, 서비스/ORDS/업무 데이터 변경, commit/push는 수행하지 않았다.
+
+## 분석 진행상태 LLM prompt/응답 추적 UI — 2026-07-09 배포 완료
+
+- 요청/결론: 분석 진행상태 6단계에서 LLM에게 어떤 prompt를 보냈고 어떤 응답을 받았는지 확인할 수 있도록 구현했다. 호출 목록은 실시간 요약만 polling하고, 원문은 사용자가 버튼을 누른 한 호출만 lazy-load하며 prompt/응답 블록은 기본 접힘이다.
+- ADB `ASTA_PKG`: `GET_PROGRESS`에 `llm_calls` 요약 배열을 추가했다. `ASTA_LLM_CALL_LOG`의 call_id/stage/attempt/profile/SENT·RECEIVED·FAILED/prompt·response 문자 수/error code/timing만 반환하며 CLOB 원문은 넣지 않는다. 새 `GET_LLM_CALL(run_id, call_id)`은 두 식별자를 함께 조건으로 정확한 prompt/response 한 건만 반환하고 운영 SQL·XPLAN 민감도 marker를 포함한다.
+- ORDS/FastAPI: `GET runs/:run_id/llm-calls/:call_id` handler와 same-origin `/api/asta/runs/{run_id}/llm-calls/{call_id}` proxy를 추가했다. FastAPI 전역 auth 보호를 거치며 legacy in-memory snapshot이 원문 조회를 가로채지 않고 authoritative ADB row만 조회한다. ORDS 응답은 기존 no-store/nosniff/runtime-boundary header와 CLOB chunking을 유지한다.
+- UI: 6단계 상세에 DIAGNOSIS/CANDIDATE_SQL/REPAIR_SQL별 attempt, profile, 상태, 문자 수, 실시간 elapsed를 표시한다. **Prompt·응답 원문 보기**를 눌러야 API를 호출하며, 원문 경고·기본 접힘·개별 복사를 제공한다. polling 중 elapsed만 바뀔 때 loaded 원문 DOM을 보존하고, SENT→RECEIVED처럼 응답 metadata가 바뀌면 stale cache를 폐기한다. cache version은 `20260709_llm_trace1`이다.
+- 문서/테스트: 사용자 매뉴얼, architecture/source flow, ADB README 및 ORDS/header/cache 계약 테스트를 갱신했다. 신규 Node 렌더 테스트 `tests/js/asta_llm_trace_render_test.cjs`는 summary에 원문이 섞이지 않음, lazy control, HTML escape와 기본 접힘을 검증한다.
+- 검증: 관련 선별 `25 passed`, progress 전체 `17 passed`, Node PASS, `node --check`, Python `py_compile`, `git diff --check` 통과. 전체 `465 passed, 기존 계열 8 failed in 1.47s`; 실패는 기존 ADB smoke/report/error 계약 4, proxy error-return 기대 2, workload 계약 2이며 이번 LLM trace 신규 실패는 없다.
+- ADB/ORDS 배포: 활성 ASTA Scheduler 0건에서 기존 `ASTA_PKG`와 ORDS metadata를 백업하고 새 `ASTA_PKG` 및 `asta.v1` module을 배포했다. 최종 package spec/body 모두 VALID, `USER_ERRORS=0`, 배포 marker 존재, ORDS module 1개/template 6개/handler 6개, 활성 job 0건이다. 성공 artifact는 `reports/asta_llm_trace_deploy/20260709T064656Z/`이며 package 백업, ORDS metadata, raw SQL/prompt/응답을 제외한 deploy/HTTP 요약을 보존한다.
+- DB/API smoke: 기존 Run의 `GET_PROGRESS`에서 LLM 호출 요약 5건을 반환하면서 raw prompt/response key가 없음을 확인했다. 선택한 `REPAIR_SQL / RECEIVED` 호출은 prompt 38,581자와 응답 18,330자의 저장 길이가 일치했고 sensitivity marker가 존재했다. 같은 call ID를 다른 Run ID로 조회하면 `LLM_CALL_NOT_FOUND`였다. 원문은 artifact/로그/응답 요약에 기록하지 않았다.
+- 웹 배포: systemd restart는 interactive authentication으로 실패했다. HUP 종료가 정상 종료로 분류돼 unit이 inactive가 된 뒤 `sudo -n systemctl start select-ai-test.service`로 즉시 복구했고, 새 PID `1355243`, startup complete, HTTP GET 200을 확인했다. 인증된 same-origin smoke에서 새 cache version/JS marker, progress 5건, lazy 원문 길이, no-store, cross-run 차단을 모두 통과했다. HTTP 요약은 성공 artifact의 `http_verification.json`이다.
+- 배포 중 복구 기록: 첫 artifact `reports/asta_llm_trace_deploy/20260709T064501Z/`에서는 새 package가 VALID였으나 smoke의 집계형 최신-call 선택 SQL이 `ORA-00935`로 실패했다. 자동 rollback이 DBMS_METADATA spec/body 구분을 잘못 처리해 package가 잠시 INVALID가 됐지만, 즉시 현재 검증본을 재컴파일해 spec/body VALID·오류 0건으로 복구했다. 이 첫 시도에서는 ORDS를 변경하지 않았다. smoke SQL을 단순 call_id 정렬로, 백업을 spec/body 분리 검증 방식으로 고친 뒤 두 번째 배포가 성공했다.
+- 변경 파일: `db/adb/asta_pkg.sql`, `db/ords/asta_ords_module.sql`, `app/routers/asta_proxy.py`, `static/js/extensions/tuning_assistant.js`, `static/index.html`, ADB README/문서 3개, 관련 테스트와 신규 Node 테스트, 이 handoff. 기존 다른 작업의 미커밋 변경을 보존했다.
+- 남은 문제/다음 단계: 기능 배포와 API/UI 자산 smoke는 완료됐다. 실제 사용자는 새 분석 또는 기존 Run의 진행 상세 6단계를 열고 호출별 원문 버튼을 사용할 수 있다. 커밋/push는 수행하지 않았다.
+
+## Run 98e 후보 ORA-00904 원인 — LLM의 이종 테이블 키 대칭화 오류 — 2026-07-09
+
+- 대상 `OADT2-ASTA-98e18cc469234d618297c65b522d50fb`을 ADB에서 읽기 전용 진단했다. Run은 COMPLETED지만 7단계 AFTER_EVIDENCE가 83,534ms 후 `ORA-00904: "BRAND_CD": invalid identifier`, 비교는 `CANDIDATE_FAILED`, 원본 유지다. 실제 Source SQL은 실행하지 않았고 예상 Plan parse에서 차단됐다.
+- 새 annotation 정규화 배포는 정상 적용됐다. Grok 2차가 18,241자 후보를 생성했고 SQL Guard를 통과했으며 Source parse 단계까지 도달했다. 이전 ORA-06502/annotation 손상은 재발하지 않았다.
+- 정확한 모델 오류: 후보가 `FIRS_IN` helper의 `DSNT.TGP_STYDE_L` SELECT/GROUP BY에 `BRAND_CD`를 추가했다. Source `DBA_TAB_COLUMNS` 대조 결과 TGP_STYDE_L에는 `COMP_CD`, `STYLE_CD`, `FIRS_IN_DE`, `USE_YN`은 있지만 `BRAND_CD`가 없다. 반면 함께 재작성한 `FIRS_OUT` 원천 `DSNT.TSE_DIV_L`에는 BRAND_CD가 있다. 모델이 유사한 두 correlated MIN을 GROUPING SETS helper로 대칭화하면서 TSE_DIV_L의 correlation key를 TGP_STYDE_L에도 복사한 것이다.
+- 왜 prompt만으로 막히지 않았나: SQL-only Stage 1/2는 source evidence에서 `plan_text`만 추출해 SQL/XPLAN을 모델에 제공하며 `object_info`의 실제 column dictionary는 전달하지 않는다. 프롬프트에 “identifier를 만들지 말라”는 규칙은 있지만 Oracle parser/schema resolver가 아니라 생성 모델의 자기검사에 의존하므로 18K 장문 SQL과 유사 패턴에서 이 규칙을 위반했다.
+- 자동 repair도 2회 호출됐지만 두 응답 모두 TGP_STYDE_L 주변 BRAND_CD를 유지했고, 추가로 ASTA annotation을 leading header에 두지 않아 Guard에서 거절됐다. 따라서 ORA-00904의 실질적 수정 후보가 만들어지지 않았다.
+- 일반화된 개선 방향: (1) Stage 2와 repair prompt에 해당 object의 실제 column dictionary를 bounded JSON으로 포함, (2) 후보의 새 alias.column과 CTE projection을 deterministic lineage validator로 검사, (3) ORA-00904 repair에 오류 식별자의 실제 소유 object/available columns를 전달해야 한다. 이번 요청은 원인 질문으로 처리해 코드/package/Run/Source DB/서비스는 변경하지 않았다. 외부 LLM 재호출 없음.
+
+## LLM prompt/응답 조회 및 진행상태 노출 현황 — 2026-07-09
+
+- 현재 ADB는 Run별 모든 LLM 호출을 `ASTA_LLM_CALL_LOG`에 autonomous transaction으로 저장한다. 저장 항목은 `DIAGNOSIS`, `CANDIDATE_SQL`, `REPAIR_SQL`별 attempt/profile/status, 정확한 `prompt_clob`/`response_clob`, 문자 수, 오류, 시작/완료 시각이다.
+- 호출은 `DBMS_CLOUD_AI.GENERATE(... action=>'chat')`이며, 1단계 DIAGNOSIS에는 원본 SQL·전체 XPLAN·사용자 참고사항을, 2단계 CANDIDATE_SQL에는 diagnosis·원본 SQL·전체 XPLAN·구조/의미 보존 규칙을 전달한다. 후보 Oracle 오류 시 REPAIR_SQL은 원본·실패 후보·ORA 오류를 전달한다.
+- 현재 `/runs/{run_id}/progress`는 `ASTA_RUN_PROGRESS`의 6단계 `LLM_REWRITE` RUNNING/DONE과 timing/detail만 반환하고 `ASTA_LLM_CALL_LOG`는 반환하지 않는다. UI 상세 Drawer도 이 단계 수준 로그만 표시한다. 최종 report API의 `artifacts.llm`에는 diagnosis/최종 raw response/candidate/profile error가 일부 보존되지만 prompt 원문과 attempt 전체 이력은 없다.
+- 진행상태에 표시하는 것은 가능하다. `GET_PROGRESS`에 해당 Run의 call-log 요약 배열을 추가하면 현재 1초 polling으로 DIAGNOSIS/CANDIDATE/REPAIR별 attempt/profile/SENT·RECEIVED·FAILED/문자 수/소요시간을 실시간 표시할 수 있다. prompt/response 원문은 운영 SQL·XPLAN을 포함하므로 기본 접힘, 권한 제한, lazy chunk 조회 및 민감정보 보호가 필요하다.
+- 이번 요청은 현황 진단만 수행했다. 코드/DB/package/service 변경 없음.
+
+## Run 51ea 개선 SQL 미표시 — 정규화 주석 수정·ADB 배포 완료 — 2026-07-09
+
+- 대상 `OADT2-ASTA-51ea54dd30ff4a949a891178c6392a7d`를 ADB에서 읽기 전용 진단했다. Run은 COMPLETED지만 `tuned_sql`이 없고 비교는 `NO_REWRITE / No structural rewrite candidate`다. 4단계 예상 Plan은 정상 완료했고 실제 Source SQL은 실행하지 않았다.
+- 이전 `structural_sql_key` 다중바이트 ORA-06502는 재발하지 않았다. 6단계는 76,250ms에 DONE했고 `ASTA_LLM_PKG` 결과도 COMPLETED다. Grok reasoning/Gemini는 `NO_REWRITE`, DB fallback profile은 미존재로 실패했지만 `ASTA_GROK_GENAI_PROFILE`은 17,904자의 완전한 `WITH` 후보를 생성했다.
+- 후보는 FIRS_OUT/FIRS_IN과 GROUPING SETS 구조를 포함하고 원본 저장 응답 그대로는 SQL Guard `OK`다. 최종 탈락 오류는 `ASTA_SQL_GUARD: malformed ASTA tuning change annotation`이다.
+- 정확한 원인: `ASTA_LLM_PKG.normalize_sql_response`에서 `l_comment_end := INSTR(l_text, '*/', 3)`는 닫는 `*/`의 `*` 위치를 반환하는데, `l_header := RTRIM(SUBSTR(l_text, 1, l_comment_end))`가 그 위치까지만 복사한다. 정상 `/* ... */`가 `/* ... *`로 잘려 Guard가 거절한다. 동일 함수 재현 결과 raw candidate 17,904자/정상 leading annotation/Guard OK, normalized 17,905자/닫는 slash 누락/Guard malformed가 일치했다.
+- 수정: `db/adb/asta_llm_pkg.sql`의 header 복사를 `SUBSTR(l_text, 1, l_comment_end + 1)`로 변경해 `*/` 두 글자를 모두 보존했다. `tests/test_asta_inline_change_annotations.py`에 fenced SQL의 leading annotation 종료 문자가 보존되는 정적 회귀 계약을 추가했다.
+- 배포: 사용자 승인 후 활성 ASTA Scheduler 0건을 확인하고 기존 `ASTA_LLM_PKG` spec/body를 백업한 뒤 package body를 컴파일했다. PACKAGE/PACKAGE BODY 모두 VALID, USER_ERRORS=0이며 배포된 BODY에서 `annotation_closer` marker 1건을 확인했다. 배포 전후 활성 job은 0건이다.
+- 배포 후 저장 후보 재검증: 새 정규화 결과는 정상 `/* ... */` leading comment를 그대로 보존하고 annotation count 1, SQL Guard `OK`다. 구조 비교도 `DIFFERENT`로 정상 완료했다. 다음 Source 예상 Plan 단계까지 도달했으며 실제 SQL은 실행하지 않았다.
+- 후보 자체의 다음 오류: 저장된 17,904자 Grok 후보는 Source `EXPLAIN PLAN`에서 `ORA-00904: "BRAND_CD": invalid identifier`로 실패했다. 이는 annotation/Guard 버그와 별개인 모델 후보의 컬럼 참조 오류다. 정상 전체 Run에서는 Stage 7 repair 경로가 이 오류를 처리할 수 있지만, 이번 검증은 외부 LLM을 재호출하지 않아 repair는 수행하지 않았다. 신규 pipeline Run 0건, 활성 job 0건이다.
+- 검증: 관련 `35 passed`; 전체 `458 passed, 기존 9 failed in 1.44s`, 신규 실패 0. `git diff --check` 통과. artifact는 `reports/asta_llm_annotation_fix_deploy/20260709T061028Z/`에 배포 전 spec/body, 배포 요약, SQL 원문 없는 저장 후보 검증 요약을 보존했다. 서비스/Source package/ORDS/업무 데이터/commit/push 변경 없음. 외부 LLM 재호출 없음.
+
+## Run 509a 개선 SQL 누락 원인·다중바이트 structural key 수정 — 2026-07-09 ADB 배포 완료
+
+- 요청/결론: `OADT2-ASTA-509a7954080946a887537c10df2e537b`가 개선 SQL을 만들지 못한 원인을 ADB에서 읽기 전용으로 진단했다. Run은 전체적으로 COMPLETED였지만 6단계 `LLM_REWRITE`가 `ORA-06502: character string buffer too small`로 FAILED했고, 이후 후보 Plan/비교는 `No structural rewrite candidate`로 생략됐다.
+- 실제 LLM 결과: GPT-5.4 1차 후보는 `NO_REWRITE`였지만 Grok 2차는 22,531자의 완전한 `WITH` 후보를 반환했다. 후보는 ASTA change annotation을 포함했고 `ASTA_SQL_GUARD_PKG.INSPECT_SQL`을 통과했다. 후보는 FIRS_OUT/FIRS_IN 상관 MIN을 `GROUPING SETS` 기반 사전 집계로 바꾸는 내용이었다. 즉 모델이 후보를 만들지 못한 것이 아니라 후보 수신 직후 ASTA 내부 구조 비교가 실패했다.
+- 정확한 원인: `ASTA_LLM_PKG.structural_sql_key`의 단일 순회 scanner가 `l_char`, `l_next`를 `VARCHAR2(1)` byte로 선언했다. 원본 SQL 18,497자에는 한글 등 비ASCII 121자가 있어 한 문자를 대입하는 순간 ORA-06502가 발생했다. 실제 Run 원문을 사용한 비영속 PL/SQL 재현에서 `VARCHAR2(1) -> ORA-06502`, `VARCHAR2(4) -> OK`를 확인했다.
+- 수정: `db/adb/asta_llm_pkg.sql`의 scanner 문자 버퍼를 AL32UTF8 안전한 `VARCHAR2(4)`로 변경했다. chunk도 `VARCHAR2(4096)`로 넓히고 1,000 characters마다 flush해 chunk의 byte overflow 가능성을 제거했다. `tests/test_asta_structural_sql_key_linear_scanner.py`에 문자/next/chunk 크기 회귀 계약을 추가했다.
+- 사용자 제시 권고와 비교: ASTA diagnosis도 독립적으로 FIRS_OUT/FIRS_IN 상관 MIN 제거를 1순위로 선정했다. 반면 제시된 YY의 SALE_DE 제거는 원본의 결과 grain/행 수를 바꿀 수 있어 “기간합계가 업무 의도”라는 명시가 없으면 ASTA의 의미 보존 규칙상 자동 적용하면 안 된다. ITEM 단위 FIRS_OUT/FIRS_IN 예시도 원본 COLOR_CD/SIZE_CD `'-'` wildcard 의미를 잃을 수 있어 ASTA 후보는 GROUPING SETS로 이를 보존했다. 인덱스/DDL과 bind interface 변경은 SQL-only 후보 정책상 의도적으로 제외된다.
+- 검증: 관련 scanner/annotation/LLM audit `34 passed`; 전체 `457 passed, 기존 9 failed in 1.45s`, 신규 실패 0. 기존 9건은 정적 계약 5, 로컬/ORDS proxy 2, workload 계약 2로 이번 변경과 무관하다. `git diff --check` 통과.
+- 배포: 사용자 승인 후 활성 ASTA Scheduler 0건을 확인하고 기존 `ASTA_LLM_PKG` spec/body를 백업한 뒤 수정본만 ADB에 컴파일했다. PACKAGE/PACKAGE BODY 모두 VALID, USER_ERRORS=0이며 배포된 `USER_SOURCE`에서 `l_chunk VARCHAR2(4096)`, `l_char/l_next VARCHAR2(4)`, 1,000-character flush marker를 각각 1건 확인했다. 배포 전후 활성 job은 0건이다.
+- 실환경 검증: 전체 Run 재제출은 저장 SQL을 외부 LLM으로 다시 보낼 수 있어 안전 정책이 실행 전에 차단했다. 대신 외부 LLM 호출 없이 기존 Grok 응답 22,542자를 재사용했다. 정규화된 후보 22,531자는 SQL Guard `OK`, 수정된 구조 비교는 `DIFFERENT`이며 원본/후보 key를 끝까지 계산했다. 후보 Source 예상 Plan은 `COMPLETED / EXPLAIN_PLAN_DICTIONARY_ONLY / plan_kind=ESTIMATED / source_sql_executed=false`, plan 38,591자, result digest SKIPPED다. 신규 pipeline Run 0건, 검증 후 활성 job 0건이다.
+- artifact: `reports/asta_llm_multibyte_fix_deploy/20260709T055726Z/`에 배포 전 spec/body, `deploy_summary.json`, 비밀정보·SQL 원문이 없는 `stored_candidate_verification.json`을 보존했다. 기존 Run row/report는 소급 변경하지 않았다. 서비스/Source package/ORDS/업무 데이터/commit/push 변경 없음.
+
+## ESTIMATED_PLAN 튜닝 전 UI 표시·보고서 Run ID — 2026-07-09 배포 완료
+
+- 요청/결론: Source SQL 미실행 모드에서 결과서에 생성되는 `## 튜닝 전 예상 Plan`이 UI의 `튜닝 전` 탭에 보이지 않던 문제를 수정했다. UI 섹션 분류기가 기존 `튜닝 전 XPLAN`만 인식하던 것이 원인이었다.
+- UI: `static/js/extensions/asta_report_tabs.js`에 `튜닝전 예상 plan -> before`, `튜닝후 예상 plan -> after` 규칙을 추가했다. DOM 회귀에서 예상 Plan heading과 fenced plan text가 각각 튜닝 전/후 패널에 렌더링됨을 확인했다. cache version은 `20260709_estimated_plan_tabs1`이다.
+- 보고서: `ASTA_REPORT_PKG.BUILD_REPORT`의 `## 결론` 첫 항목에 `- Run ID: \`<run_id>\``를 추가했다. 이후 생성되는 보고서와 UI 요약 탭에서 Run ID를 확인할 수 있다. 기존 저장 보고서는 소급 수정하지 않았다.
+- 검증: 관련 `53 passed`, 전체 `456 passed, 기존 9 failed in 1.64s`, 신규 실패 0. 전체 JS DOM 2개 통과, `node --check`, `git diff --check` 통과.
+- 배포: 활성 Scheduler 0건에서 기존 `ASTA_REPORT_PKG` spec/body를 백업하고 package body를 컴파일했다. PACKAGE/PACKAGE BODY 모두 VALID, USER_ERRORS=0이다. 합성 ESTIMATED_PLAN report smoke에서 Run ID, `## 튜닝 전 예상 Plan`, Plan 본문, SQL 미실행 범위 문구를 모두 확인했다. artifact는 `reports/asta_estimated_plan_ui_report_deploy/20260709T052915Z/`다.
+- 웹: 서비스는 PID 1318404, active/running, 0.0.0.0:8000 listener다. 실제 HTTP `/`에서 새 cache version을, 제공 JS에서 before/after 예상 Plan 규칙을 확인했고 workspace 파일과 byte-identical이다. 정적 파일 직접 제공이라 서비스 재시작은 하지 않았다.
+- 변경 파일: `db/adb/asta_report_pkg.sql`, `static/js/extensions/asta_report_tabs.js`, `static/index.html`, `tests/js/asta_report_tabs_dom_test.cjs`, `tests/test_asta_estimated_plan_safe_mode.py`, cache 계약 테스트 2개, 이 handoff. 커밋 없음.
+
+## Run 1f50 ORA-01039 권한 해결 검증 — 2026-07-09 완료
+
+- DBA가 `ORCLAI`에 `DSNT.TGP_ORDER_D`, `DSNT.TGP_WHOLESALE_EXCEPT`, `DSNT.TGP_STYGRP_D`, `DSNT.TGP_STYGRP_M`의 직접 SELECT를 부여한 뒤 실제 `DBA_TAB_PRIVS`에서 4개 grant를 모두 확인했다.
+- `DSNT.VIF_WHOLESALE_S`와 `DSNT.V_STYGRP_D`를 각각 단독 `ESTIMATED_PLAN`으로 재검증했고 모두 `COMPLETED / EXPLAIN_PLAN_DICTIONARY_ONLY / plan_kind=ESTIMATED`, plan text 존재, `source_sql_executed=false`, `result_digest_status=SKIPPED`, Oracle 오류 없음이다.
+- 원본 Run `OADT2-ASTA-1f50ae344edc4bd59c6a4d8ed13c5ae9`의 18K SQL도 동일한 Bridge 경로에서 `OADT2-ASTA-GRANT-ORIGINAL` smoke로 예상 Plan 생성에 성공했다. 실제 업무 SQL·LLM·후보 SQL은 실행하지 않았다.
+- 검증 후 활성 ASTA Scheduler job은 0건이다. 코드, package, DB Link, 서비스 변경 없음. 권한 부여는 DBA가 외부에서 수행했고 이번 세션은 읽기/예상 Plan 검증만 수행했다.
+
+## Run 1f50 ORA-01039 정확한 뷰/직접 권한 확정 — 2026-07-09
+
+- 추가 대조: `DSNT.VIF_WHOLESALE_S`, `DSNT.V_STYGRP_D`는 각각 `SELECT 1 ... WHERE 1=0` 일반 파싱이 성공하지만 EXPLAIN PLAN만 ORA-01039로 실패한다. 두 view는 `BEQUEATH DEFINER`다. 따라서 업무 조회 권한은 정상이고 ASTA의 예상 Plan 전용 권한 조건만 충족하지 못한 상태다.
+- ORCLAI 역할은 CONNECT/RESOURCE/SELECT_CATALOG_ROLE뿐이다. 누락된 4개 underlying table은 ORCLAI direct, 부여된 role, PUBLIC 어느 경로에도 SELECT/READ grant가 없고 ORCLAI에 SELECT ANY TABLE/READ ANY TABLE도 없다. “뷰 조회 권한이 있다”와 “다른 owner view를 EXPLAIN할 underlying object 권한이 있다”는 별개다.
+- 대상 `OADT2-ASTA-1f50ae344edc4bd59c6a4d8ed13c5ae9`의 SQL 원문은 출력하지 않고 참조 객체를 분리해 각 view를 `ESTIMATED_PLAN`으로 재현했다. `DSNT.VIF_WHOLESALE_S`와 `DSNT.V_STYGRP_D` 두 view 모두 단독 EXPLAIN PLAN에서 `ORA-01039`가 재현됐다.
+- `ORCLAI`에는 두 view 자체와 `DSNT.TGP_STYDE_L`, `DSNT.TGP_STYLE_M`의 직접 SELECT가 있다. 다음 underlying table의 직접 SELECT는 없다: `DSNT.TGP_ORDER_D`, `DSNT.TGP_WHOLESALE_EXCEPT`, `DSNT.TGP_STYGRP_D`, `DSNT.TGP_STYGRP_M`. `SELECT ANY TABLE`/`READ ANY TABLE`도 없다.
+- 정확한 최소 DBA 조치는 DSNT owner 또는 DBA가 위 4개 table에 대해 `GRANT SELECT ... TO ORCLAI`를 직접 부여하는 것이다. 역할 권한이 아니라 direct object grant가 필요하다. 권한 부여 후 두 view 단독 예상 Plan과 원본 Run SQL 예상 Plan을 재검증해야 한다.
+- `SELECT USER FROM dual@DBLINK`를 원격 로그인 사용자 증거로 해석했던 이전 진단은 부정확했다. Source DB에는 `ASTA` user/role이 없어 `GRANT ... TO ASTA`가 ORA-01917로 실패했다. DB Link/credential 변경이 이 ORA-01039의 해결책이라는 결론은 철회한다.
+- 대안으로 `ORCLAI.ASTA_SOURCE_DEFINER_PKG` wrapper를 로컬 구현하고 Source에 컴파일했으나 정확한 문제 SQL에서 동일 ORA-01039가 재현되어 효과가 없음을 확인했다. ADB Bridge는 배포하지 않았고 wrapper는 Source에서 삭제했으며 관련 로컬 변경도 모두 원상 복구했다. 기존 `ASTA_SOURCE_PKG`, ADB Bridge, 서비스, DB Link 매핑은 변경되지 않았다.
+- 진단용 Source evidence row만 생성됐으며 업무 SQL은 실행되지 않았다. `git diff --check`, JS syntax 통과. 관련 로컬 테스트는 구현 중 `76 passed`; wrapper 변경은 최종적으로 제거했다.
+
+## ORCLAI credential 갱신 후 DB Link 재검증 — 2026-07-09
+
+- credential 소유자가 `ASTA_ORCLAI_LINK_CRED`의 ORCLAI 인증정보 갱신을 완료했다고 알려 재검증했다.
+- 기존 링크를 건드리지 않고 `ASTA_ORCLAI_LINK_MIG` 임시 링크를 `credential_name`, private non-TLS 옵션, `shared=>TRUE`, `auth_credential_name`으로 생성했다. 연결은 성공했으나 실제 원격 `USER`가 다시 `ASTA`였고 고정 사용자 검증에 실패했다.
+- 따라서 비밀번호 갱신 여부와 별개로 현재 ADB `DBMS_CLOUD_ADMIN.CREATE_DATABASE_LINK` 경로가 이 credential을 ORCLAI fixed-user 링크로 적용하지 않는 상태다. 최종 `ASTA_ORCLAI_LINK`와 allowlist 매핑은 변경하지 않았다.
+- 실패한 임시 링크를 삭제했다. 최종 상태: 임시 링크 0건, 기존 링크 원격 `USER=ASTA`, `DB0903_TESTDB`/`DSNT_PDB` 모두 기존 링크 매핑. 운영 영향 없음.
+- 권장 링크 정렬은 현재 방식으로 진행 불가하다. 후속은 ADB ADMIN/Oracle 지원을 통한 fixed-user DB Link 생성 확인 또는 Source `ASTA_SOURCE_PKG`의 definer-rights/ORCLAI wrapper 방식 검토다.
+
+## ASTA_ORCLAI_LINK ORCLAI 고정 사용자 전환 시도 — 2026-07-09 안전 중단
+
+- 사용자 승인으로 `ASTA_ORCLAI_LINK`를 Source parsing schema `ORCLAI` 고정 사용자 링크로 전환하려 했다. 활성 ASTA Scheduler job은 0건이었고, ADB에 활성 credential `ASTA_ORCLAI_LINK_CRED`가 있으며 메타데이터 username은 `ORCLAI`임을 확인했다. 비밀값은 조회·출력하지 않았다.
+- 기존 링크를 바로 삭제하지 않고 `ASTA_ORCLAI_LINK_MIG` 임시 링크를 먼저 생성해 원격 `USER`를 검증했다. 첫 시도는 private non-TLS 필수값인 `directory_name=>NULL` 누락으로 `ORA-28759`가 발생했다. Oracle 공식 형식대로 `ssl_server_cert_dn=>NULL`, `directory_name=>NULL`, `private_target=>TRUE`를 명시한 뒤 연결은 성공했다.
+- 그러나 일반 `credential_name` 방식과 설치된 ADB의 `shared=>TRUE + auth_credential_name` 방식 모두 임시 링크의 실제 원격 `USER`가 `ASTA`였고 `USER_DB_LINKS.USERNAME`도 NULL이었다. 따라서 ORCLAI 고정 사용자 검증을 통과하지 못해 allowlist 매핑과 최종 링크는 변경하지 않았다.
+- 각 실패 뒤 임시 링크를 삭제했다. 최종 상태는 `ASTA_ORCLAI_LINK_MIG` 0건, `DB0903_TESTDB`/`DSNT_PDB` 모두 원래 `ASTA_ORCLAI_LINK` 매핑, 최종 링크 원격 `USER=ASTA`다. 운영 영향 없음.
+- 다음 단계는 credential 소유자가 ORCLAI 실제 비밀번호로 `ASTA_ORCLAI_LINK_CRED`를 안전하게 재생성/갱신한 뒤 같은 임시 링크 검증을 반복하는 것이다. 인증정보 변경이 불가능하면 대안으로 Source `ASTA_SOURCE_PKG`의 `AUTHID CURRENT_USER` 경계를 definer-rights 또는 별도 ORCLAI wrapper로 재설계해야 한다.
+- 코드/package/service 변경 및 커밋 없음. 인계 문서만 갱신했다.
+
+## Run 1f50 ORA-01039 권한 오류 재현·확정 — 2026-07-09
+
+- 대상 `OADT2-ASTA-1f50ae344edc4bd59c6a4d8ed13c5ae9`를 읽기 전용으로 확인했다. `FAILED / ASTA_PKG`, `execute_source_sql=false`, `before_evidence_mode=MINIMAL`이며 SQL Guard는 1,475ms에 완료되고 4단계 BEFORE_EVIDENCE가 4,475ms에 `ORA-01039: insufficient privileges on underlying objects of the view`로 실패했다. 업무 SQL, LLM, 후보 SQL은 실행되지 않았다.
+- `DB0903_TESTDB` 연결 설정은 `source_schema=ORCLAI`, `source_db_link=ASTA_ORCLAI_LINK`지만 실제 DB Link 원격 `USER`는 `ASTA`다. `ORCLAI.ASTA_SOURCE_PKG` spec/body는 VALID이고 DB Link에서 조회 가능하다. 따라서 `AUTHID CURRENT_USER`의 EXPLAIN PLAN parse가 ORCLAI가 아닌 ASTA 직접 권한으로 수행되며, 대상 view의 underlying object 직접 SELECT 권한 부족 또는 실행 사용자 불일치가 원인으로 확정됐다.
+- 재시도로 해결될 성격이 아니다. DBA 조치는 대상 view와 underlying object의 필요한 직접 SELECT 권한을 Source의 ASTA 사용자에게 부여하거나, DB Link 인증 사용자를 실제 parsing/owner 계정인 ORCLAI로 정렬하는 것이다. 역할을 통한 권한만으로는 stored PL/SQL/parse 경계에서 충분하지 않을 수 있다.
+- UI/ADB 오류 분류는 ORA-00942와 ORA-01031만 권한 계열로 매핑하고 ORA-01039는 누락되어, 화면이 문의 코드 `ASTA_PKG` 및 “잠시 후 다시 시도” 일반 안내로 표시된다. 후속 구현 시 `ORA-01039 -> SOURCE_PRIVILEGE_DENIED` 분류와 “재시도 대신 DBA 직접 권한 확인” 안내를 추가해야 한다.
+- 코드, DB 권한, DB Link, 서비스는 변경하지 않았다. 관련 커밋 없음.
+
+## 운영 Source DB ORCLAI EXPLAIN PLAN 권한 확인 — 2026-07-09
+
+- 운영 Source DB 저장 연결 `DSNT`에 읽기/진단 목적으로 접속했고 세션 사용자와 current schema가 모두 `ORCLAI`임을 확인했다.
+- Oracle에는 별도의 `EXPLAIN PLAN` 시스템 권한이 없으며, 실제 동작은 PLAN_TABLE 기록 권한과 대상 객체 접근 권한으로 결정된다. `USER_SYS_PRIVS`의 `%PLAN%` 항목은 0건이었지만 PUBLIC `PLAN_TABLE` synonym이 존재했다.
+- 같은 ORCLAI 세션에서 `DUAL` 대상 EXPLAIN PLAN은 2행, 실제 업무 객체 `DSNT.TGP_STYLE_M` 대상 EXPLAIN PLAN은 3행을 정상 생성했다. 따라서 ORCLAI는 해당 객체 기준 EXPLAIN PLAN을 수행할 수 있다.
+- 테스트는 savepoint 이후 수행하고 rollback했으며 두 statement_id의 잔존 PLAN_TABLE 행은 0건이다. 코드·패키지·서비스·업무 데이터 변경 없음.
+
+## Run 0f4ce ORA-01039 권한 오류 진단 — 2026-07-09
+
+- 대상 `OADT2-ASTA-0f4ce374307e4e3ea0b5c793e55a5c8a`는 `execute_source_sql=false`, `before_evidence_mode=MINIMAL`이었다. 실제 업무 SQL 실행이 아니라 4단계 Source `EXPLAIN PLAN`에서 `ORA-01039: insufficient privileges on underlying objects of the view`가 발생했다.
+- 진행 상태: SQL Guard DONE(1,471ms) → BEFORE_EVIDENCE FAILED(4,436ms) → 이후 LLM/후보 단계 미진입. 원본 SQL과 후보 SQL은 실행되지 않았다.
+- 현재 ADB `ASTA_ORCLAI_LINK`의 remote `USER`는 `ASTA`이고 package owner/source schema는 `ORCLAI`다. `AUTHID CURRENT_USER` Source package는 DB Link invoker 권한으로 SQL을 parse하므로, 대상 view 또는 그 underlying object에 대한 직접 SELECT 권한/DB Link 사용자 불일치가 ORA-01039 원인으로 유력하다. 역할을 통한 권한만 있거나 view owner와 실행 사용자 권한이 분리돼도 같은 오류가 날 수 있다.
+- 조치 방향: DBA가 해당 view의 underlying object 직접 SELECT 권한을 DB Link 실행 사용자에게 부여하거나, DB Link를 실제 ORCLAI 사용자로 교체해 owner/invoker 경계를 일치시켜야 한다. 비밀정보를 조회·기록하지 않았다. 애플리케이션/DB 변경 없음.
+
+## 초기 SQL 입력 기본값 제거 — 2026-07-09
+
+- 화면 초기 SQL textarea의 `select * from dual` 기본값을 제거하고 빈 입력 + `SELECT ...` placeholder로 변경했다. 샘플 선택과 직접 입력 동작은 유지한다.
+- `node --check`, 관련 static/textarea/sticky controls 테스트 `30 passed`, `git diff --check` 통과. 정적 JS는 현재 uvicorn이 제공하는 workspace 파일에 반영된다.
+
+## Source SQL 미실행 예상 Plan 안전 모드 — 2026-07-09 로컬 구현 완료/배포 대기
+
+- 요청/결론: UI에 **소스 DB에서 SQL을 실제 실행하여 검증** 체크박스를 추가했다. 기본은 해제이며 `execute_source_sql=false`로 원본과 후보 업무 SELECT를 실행하지 않고 Source EXPLAIN PLAN 예상계획, PLAN_TABLE object 통계·인덱스만 LLM에 전달한다.
+- Source: `p_result_evidence_mode=ESTIMATED_PLAN`을 추가했다. parsing schema에서 `EXPLAIN PLAN`하되 helper owner의 qualified PLAN_TABLE을 사용하고, DBMS_XPLAN DISPLAY와 DBA_TAB_STATISTICS/DBA_INDEXES/DBA_IND_COLUMNS 정보를 반환한다. count/digest, cursor metrics, Advisor, 결과 fetch는 수행하지 않으며 `source_sql_executed=false`, `plan_kind=ESTIMATED`를 기록한다.
+- ADB: Proxy/ASTA_PKG 기본값은 false다. 미실행 모드에서는 4단계 원본과 7단계 후보 모두 ESTIMATED_PLAN을 사용하고 full-result/성능 gate로 승격하지 않는다. comparison은 `ESTIMATED_PLAN_ONLY_RUNTIME_NOT_EXECUTED`, 원본 유지, 동등성 미평가로 저장한다. 명시적 true에서만 기존 MINIMAL 원본 실행과 PLAN_ONLY/AUTO 후보 검증이 동작한다.
+- LLM/결과서/UI: LLM은 예상 Plan을 A-Time/Buffer/Starts 실측으로 주장하지 않고 Cost/Cardinality 기반 추정으로만 설명한다. 결과서는 예상 Plan, 실제 성능·동등성 미검증, 적용 금지를 명시한다. UI 진행 상세도 미실행/실행 opt-in 경로를 구분하며 cache version은 `20260709_estimated_plan1`이다.
+- 변경 파일: Source package/README, ADB bridge/main/LLM/report, FastAPI proxy, UI/index, 문서 3개, 신규 `tests/test_asta_estimated_plan_safe_mode.py` 및 관련 계약 테스트, 이 handoff.
+- 검증: 관련 50 passed. 전체 `455 passed, 기존 9 failed in 1.54s`, 신규 실패 0. `node --check`, `git diff --check` 통과.
+- 남은 단계: 실제 Source/ADB package backup→compile→VALID/errors=0→ESTIMATED_PLAN smoke, Proxy 서비스 재시작과 HTTP 자산/payload 검증이 필요하다. 사용자의 명시적 배포 승인 전에는 DB package와 서비스를 변경하지 않았다. 정적 파일 직접 제공 구조라 새 UI가 먼저 보일 수 있으므로 backend 배포 전 실제 실행 버튼 사용을 피해야 한다.
+- 배포 결과(2026-07-09): ORCLAI DBTools 저장 연결(`DSNT`)로 Source package를 백업·컴파일했다. PACKAGE/PACKAGE BODY 모두 VALID, USER_ERRORS=0이다. SQLcl에서 `RUN_EVIDENCE` 함수를 SELECT 안에서 직접 호출하면 PLAN_TABLE DML의 ORA-14551이 발생하므로 실제 저장 프로시저/DB Link 경로를 사용했다. ADB의 `ASTA_SOURCE_BRIDGE_PKG`, `ASTA_LLM_PKG`, `ASTA_REPORT_PKG`, `ASTA_PKG`를 백업 후 배포했고 8개 object 모두 VALID/errors=0이다. Bridge smoke는 `EXPLAIN_PLAN_DICTIONARY_ONLY`, `source_sql_executed=false`, `plan_kind=ESTIMATED`, `result_digest_status=SKIPPED`로 성공했다. 전체 `ASTA_PKG` pipeline smoke `OADT2-ASTA-ESTPLAN-PIPELINE-SMOKE`도 COMPLETED, `NOT_IMPROVED / ESTIMATED_PLAN_ONLY_RUNTIME_NOT_EXECUTED`, before/after 모두 ESTIMATED로 성공했다. 배포 artifact는 `reports/asta_estimated_plan_deploy/20260709T040046Z/`와 Source `20260709T035536Z/`다.
+- 웹: systemd restart는 interactive authentication으로 실패했으나 stale listener를 정리하고 새 uvicorn PID 1315157로 수동 기동했다. 애플리케이션 startup complete 및 HTTP GET 200 로그를 확인했다. static cache version은 `20260709_estimated_plan1`이다.
+
+## 6단계 structural key 선형 scanner 교체 — 2026-07-09 ADB 배포 완료
+
+- 요청/결론: 6단계에서 장기 정지한 `b177` 실행을 중단하고, `structural_sql_key`의 전체 SQL block/line comment 제거를 backtracking 정규식에서 단일 순회 scanner로 교체한 뒤 실제 ADB `ASTA_LLM_PKG`에 배포했다.
+- 실행 정리: `OADT2-ASTA-b177a55b135d4f7fb7ad43813a1d2a2d`와 사용자 추가 승인한 동일 병목 Run `OADT2-ASTA-58add3b1d73543cf85f9368011a7c431`의 정확한 Scheduler job만 `STOP_JOB(force=>true)`로 중단했다. 두 row와 진행 중 단계는 `FAILED / USER_CANCELLED`로 정리했고 다른 Run은 변경하지 않았다.
+- 구현: `db/adb/asta_llm_pkg.sql`의 private `structural_sql_key`가 최대 32,767자를 한 번 순회한다. NORMAL/STRING/QUOTED_IDENTIFIER/LINE_COMMENT/BLOCK_COMMENT 상태를 구분해 실제 주석과 hint만 공백으로 바꾸고, 문자열·quoted identifier 내부의 `/*`, `--`, doubled quote는 보존한다. 최종 whitespace 정규화만 단순 regex로 유지했다.
+- 테스트: 신규 `tests/test_asta_structural_sql_key_linear_scanner.py` 포함 관련 계약 `60 passed`. 전체 `450 passed, 기존 9 failed in 1.44s`로 신규 실패 0건이다. `git diff --check`도 통과했다.
+- 배포: 활성 ASTA Scheduler job 0건을 확인하고 현재 ADB `ASTA_LLM_PKG` spec/body DDL을 백업한 후 로컬 package를 compile했다. PACKAGE/PACKAGE BODY 모두 `VALID`, `USER_ERRORS=0`, 배포 후 활성 job 0건이다. artifact는 `reports/asta_llm_linear_scanner_deploy/20260709T021032Z/`에 있다.
+- 관찰사항: compile은 ADB의 `Allocate PGA memory from OS` 자원 대기로 약 수 분 지연됐지만 정상 완료됐다. 별도 post-deploy `USER_SOURCE` 교차 조회도 같은 PGA 지연로 종료했으나, 배포 스크립트 자체의 compile/object/error/job 검증은 모두 성공했다. 외부 LLM 재호출이나 새 전체 ASTA Run은 수행하지 않았다.
+- 변경 파일: `db/adb/asta_llm_pkg.sql`, 신규 scanner 계약 테스트, 이 handoff. 커밋/push 없음.
+
+## Run b177 6단계 장기 실행 진단 — 2026-07-09
+
+- 대상 `OADT2-ASTA-b177a55b135d4f7fb7ad43813a1d2a2d`를 ADB에서 읽기 전용으로 확인했다. 코드/DB/실행 상태는 변경하지 않았다.
+- Run은 01:40:13 시작, 4단계는 345,248ms 후 완료했고 6단계는 01:46:01부터 RUNNING이다. LLM 자체는 DIAGNOSIS 2회(9.85초, 19.264초), CANDIDATE_SQL 2회(2.264초, 20.156초)를 이미 응답했다.
+- 1차 diagnosis는 유효 JSON이 아니어서 Grok fallback까지 갔고, 1차 candidate는 `NO_REWRITE`, Grok 2차 candidate는 13,693자였다. 2차 후보 수신(01:46:55) 뒤 다음 fallback의 SENT audit row가 생기지 않아 외부 LLM 호출 전 로컬 후보 검증 구간에서 멈춰 있다.
+- 코드상 직후 첫 연산은 `structural_sql_key(p_sql) = structural_sql_key(l_candidate_sql)`이다. `structural_sql_key`의 전체 SQL 주석 제거 정규식 `'/\*(.|[[:space:]])*?\*/'`는 겹치는 대안 `.`/space를 반복해 긴 SQL에서 catastrophic backtracking 가능성이 높다. 후보 shape는 13,693자, 207줄, 블록 주석 1쌍이다.
+- 해당 Scheduler session은 active이고 `resmgr:cpu quantum` 대기/재개를 반복했다. 진단 시점에 이 Run job elapsed 약 12분 33초, CPU used 약 5.57초였다. 같은 SQL ID의 다른 ASTA job도 장기 실행 중이어서 공통 정규식 병목 정황이 강하다.
+- 권장 후속: 실행 중단 여부는 사용자 승인 후 결정한다. 수정 시 regex 기반 block-comment 제거를 선형 스캐너/비중첩 패턴으로 교체하고 13K~32K SQL 회귀 테스트 및 ADB 실측 후 배포한다.
+
+## PLAN_ONLY 탈락 결과서 일관성 보강 — 2026-07-09 ADB 배포 완료
+
+- 요청/결론: Run f4343처럼 후보 실측 수치/변경 설명은 표시하면서 SQL·XPLAN은 없다고 출력하는 모순이 재발하지 않도록 `ASTA_REPORT_PKG` 결과서 조립 로직을 수정하고 실제 ADB에 배포했다. 기존 Run 저장 이력은 수정하지 않았다.
+- 상태 분리: 결과서에서는 후보 `생성됨`, Source `실행됨`, 최종 `채택됨`을 별도로 판단한다. PLAN_ONLY 정책 탈락이 `candidate_error`에 기록돼도 generation candidate와 COMPLETED After plan이 있으면 숨기지 않는다. API top-level `candidate_sql`은 기존대로 `IMPROVED` 채택 SQL만 노출한다.
+- 표시 변경: 선별 탈락 후보는 `PLAN_ONLY 선별 탈락 후보 SQL — 적용하지 마세요`로 SQL과 실제 XPLAN을 표시하고, XPLAN이 전체 결과 검증 완료를 뜻하지 않음을 명시한다. 후보가 생성됐지만 실행 plan이 없을 때와 후보 자체가 없을 때의 문구도 분리했다.
+- 결론/수치: `PLAN_SCREEN_*`별 쉬운 설명을 추가했다. OLTP latency 탈락은 Buffer Gets 감소율, 실제 PLAN_ONLY 시간, 3초 기준 초과, full-result/동등성 미검증, 원본 유지 사유를 한 문장에 연결한다. comparison에 감소율/delta가 빠진 선별 응답은 Before/After 원시 수치로 결과서에서 계산한다.
+- 배포/검증: 활성 Scheduler 0건에서 배포 전 spec/body를 백업하고 `ASTA_REPORT_PKG`를 compile했다. PACKAGE/PACKAGE BODY 모두 `VALID`, `USER_ERRORS=0`. f4343 artifact 기반 비영속 build_report smoke는 탈락 후보 heading, 원본 유지 사유, PLAN_ONLY XPLAN 경고, `88.35%`, `4.624433초`, 잘못된 “개선 SQL 없음” 부재를 모두 통과했다. 배포 후 Scheduler 0건, 웹 서비스 active다.
+- 로컬 검증: 관련 계약 `38 passed`; 전체 `447 passed, 기존 9 failed in 1.42s`, 신규 실패 0건. `git diff --check` 통과. 배포 artifact와 백업은 `reports/asta_report_consistency_deploy/20260708T155144Z/`에 있다.
+- 변경 파일: `db/adb/asta_report_pkg.sql`, `tests/test_asta_blocked_candidate_report_contract.py`, `tests/test_asta_inline_change_annotations.py`, 이 handoff. 커밋 없음.
+
+## Run f4343 결과서 앞뒤 불일치 진단 — 2026-07-09
+
+- 대상 `OADT2-ASTA-f4343f9895e647e8a670d33349ac63a7`; ADB Run/Progress/GET_RUN/GET_REPORT를 읽기 전용으로 대조했다. 코드·DB·결과 이력은 변경하지 않았다.
+- 실제 판정은 `COMPLETED / NOT_IMPROVED / PLAN_SCREEN_OLTP_LATENCY_TARGET_NOT_MET`, `screen_mode=PLAN_ONLY`, `full_result_executed=false`, `retain_original_sql=true`다. 후보 선별 실측은 elapsed `138,734,533us → 4,624,433us`(약 96.67% 감소), Buffer Gets `9,322,778 → 1,085,874`(약 88.35% 감소)지만 OLTP 절대 기준 3초를 넘어서 탈락했다. PLAN_ONLY라 full-result digest/동등성은 평가하지 않았다.
+- 결과서 모순: 결론/수치 비교/병목 진단은 후보의 comparison과 변경 설명을 출력하지만, `튜닝 후 SQL`은 “개선 SQL 없음”, `튜닝 후 XPLAN`은 “evidence 없음”이라고 출력한다. 실제 generation candidate 17,383자와 After plan 35,253자는 모두 존재한다.
+- 코드 원인: `ASTA_REPORT_PKG.build_report`의 SQL/XPLAN 출력은 `llm_has_improved_sql()`을 통과한 `l_candidate_sql_vc`에 의존한다. Stage 7이 정상적인 선별 탈락도 `llm.candidate_error="Candidate rejected by PLAN_ONLY screen: ..."`로 기록하고, `llm_has_improved_sql()`은 candidate_error가 하나라도 있으면 FALSE를 반환한다. 반면 수치 섹션은 `p_comparison_json`의 PLAN_ONLY after metrics를 무조건 출력하므로 서로 다른 artifact 선택 조건이 충돌한다.
+- 권장 수정: 생성/실행/채택 상태를 분리한다. 선별 탈락 후보는 `후보 SQL·XPLAN(적용 금지)`로 표시하고, 결론은 “Buffer Gets는 88.35% 감소했지만 4.624초로 3초 기준 미달, 동등성 미검증, 원본 유지”라고 명시한다. `candidate_error`는 실행 오류와 정책 탈락을 구분하거나 report에서 `PLAN_SCREEN_*`를 후보 부재로 취급하지 않아야 한다.
+- 관련 커밋: 없음.
+
+## 4단계 원본 SQL 수집 UI 최소 실행 고정 — 2026-07-09 완료
+
+- 요청/결론: UI의 `4단계 원본 SQL 수집` 선택 상자를 제거하고 일반 UI 요청을 항상 `before_evidence_mode=MINIMAL`로 고정했다. 4단계는 제한 실행 1회와 전체 count/digest 각 1회로 원본 SQL을 최대 3회 호출한다.
+- UI/표시: 진행 상세와 Workflow 설명도 MINIMAL 고정 기준만 표시한다. 남은 profile/workload/sample 3개 선택 항목은 데스크톱 3열, 태블릿 2열, 모바일 1열로 정리했다. cache version은 `20260709_stage4_minimal1`이다.
+- 호환성: ADB package와 FastAPI의 기존 `before_evidence_mode` API 해석은 외부 호출 호환성을 위해 유지했다. 이번 변경은 정적 UI/문서/테스트만이며 DB package 재배포와 서비스 재시작은 하지 않았다.
+- 검증: 관련 계약 `57 passed`; 전체 `445 passed, 기존 9 failed in 1.45s`로 신규 실패 0건. `node --check`, `git diff --check` 통과. 실제 localhost HTTP에서 새 cache version, 선택기/DOM 변수 부재, payload 두 위치의 MINIMAL 고정을 확인했다.
+- 변경 파일: `static/js/extensions/tuning_assistant.js`, `static/index.html`, 관련 UI/정책 테스트 9개, 문서 3개, 이 handoff. 커밋/push 없음.
+
+## Stage 7 선별/watchdog 배포 — 2026-07-08 완료 (ALTER SYSTEM 제외)
+
+- 요청/결론: 사용자 지시에 따라 `ALTER SYSTEM`을 전혀 사용하지 않는 형태로 Source/ADB/UI/Proxy 변경을 모두 실환경에 배포했다. Source cancel API는 호환성 유지용이며 항상 `SKIPPED / SOURCE_CANCEL_NOT_AVAILABLE`을 반환하고, timeout 시 ADB parent Scheduler job만 중지한다.
+- Source 배포: `ASTA_SOURCE_PKG`를 재컴파일했으며 PACKAGE/PACKAGE BODY `VALID`, `USER_ERRORS=0`이다. `PLAN_ONLY + ONCE` smoke와 cancel-unavailable smoke가 성공했다. 배포 전 백업과 로그는 `reports/asta_stage7_screen_deploy/20260708T084938Z/`에 있다.
+- ADB 배포: `ASTA_SQL_GUARD_PKG`, `ASTA_LLM_PKG`, `ASTA_SOURCE_BRIDGE_PKG`, `ASTA_PKG`를 dependency 순서로 배포했다. 8개 spec/body 모두 `VALID`, 오류 0건이며 같은 artifact 디렉터리에 배포 전 DDL 8개와 `adb_deploy_summary.json`을 보존했다.
+- 실환경 smoke: 혼합 ANSI JOIN/구식 `(+)` 후보가 ORA-25156 사전 검사에서 차단됐고, Bridge PLAN_ONLY는 `COMPLETED / ONCE / repeat_count=1 / digest SKIPPED`였다. Run `OADT2-ASTA-STAGE7-SCREEN-SMOKE`는 `COMPLETED`, `PLAN_SCREEN_OPTIMIZER_INTENT_NOT_VERIFIED`, `screen_mode=PLAN_ONLY`, `full_result_executed=false`; Source에는 `-TUNED-SCREEN`만 있고 `-TUNED-FINAL`은 없어 탈락 후보가 반복/전체 검증으로 진입하지 않음을 확인했다.
+- 웹 배포: 정적 자산 cache version은 `20260708_stage7_screen1`이며 HTTP 제공을 확인했다. Python proxy 반영을 위해 서비스를 새 PID `1233071`로 기동했고 `active/running`, 2026-07-08 18:07:25 KST 시작, HTTP 200을 확인했다.
+- 배포 후 상태: ASTA Scheduler 실행 job 0건. `node --check`와 `git diff --check` 통과. 배포 전 전체 회귀는 `445 passed, 기존 9 failed`로 신규 실패가 없었다. 최종 두 pytest 파일 재실행은 현재 venv에 pytest 모듈이 없어 수행 불가했으나, Oracle compile/실호출 smoke는 모두 성공했다.
+- 변경 파일: `db/source/asta_source_pkg.sql`, Source README, ADB guard/LLM/bridge/main 4개 package, `app/routers/asta_proxy.py`, UI/문서/계약 테스트, 이 handoff. 커밋/push 없음.
+
+## Run 441213 재실패 및 동일 SQL LLM 변동 분석 — 2026-07-08
+
+- 대상 `OADT2-ASTA-441213c91b7d42cf9505dd552d3038a1`; 읽기 전용으로 ADB/Source evidence, LLM call log, 동일 input_sql 이력을 비교했다. DB/코드 변경 없음.
+- 직전 로컬 구현한 ORA-25156 guard/PLAN_ONLY/watchdog/Source cancel은 원격 marker가 ADB screen=0, guard=0, Source PLAN_ONLY=0으로 모두 미배포 상태였다. 실제 Run ID도 기존 `-TUNED/-REPAIRED` 경로이므로 이번 실패는 새 로직 재실패가 아니라 기존 배포본 재실행이다.
+- 이번 terminal은 `CANDIDATE_RUNTIME_LIMIT`. 최초 후보는 `ORA-00920: invalid relational operator`; GPT-5.4 repair 후보는 실행됐지만 AUTO 4회 중앙 `128,500,838us`, Buffer Gets `9,321,247`, repeat wall `516,391ms`로 원본 `130,430,651us / 9,324,867`과 사실상 같았다. 기존 watchdog 422초가 먼저 parent job을 종료했다.
+- LLM chain: GPT-5.4 DIAGNOSIS 성공 → GPT-5.4 CANDIDATE_SQL 10자(NO_REWRITE) → Grok GenAI 18,627자 응답은 채택되지 않음 → Gemini 11,409자 응답에서 정규화된 11,291자 후보가 선택된 것으로 확인되며 ORA-00920 → GPT-5.4 REPAIR 16,211자 → 느린 후보.
+- 동일 input SQL SHA-256은 최근/과거 모두 `e009...e643`. 과거 IMPROVED `aa7ba3...`는 Grok Reasoning→NO_REWRITE→Grok GenAI→repair 2회 후 `1,437,259us / 1,076,461 buffers`; `654959...`는 Grok Reasoning 1차 후보로 `1,457,303us / 1,079,348 buffers`. 두 성공 tuned SQL hash도 서로 달라 고정 재현이 아니었다.
+- 변동 원인: 선택 profile/모델 체인이 달랐고, 첫 모델의 NO_REWRITE/검증 실패에 따라 fallback provider가 달라진다. 또한 같은 입력 SQL이어도 Source XPLAN·metrics와 배포된 prompt 코드가 달라 전체 prompt는 동일하지 않다. temperature 0이어도 외부 provider/model serving의 bitwise 결정성은 보장되지 않는다.
+- 결론: LLM을 단일 정답 생성기로 사용한 것이 근본 원인이다. 과거 성공 후보를 verified template/fingerprint로 재사용하지 않고 매번 새로 생성하며, 기존 배포본은 문법/PLAN 선별 전 후보를 AUTO 4회 실행한다. 로컬 구현분을 배포하고, 추가로 동일 SQL의 과거 POSITIVE_VERIFIED 후보를 우선 재검증하는 deterministic reuse가 필요하다.
+
+## AIF_GENAI credential 공유 및 ASTA GPT-5 profile 5종 생성 — 2026-07-08 완료
+
+- 요청/결론: ADMIN 권한으로 같은 ADB의 `ASKORACLE.GENAI_CRED`를 ASTA가 비밀키 복제 없이 사용하도록 공유하고, 로컬 GPT-5 후보 10종을 실제 chat smoke했다. 호출 성공한 5종만 ENABLED 상태로 유지했다.
+- credential: `GRANT EXECUTE ON ASKORACLE.GENAI_CRED TO ASTA`와 `ASTA.GENAI_CRED -> ASKORACLE.GENAI_CRED` private synonym을 생성했다. credential 비밀값은 조회·출력·파일 기록하지 않았다.
+- 생성/유지 profile: `ASTA_GPT51_PROFILE=openai.gpt-5.1`, `ASTA_GPT52_PROFILE=openai.gpt-5.2`, `ASTA_GPT54_PROFILE=openai.gpt-5.4`, `ASTA_GPT54_MINI_PROFILE=openai.gpt-5.4-mini`, `ASTA_GPT54_NANO_PROFILE=openai.gpt-5.4-nano`.
+- 공통 설정: provider OCI, Chicago, 원본 `AIF_GENAI` compartment, shared `GENAI_CRED`, max_tokens 8192, temperature 0, annotations/comments/constraints false. 기존 ASTA 기본 profile은 변경하지 않았다.
+- 제외: `openai.gpt-5`, `gpt-5-mini`, `gpt-5-nano`, `gpt-5.2-pro`, `gpt-5.5`는 최소 chat에서 HTTP 400 또는 Object not found였고 생성 직후 profile을 삭제했다.
+- 검증: 유지 5종 모두 exact-marker chat 성공(약 1.4~2.3초), ENABLED/model exact match, `ASTA_PKG.LIST_PROFILES` 5종 노출, 실패 5종 잔여 없음, credential synonym 및 EXECUTE grant 확인 완료.
+- 변경 범위: DB credential object grant/synonym과 AI profile만 변경했다. package/ORDS/service/source code/default profile/git commit/push는 변경하지 않았다.
+- 롤백: 5개 profile을 `DBMS_CLOUD_AI.DROP_PROFILE(..., force=>true)`로 제거한 뒤 ASTA synonym 삭제 및 `REVOKE EXECUTE ON ASKORACLE.GENAI_CRED FROM ASTA` 순서로 수행한다.
+- 관련 커밋: 없음.
+
+## 7단계 PLAN_ONLY 선별·watchdog·원격 취소 보강 — 2026-07-08 로컬 구현 완료
+
+- 요청/결론: ORA-25156 사전 차단 → PLAN_ONLY 1회 선별 → 통과 후보만 전체/반복 검증 → 실제 pass 수 기반 watchdog → Source 원격 cancel 순서로 로컬 구현했다. DB package 배포/compile은 수행하지 않았다.
+- ORA-25156: ADB SQL Guard에 `assert_candidate_compatible`를 추가해 주석/문자열 제거 후 ANSI JOIN과 구식 `(+)`가 함께 있는 후보를 Source 실행 전에 차단한다. 후보 생성과 repair 양쪽 prompt/검증에 적용했다.
+- Source/Bridge: `p_result_evidence_mode=PLAN_ONLY`를 추가했다. ONCE와 함께 사용하면 gather-plan 실행 1회만 수행하고 result count/digest는 `SKIPPED / PLAN_ONLY`로 생략한다.
+- 7단계: 후보/repair를 `*-SCREEN` Run ID로 `ONCE + PLAN_ONLY` 실행한다. optimizer intent가 VERIFIED이고 OLTP는 Buffer Gets 5% 이상 감소·3초 latency, BATCH는 elapsed 5% 이상 감소를 만족해야 정밀 검증으로 승격한다. 미달 후보는 `NOT_IMPROVED / PLAN_SCREEN_*`, `full_result_executed=false`로 원본을 유지한다.
+- 정밀 검증: 선별 통과 시에만 원본 `-BASELINE-FINAL`과 후보 `-TUNED-FINAL`을 각각 `AUTO + FULL_RESULT`로 실행해 양쪽 반복 measurement와 full-result evidence를 갖춘 뒤 기존 deterministic comparison을 수행한다.
+- watchdog: `candidate_timeout_seconds`가 예상 pass 수×candidate/baseline 1회 시간×1.2+overhead를 사용하고 최대 1800초로 제한한다. PLAN_ONLY는 1회+30초, baseline/candidate full은 각각 6회+90초 예산이다.
+- 원격 취소: Source `cancel_run_vc`와 Bridge `cancel_source_run`을 추가했다. timeout watchdog은 SCREEN/BASELINE/FINAL suffix의 Source `ASTA_RUN_ID` 세션에 `ALTER SYSTEM CANCEL SQL`을 먼저 요청하고 취소 수를 progress detail에 남긴 후 parent job을 종료한다. Source owner에 `GV_$SESSION`, `GV_$SQL`, `ALTER SYSTEM` 직접 권한이 필요하며 README에 DBA 승인 조건을 기록했다.
+- 변경 파일: `db/adb/asta_sql_guard_pkg.sql`, `db/adb/asta_llm_pkg.sql`, `db/adb/asta_source_bridge_pkg.sql`, `db/adb/asta_pkg.sql`, `db/source/asta_source_pkg.sql`, Source README, UI workflow/문서, 관련 테스트와 신규 `tests/test_asta_stage7_screening_and_cancel.py`, 이 handoff다.
+- 검증: 관련 계약 114 passed(기존 baseline 5 failed 제외), 전체 `445 passed, 기존 9 failed in 1.42s`, 신규 실패 0. JS syntax와 `git diff --check` 통과. 실제 Oracle compile/Source 권한/원격 cancel smoke는 미배포 상태라 후속 배포 승인 시 backup→Source grants/package→ADB guard/LLM/bridge/main 순서로 검증해야 한다.
+- 관련 커밋: 없음.
+
+## AIF_GENAI 기반 ASTA GPT-5.4 profile 생성 시도 — 2026-07-08 인증 차단/정리 완료
+
+- 요청: 같은 ADB의 `ASKORACLE.AIF_GENAI` 정보를 이용해 ASTA용 GPT profile을 생성한다.
+- 확인: 원본 profile은 `provider=oci`, `region=us-chicago-1`, `model=openai.gpt-5.4`, 일반 사용자 credential `ASKORACLE.GENAI_CRED`를 사용한다. 최소 chat smoke는 성공했다. ASTA와 ASKORACLE은 동일 ADB의 서로 다른 스키마다.
+- 시도: `ASTA_GPT54_PROFILE`을 ASTA 기존 정책(`OCI$RESOURCE_PRINCIPAL`, 8192 tokens, temperature 0, annotations/comments/constraints false)으로 생성하고 ASTA 컴파트먼트 및 원본 AIF 컴파트먼트에서 각각 chat smoke했다. 두 경우 모두 OCI inference endpoint가 `ORA-20404 Object not found`를 반환했다.
+- 원인: `AIF_GENAI`의 GPT-5.4 접근은 schema-local 일반 credential에 의존한다. ASTA에서 같은 이름을 참조하면 `ORA-20004: Credential "ASTA"."GENAI_CRED" does not exist`이며, ASKORACLE credential은 ASTA에 공유되지 않는다. 비밀값을 조회하거나 복제하지 않았다.
+- 정리: 미작동 `ASTA_GPT54_PROFILE`은 `DBMS_CLOUD_AI.DROP_PROFILE(..., force=>true)`로 제거했고 잔여 row가 0임을 확인했다. 기존 ASTA profile/package/서비스/코드는 변경하지 않았다.
+- 다음 단계: credential 소유자가 OCI signing-key 값을 ASTA 스키마에 별도 credential로 안전하게 생성하거나, ASTA ADB Resource Principal에 GPT-5.4 모델 접근 IAM/entitlement를 부여해야 한다. 이후 같은 profile을 재생성하고 chat smoke 및 `ASTA_PKG.LIST_PROFILES` 노출을 검증한다.
+- 관련 커밋: 없음.
+
+## Run ba3857 7단계 실패 진단 — 2026-07-08
+
+- 대상: `OADT2-ASTA-ba38574585354252be4f2f3b0e3099d4`. 읽기 전용으로 ADB run/progress/LLM audit와 Source 저장 evidence를 조회했다. 코드/DB 상태는 변경하지 않았다.
+- terminal 원인은 `CANDIDATE_RUNTIME_LIMIT`. 7단계는 2026-07-08 16:40:12 KST 시작, 16:48:26 KST watchdog 종료로 약 493.5초 진행됐다. Scheduler history는 parent job이 force stop된 것을 확인한다.
+- 1차 LLM 후보는 Source 실행 직후 `ORA-25156: old style outer join (+) cannot be used with ANSI joins`로 실패했다. REPAIR_SQL 1회가 정상 응답했고 repair 후보를 다시 실행했다.
+- 원본 evidence: `ONCE`, last elapsed `142,057,037us`, Buffer Gets `9,324,294`, full-result 262행 완료. `candidate_timeout_seconds` 공식은 `ceil(original_last_sec*3+30)`이므로 이 Run의 실제 watchdog 예산은 457초다.
+- repair 후보 evidence: `AUTO` 4회, 중앙 elapsed `130,176,887us`, last `129,395,372us`, Buffer Gets `9,336,067`, repeat loop wall `527,816ms`, full-result 262행 완료. 반복 루프만 527.8초라 457초 watchdog보다 약 70.8초 길고, full count/digest 시간은 이 밖에 추가된다.
+- 결론: 직접 원인은 repair 후보가 원본과 비슷하게 느린 상태에서 4회 반복된 것이고, 구조적 원인은 7단계 timeout이 원본 1회×3+30초인데 후보 정책은 AUTO 4회+full count+digest라 비개선 후보는 정상 완료 전에 watchdog에 걸리는 예산 불일치다. repair 후보의 Buffer Gets도 원본보다 11,773(약 0.13%) 증가해 OLTP 개선 후보가 아니다.
+- Source에 `-REPAIRED` COMPLETED evidence가 사후 저장된 점으로 보아 parent ADB Scheduler가 중지된 뒤 원격 DB Link 작업이 계속되어 저장까지 마친 것으로 추정된다. watchdog의 원격 Source 취소 보장도 후속 개선 대상이다.
+- 권장 후속: 7단계도 우선 `ONCE + FULL_RESULT`로 검증하고 intent/성능 gate 통과 후보만 반복 측정하거나, watchdog을 실제 실행 횟수와 full-result pass를 포함한 총 budget으로 산정한다. ORA-25156 방지를 위해 LLM prompt/validator에서 ANSI JOIN과 `(+)` 혼용 후보를 사전 차단한다.
+
+## 4단계 원본 SQL 수집 호출 최소화·선택 정책 — 2026-07-08 완료/ADB 배포
+
+- 2026-07-08 16:32 KST 사용자 승인 후 장기 실행 중이던 두 Scheduler job만 `DBMS_SCHEDULER.STOP_JOB(..., force=>TRUE)`로 중지했다. 각 Run과 RUNNING progress 1건을 `FAILED / LLM_RUNTIME_LIMIT`로 terminal 처리했고 잔여 ASTA Scheduler job은 0건이다.
+- 배포: 원격 `ASTA_PKG` spec/body를 `reports/asta_before_evidence_policy_deploy/20260708T073213Z/`에 백업한 뒤 로컬 `db/adb/asta_pkg.sql`만 compile했다. Source package, ORDS, 다른 ADB package, 서비스는 변경/재시작하지 않았다.
+- 배포 검증: `ASTA_PKG` PACKAGE/PACKAGE BODY 모두 `VALID`, `USER_ERRORS=0`, 신규 normalizer/request/mapping marker 4개가 원격 USER_SOURCE에 존재한다.
+- 실제 smoke Run `OADT2-ASTA-MINPOL-20260708073214`는 `COMPLETED`; 4단계 evidence가 `repeat_policy=ONCE`, `repeat_count=1`, `result_digest_scope=FULL_RESULT`, `result_digest_status=COMPLETED`, `advisor_requested=false`를 반환했다. 종료 후 Scheduler 0건, `select-ai-test.service` active다.
+- 최종 배포 artifact: `reports/asta_before_evidence_policy_deploy/20260708T073213Z/deploy_summary.json`과 같은 디렉터리의 배포 전 spec/body 백업. 커밋/push 없음.
+
+- 2026-07-08 16:29~16:30 KST 배포 시도: `ASTA_PKG` 단독 백업/compile 전에 안전 점검을 수행했으나 활성 Scheduler job 2건이 있어 compile 전에 중단했다. DB package/객체는 변경되지 않았다.
+- 활성 job은 `ASTA_RUN_56140337F069CDAEE063251900`(Run `OADT2-ASTA-fac2...`, 약 1시간 45분)과 `ASTA_RUN_56140337F06ACDAEE063251900`(Run `OADT2-ASTA-3b64...`, 약 1시간 37분)이며 둘 다 6단계 `LLM_REWRITE` RUNNING, ACTIVE/`resmgr:cpu quantum`, 동일 SQL ID `f1tzn5290tbaa`다. 이외 RUNNING row 3건은 실제 Scheduler job 없이 과거 FINAL_REPORT FAILED 상태가 남은 stale row다.
+- 안전상 실행 중 job을 임의 종료하거나 활성 package를 교체하지 않았다. 진단 artifact: `reports/asta_before_evidence_policy_deploy/20260708T072934Z/deploy_summary.json`, `reports/asta_before_evidence_policy_deploy/20260708T073002Z/deploy_summary.json`. 다음 단계는 사용자 승인 후 두 활성 Scheduler job을 정리하고 Run을 terminal 처리한 뒤 ASTA_PKG backup→compile→VALID/USER_ERRORS=0→MINIMAL smoke다.
+
+- 요청/결론: 4단계 `BEFORE_EVIDENCE`의 원본 SQL 실행을 기존 고정 `AUTO + FULL_RESULT` 최대 6회에서 기본 `MINIMAL = ONCE + FULL_RESULT` 최대 3회로 줄였다. 최종 전체 결과 동등성 검증은 유지한다.
+- 선택 정책: `before_evidence_mode=MINIMAL|FAST_PLAN|THOROUGH`. `MINIMAL`은 최대 3회, `FAST_PLAN`은 `ONCE + BOUNDED` 최대 2회지만 전체 결과 동등성 확정이 제한되며, `THOROUGH`는 기존 `AUTO + FULL_RESULT` 최대 6회다. 잘못된 값은 `MINIMAL`로 정규화한다.
+- 범위: 정책은 4단계 원본 수집에만 적용한다. 7단계 후보 SQL 검증의 기존 `AUTO + FULL_RESULT` 반복은 변경하지 않았다. UI에 `4단계 원본 SQL 수집` 선택 상자를 추가하고 top-level/options payload, FastAPI proxy, ADB `RUN_PIPELINE`까지 연결했다.
+- 변경 파일: `app/routers/asta_proxy.py`, `db/adb/asta_pkg.sql`, `static/js/extensions/tuning_assistant.js`, `static/index.html`, 관련 문서 3개, 관련 테스트 및 신규 `tests/test_asta_before_evidence_policy.py`, 이 handoff다.
+- 검증: 관련 계약 `90 passed`, 최종 핵심 UI/정책 `38 passed`, 전체 `441 passed, 기존 9 failed in 1.42s`로 신규 실패 0건. `node --check`와 `git diff --check` 통과. 서비스는 active/running이나 현재 실행 namespace의 localhost curl은 connection refused라 HTTP 자산 직접 비교는 못 했다.
+- 남은 문제/다음 단계: 실제 ADB 실행 정책까지 적용 완료했다. 과거 FINAL_REPORT 실패 후 `ASTA_RUNS.status=RUNNING`으로 남은 stale row 3건은 실행 job이 없고 이번 승인 대상이 아니어서 변경하지 않았다. 필요하면 별도 승인으로 이력 정합성을 정리한다.
+- 관련 커밋: 없음.
+
+## 11단계 Workflow 상세 설명 전면 교체 — 2026-07-08 완료
+
+- 요청/결론: 매뉴얼 팝업의 `11단계 Workflow`에서 기존 짧은 `수행 내용` 한 문단을 제거하고, 11개 단계 모두 실제 코드 흐름을 설명하는 번호형 `상세 진행` 4개 항목으로 교체했다. 기존 `생성 근거`, `실패·차단`, package/procedure는 유지했다.
+- 단계별로 요청 정규화/감사/QUEUED, Scheduler claim/progress poll, SQL Guard 이중 검사, 4단계 원본 최대 6회 실행, Advisor가 4단계 Source 호출 안에서 수행되는 점, 6단계 two-stage LLM(보통 2회·fallback 최대 6회), 7단계 후보 최대 6회 및 2회 repair/최대 3후보 실측, deterministic gate 순서, 결과서 재구성, Vector positive/rejected 분리를 구체적으로 표시한다.
+- 실제 호출 순서 9→6과 현재 `p_vector_json`이 LLM prompt에 포함되지 않아 Vector 결과가 artifact로만 보존되는 구현 상태도 숨기지 않고 반영했다. 7단계 ORA repair가 6단계가 아니라 7단계 RUNNING 안에서 수행되는 점도 명시했다.
+- 상세 진행은 넓은 2열 번호형 목록이며 모바일에서는 1열로 전환한다. 기존 `work` 필드는 11단계 전체에서 제거했고 `tasks` 배열을 렌더링한다.
+- 변경 파일: `static/js/extensions/tuning_assistant.js`, `static/index.html`, `tests/test_asta_manual_dialog.py`, cache 계약 테스트 5개, 이 handoff다.
+- 검증: 관련 `46 passed`, 전체 `438 passed, 기존 9 failed in 1.42s`, 신규 실패 0건. JS syntax와 `git diff --check` 통과. localhost `/`와 JS는 workspace와 byte-identical하고 cache version `20260708_workflow_details1`과 새 상세 문구를 실제 제공한다.
+- DB/ORDS/package 배포, 서비스 재시작, commit/push는 수행하지 않았다. 정적 파일 직접 제공 방식이라 UI 변경은 실행 서비스에 반영됐다.
+
+## 6단계 개선 SQL 만들기 상세 진단 — 2026-07-08
+
+- 6단계 `LLM_REWRITE`는 SQL을 실행하지 않고 2-stage LLM 생성만 수행한다. 1차 DIAGNOSIS는 원본 SQL+전체 XPLAN+workload/user context로 dominant repeated-work operation, rewrite strategy, target operation, change summary, semantic risk JSON을 요청한다. 기본 profile 실패/잘못된 JSON이면 fallback profile까지 최대 2회 호출한다.
+- 2차 CANDIDATE_SQL은 diagnosis+원본 SQL+전체 XPLAN으로 실행 가능한 Oracle SELECT/WITH 한 문장만 요청한다. output column/order/datatype, predicate/join, row grain/duplicate, NULL/aggregate semantics와 Oracle name-resolution/syntax를 보존하도록 강제하며 최대 4개 profile을 순차 시도한다.
+- 후보 응답은 32,767자 한도, NO_REWRITE, 원본과 구조적으로 동일/comment-only/hint-only 여부, SQL Guard를 검사한다. 통과하면 변경 주석을 보장하고 candidate JSON을 만든다. 모든 LLM 시도는 `ASTA_LLM_CALL_LOG`에 stage/attempt/profile/status로 감사 기록된다.
+- 정상 경로의 외부 LLM 호출은 보통 diagnosis 1회 + candidate 1회 = 2회이며, fallback이 모두 동작하면 최대 6회다. validation candidate가 request에 있으면 LLM 생성을 생략하고 그 후보를 사용한다.
+- 후보 실제 실행과 성능/동등성 검증은 7단계다. 7단계 Source 실행이 ORA로 실패하면 repair LLM을 최대 2라운드 호출하고 각 후보를 다시 실행하지만, 현재 progress상 별도 6단계 하위 이벤트가 아니라 7단계 RUNNING 안에서 수행된다.
+- 9단계 Vector search는 실행 순서상 6단계보다 먼저 수행되지만, 현재 `generate_sql_only_tuning`은 `p_vector_json`을 prompt에 넣지 않고 응답에도 `vector_evidence_included:false`를 기록한다. UI/문서의 “Vector 유사사례를 6단계 입력으로 전달” 설명과 실제 코드가 불일치한다.
+- 코드/DB/서비스 변경은 하지 않았다. 6단계 상세 UI를 구현할 때는 DIAGNOSIS/CANDIDATE/fallback/guard 상태를 서버 progress로 분리하고, repair는 7단계 하위 작업으로 별도 표시하는 것이 정확하다.
+
+## 4단계 진행상태 세부 작업 표시 — 2026-07-08 완료
+
+- 요청/결론: 분석 진행상태의 4단계 `원본 SQL 실행 정보 수집`이 막연한 “처리 중”으로만 보이던 문제를 수정했다. compact 현재 단계에는 `원본 SQL 최대 6회 실행 및 실행계획·전체 결과 검증 중`을 표시한다.
+- 상세 Drawer의 4단계 진행 중 영역에 `제한 실행 4회(워밍업 1 + 측정 3)`, `Elapsed/Buffer Gets/Disk Reads/XPLAN/bind/child cursor/객체 통계·인덱스`, `전체 결과 건수 1회`, `전체 결과 digest 1회`를 별도 카드로 표시한다.
+- Source 호출은 현재 단일 동기 호출이라 하위 단계별 완료 이벤트가 없다. 따라서 가짜 퍼센트나 시간 기반 추정은 표시하지 않고, 어느 항목이 끝났는지는 Source 응답 후 확정된다는 안내를 명시했다. 4단계를 벗어나면 전용 상세 영역은 자동으로 숨긴다.
+- 변경 파일: `static/js/extensions/tuning_assistant.js`, `static/index.html`, `tests/test_asta_progress_details.py`, `tests/test_asta_ui_run_id.py`, cache 계약 테스트 5개, 이 handoff다.
+- 검증: 관련 `50 passed`, 전체 `437 passed, 기존 9 failed in 1.41s`, 신규 실패 0건. JS syntax와 `git diff --check` 통과. localhost `/`와 JS는 workspace와 byte-identical하고 cache version `20260708_before_evidence_detail1` 및 새 상세 문구를 실제 제공한다.
+- DB/ORDS/package 배포, 서비스 재시작, commit/push는 수행하지 않았다. 정적 파일 직접 제공 방식이라 UI 변경은 실행 서비스에 반영됐다.
+
+## 4단계 원본 SQL 반복 실행 진단 — 2026-07-08
+
+- 4단계 `BEFORE_EVIDENCE`는 원본 SQL을 한 번만 실행하지 않는다. ADB가 Source Bridge를 `p_repeat_policy='AUTO'` 및 bridge 기본 `FULL_RESULT`로 호출한다.
+- Source `AUTO`는 bounded/gather_plan_statistics SQL을 warm-up 1회 + 측정 3회, 합계 4회 실행한다. 이어 full-result count 1회와 full-result digest 1회를 별도 수행하므로 원본 SQL 실행계획이 실질적으로 최대 6회 작동한다.
+- 반복 뒤 XPLAN, V$SQL metrics, child cursor/bind, optimizer intent, DBA_* 객체 통계/인덱스를 조회한다. 이들은 대부분 원본 SQL 재실행은 아니지만 추가 dictionary/plan 작업이다. Advisor가 켜져 있으면 같은 Source 호출 안에서 별도 SQL Tuning Advisor도 실행한다. 현재 UI 기본값은 Advisor OFF다.
+- `fetch_rows` 제한은 외부 COUNT/ROWNUM wrapper라서 조인·정렬·집계·correlated subquery가 먼저 큰 작업을 하면 비용을 충분히 줄이지 못한다. 샘플 1 원본은 실측 중앙 약 124.5초이므로 반복 4회만 단순 계산해도 약 8.3분이고 full count/digest까지 더해져 4단계가 훨씬 길어질 수 있다.
+- 코드/DB/서비스 변경은 하지 않았다. 고객용 개선 시 초기 진단을 `ONCE + BOUNDED`로 줄이고, 후보가 생긴 뒤 최종 검증에서만 반복 측정과 FULL_RESULT를 수행하는 단계 분리가 필요하다.
+
+## 권한 없는 테이블 ORA 오류 명확화 — 2026-07-08 완료
+
+- 요청/결론: 고객이 권한 없는 테이블을 조회할 때의 동작을 점검했다. Oracle은 객체가 실제로 존재해도 현재 실행 계정에 직접 조회 권한이 없으면 정보 노출 방지를 위해 흔히 `ORA-00942: table or view does not exist`를 반환한다. 기존 UI는 이를 단순 “객체 없음”으로만 안내해 권한 문제 가능성이 불명확했다.
+- 실환경 근거: 2026-07-07 Source smoke에서 direct SELECT grant가 없는 `DSNT.TGP_ORDER_D` 조회가 ORA-00942였다는 기존 검증 기록을 재확인했다. 이번에 같은 실경로를 신규 Run과 Source Bridge로 재검증하려 했으나 두 호출 모두 120초 이상 terminal 응답 없이 대기해 클라이언트만 종료했다. 신규 `OADT2-ASTA-PRIV-*` row와 Scheduler job은 생성되지 않았고, package-lock 점검의 scheduler 목록도 0건이었다. 소유권을 확정할 수 없는 Python DB session은 중단하지 않았다.
+- UI 변경: `SOURCE_OBJECT_NOT_FOUND` 제목을 “테이블 또는 뷰를 찾을 수 없거나 권한이 없습니다”로 바꾸고, ORA-00942가 객체 없음과 권한 없음 양쪽에서 발생할 수 있음을 설명한다. 오류 카드에 감싸진 ORA-200xx보다 실제 실행 ORA를 우선 추출한 `Oracle 오류` 전용 강조 박스를 추가하고 복사 정보에도 동일 문구를 포함했다.
+- ADB 로컬 변경: `source_response_error_message`가 FAILED 응답의 일반 `message`보다 구조화된 `error.message`의 SQLERRM을 우선하도록 변경했다. 이 package 변경은 compile/deploy하지 않았다. 현재 Source 실패 JSON은 이미 `error.message`에 ORA를 넣으므로 UI 변경은 정적 자산으로 즉시 제공된다.
+- 변경 파일: `db/adb/asta_pkg.sql`, `static/js/extensions/tuning_assistant.js`, `static/index.html`, `tests/test_asta_error_handling_matrix.py`, cache 계약 테스트 6개, 신규 재현 도구 `tools/verify_asta_permission_error.py`, 이 handoff다.
+- 검증: 오류 관련/연관 계약 `58 passed`, JS syntax와 `git diff --check` 통과. 전체 `436 passed, 기존 9 failed in 1.34s`, 신규 실패 0건이다. localhost `/`는 HTTP 200이며 `tuning_assistant.js?v=20260708_ora_error1`을 제공하고, 제공된 JS는 workspace와 byte-identical하며 ORA 추출/강조 코드를 포함한다.
+- 남은 문제/다음 단계: 고객 테스트 전에 ASTA_PKG 제출 및 Source DB Link가 정상 응답하는지 운영 상태를 별도로 확인해야 한다. ADB package hardening 배포가 필요하면 별도 승인 후 backup/compile/VALID/USER_ERRORS=0/smoke 순서로 수행한다. DB/ORDS/package 배포, 서비스 재시작, commit/push는 수행하지 않았다.
+
 ## 요청과 결론
 
 - 고객 첫 SQL `asta-awr-01 / SESL0640.selectList`(SQL ID `7rcw6d3us86r7`)를 OLTP로 실환경 검증했다.
@@ -661,3 +1096,21 @@
 - 모바일은 2열 동일 폭을 유지하고 좁은 공간에서는 상태 pseudo label만 숨겨 번호·테두리·선택 강조로 구분한다.
 - cache-buster는 `tuning_assistant.js?v=20260707_manual_tabs1`. 시각 계약 RED `2 failed` 후 focused `74 passed`; 전체 회귀 `429 passed, 기존 9 failed in 1.36s`, 신규 실패 0. JS syntax/diff check 통과.
 - 실행 서비스 `/`는 새 cache URL을 참조하고 제공 JS는 workspace와 187,827 bytes로 byte-identical하다. DB/ORDS/package/schema/service restart/commit/push 없음.
+
+## ASTA 원격 pull·프로그램 재기동 — 2026-07-07 완료
+
+- 사용자 요청으로 `origin/ASTA`를 `f06e4bc → 9c4b217` fast-forward pull했다. 변경은 `Guide_Select-AI.md`, NL2SQL/Profile Test Python·JS 5개 파일이며 충돌은 없었다.
+- 일반 `systemctl restart`는 interactive authentication 요구로 거절됐고, 승인된 `sudo -n systemctl restart select-ai-test.service`로 정상 재기동했다.
+- 서비스 PID는 `822785 → 1125061`, active/running, 시작 시각 `2026-07-07 17:04:17 KST`, `0.0.0.0:8000` LISTEN이다. startup complete와 `descente-selectai`, `descente-tuning` DB pool ready를 확인했다.
+- localhost `/`와 `/api/auth/status`는 HTTP 200이며 served index는 workspace와 byte-identical하고 `tuning_assistant.js?v=20260707_manual_tabs1`을 참조한다.
+- DB package/ORDS/schema 변경, 추가 commit/push는 수행하지 않았다.
+
+## ASTA UI 개발자 실행 절차 매뉴얼 — 2026-07-08 완료
+
+- 요청/결론: Real ASTA 코드만 검색해 기존 매뉴얼 팝업에 별도 `03 개발자 실행 추적` 탭을 추가했다. 브라우저, FastAPI, ORDS, Target ADB, Source DB, AI/LLM의 역할과 실제 파일·함수/package, 버튼 클릭부터 report render/download까지 19개 호출 지점, 실패·차단·원본 유지 분기, Run ID 추적 방법을 표시한다.
+- 실제 흐름: `formatSql/stripTrailingSqlTerminator → POST /api/asta/analyze → asta_proxy.analyze → ASTA_PKG.SUBMIT_RUN → DBMS_SCHEDULER → EXECUTE_RUN/RUN_PIPELINE → SQL Guard → 원본 Source evidence → Vector search → LLM 후보 → 후보 Source evidence → BUILD_COMPARISON_JSON → SAVE_CASE → BUILD_REPORT/BUILD_RESPONSE_JSON → poll/fetchReport → renderReportTabs/downloadText`다. canonical 결과서 생성은 Python이 아니라 ADB `ASTA_REPORT_PKG`다.
+- 변경 파일: `static/js/extensions/tuning_assistant.js`, `static/index.html`, 문서 4종, 신규 `tests/test_asta_developer_manual_contract.py`, cache 기대값/로컬 runtime 금지 범위를 갱신한 관련 테스트 7개, 이 handoff.
+- strict TDD: 신규 계약 테스트 RED `5 failed` 확인 후 구현했다. 최초 `.venv/bin/pytest`는 실행 파일 부재로 시작되지 않아 기존 offline uv cache 명령으로 RED/GREEN을 재현했다.
+- 검증: 신규+기존 manual `11 passed`; 관련 UI/API 계약 `76 passed`; Node 결과서 DOM PASS; `node --check` 두 JS PASS; `git diff --check` PASS. 전체 `434 passed, 9 failed in 1.34s`; 직전 baseline 9건과 동일하고 신규 실패 0건이다.
+- 기존 9 failures: 오래된 ADB smoke/response/run-id/failure marker 기대 4건, 누락 `reports/asta_source_contract_latest.md` 1건, 과거 proxy failure-return 기대 2건, workload signature 기대 2건이다. 이번 UI/docs 변경과 무관하다.
+- 서비스 재시작, DB/ORDS/package 배포, 외부 실행, commit/push는 수행하지 않았다.

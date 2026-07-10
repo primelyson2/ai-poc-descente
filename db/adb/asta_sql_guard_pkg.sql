@@ -3,6 +3,7 @@
 
 CREATE OR REPLACE PACKAGE asta_sql_guard_pkg AUTHID DEFINER AS
   PROCEDURE assert_safe_select(p_sql IN CLOB);
+  PROCEDURE assert_candidate_compatible(p_sql IN CLOB);
   FUNCTION extract_candidate_sql(p_llm_text IN CLOB) RETURN CLOB;
   FUNCTION inspect_sql(p_sql IN CLOB) RETURN CLOB;
 END asta_sql_guard_pkg;
@@ -210,6 +211,26 @@ CREATE OR REPLACE PACKAGE BODY asta_sql_guard_pkg AS
       END IF;
     END LOOP;
   END assert_safe_select;
+
+  PROCEDURE assert_candidate_compatible(p_sql IN CLOB) IS
+    l_head  VARCHAR2(32767);
+    l_guard VARCHAR2(32767);
+  BEGIN
+    assert_safe_select(p_sql);
+    l_head := DBMS_LOB.SUBSTR(p_sql, 32767, 1);
+    l_guard := scrub_guard_text(l_head);
+    IF REGEXP_LIKE(l_guard, '\([[:space:]]*\+[[:space:]]*\)')
+       AND REGEXP_LIKE(
+         l_guard,
+         '(^|\W)((INNER|LEFT|RIGHT|FULL|CROSS)[[:space:]]+)?JOIN(\W|$)',
+         'i'
+       ) THEN
+      RAISE_APPLICATION_ERROR(
+        -20001,
+        'ASTA_SQL_GUARD: ORA-25156 precheck rejected mixed ANSI JOIN and old-style outer join (+)'
+      );
+    END IF;
+  END assert_candidate_compatible;
 
   FUNCTION extract_candidate_sql(p_llm_text IN CLOB) RETURN CLOB IS
     l_candidate_vc VARCHAR2(32767);

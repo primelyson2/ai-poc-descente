@@ -16,6 +16,10 @@ CREATE OR REPLACE PACKAGE asta_source_bridge_pkg AUTHID DEFINER AS
   ) RETURN CLOB;
 
   FUNCTION get_connection_json(p_source_db_id IN VARCHAR2) RETURN CLOB;
+  FUNCTION cancel_source_run(
+    p_source_db_id IN VARCHAR2,
+    p_run_id IN VARCHAR2
+  ) RETURN CLOB;
 END asta_source_bridge_pkg;
 /
 
@@ -171,7 +175,7 @@ CREATE OR REPLACE PACKAGE BODY asta_source_bridge_pkg AS
   FUNCTION normalized_result_evidence_mode(p_mode IN VARCHAR2) RETURN VARCHAR2 IS
     l_mode VARCHAR2(30) := UPPER(TRIM(NVL(p_mode, 'FULL_RESULT')));
   BEGIN
-    IF l_mode NOT IN ('BOUNDED', 'FULL_RESULT') THEN
+    IF l_mode NOT IN ('ESTIMATED_PLAN', 'PLAN_ONLY', 'BOUNDED', 'FULL_RESULT') THEN
       RAISE_APPLICATION_ERROR(-20002, 'ASTA_SOURCE_BRIDGE: invalid result evidence mode');
     END IF;
     RETURN l_mode;
@@ -334,6 +338,29 @@ CREATE OR REPLACE PACKAGE BODY asta_source_bridge_pkg AS
       RETURN error_json('SOURCE_BRIDGE', l_error_message, l_error_backtrace);
       END;
   END run_source_evidence;
+
+  FUNCTION cancel_source_run(
+    p_source_db_id IN VARCHAR2,
+    p_run_id IN VARCHAR2
+  ) RETURN CLOB IS
+    l_db_link_name VARCHAR2(128);
+    l_source_schema VARCHAR2(128);
+    l_source_prefix VARCHAR2(130);
+    l_stmt VARCHAR2(1000);
+    l_result VARCHAR2(32767);
+    l_run_id VARCHAR2(64);
+  BEGIN
+    resolve_connection(p_source_db_id, l_db_link_name, l_source_schema);
+    l_run_id := validated_run_id(p_run_id);
+    l_source_prefix := CASE WHEN l_source_schema IS NULL THEN '' ELSE l_source_schema || '.' END;
+    l_stmt := 'BEGIN :result := ' || l_source_prefix ||
+      'asta_source_pkg.cancel_run_vc@' || l_db_link_name || '(:run_id); END;';
+    EXECUTE IMMEDIATE l_stmt USING OUT l_result, IN l_run_id;
+    RETURN TO_CLOB(l_result);
+  EXCEPTION
+    WHEN OTHERS THEN
+      RETURN error_json('SOURCE_CANCEL_FAILED', SUBSTR(SQLERRM, 1, 2000));
+  END cancel_source_run;
 
   FUNCTION get_connection_json(p_source_db_id IN VARCHAR2) RETURN CLOB IS
     l_db_link_name VARCHAR2(128);

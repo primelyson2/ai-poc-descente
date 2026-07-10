@@ -1,6 +1,6 @@
 # OADT2 ASTA 아키텍처 및 프로그램 명세
 
-최종 업데이트: 2026-07-07
+최종 업데이트: 2026-07-08
 
 이 문서는 ASTA(AI SQL Tuning Assistant)의 내부 아키텍처, 실행 순서, API, 판정 기준을 설명하는 단일 기준 문서다. 개발자용 사용법과 쉬운 오류 조치는 `AI_SQL_TUNING_ASSISTANT_MANUAL.md`, 함수 단위 실행 추적은 `asta_source_execution_flow.md`를 참고한다.
 
@@ -140,12 +140,16 @@ LLM은 원본 SQL만 받지 않는다. 다음 근거를 함께 받아 구조적 
 
 소스에서 보이는 `JSON_ARRAYAGG(JSON_OBJECT(... row_hash ... multiplicity ...))` 형태의 SQL은 업무 SQL을 바꾸는 쿼리가 아니다. 원본과 후보의 전체 결과가 같은지를 비교하기 위한 내부 FULLDIGEST wrapper다. `FULL_RESULT`의 기본 최대 행 수는 ADB bridge 기준 100,000행이며 예산을 넘으면 성공으로 추정하지 않고 차단한다.
 
+일반 UI의 기본은 `execute_source_sql=false`다. 이 모드에서 4단계는 Source의 `EXPLAIN PLAN ... INTO PLAN_TABLE`과 `DBMS_XPLAN.DISPLAY`로 예상계획을 만들고 객체 통계·인덱스만 읽는다. 원본과 후보 SELECT, count/digest, Advisor를 실행하지 않으며 후보는 미검증 상태로 원본을 유지한다. 사용자가 체크박스로 명시적 opt-in한 `execute_source_sql=true`에서만 기존 `MINIMAL(ONCE + FULL_RESULT)`과 7단계 PLAN_ONLY/정밀 검증이 동작한다.
+
 다음은 fail-closed로 `NON_EQUIVALENT` 또는 `INSUFFICIENT_EVIDENCE`가 된다.
 
 - 결과 또는 metadata digest 불일치
 - 일부 행만 처리했거나 digest가 완료되지 않음
 - ordered/unordered mode 불일치
 - 미지원 datatype 또는 비교에 필요한 정보 누락
+
+7단계 후보 검증은 PLAN_ONLY + ONCE 선별을 먼저 수행한다. XPLAN의 optimizer intent와 workload별 metric이 개선된 후보만 AUTO + FULL_RESULT 반복/동등성 검증으로 승격한다. candidate guard는 ANSI JOIN과 (+) 혼용을 Source 실행 전에 차단하며, watchdog은 실제 예상 pass 수를 반영한다. Source에서는 ALTER SYSTEM을 사용하지 않아 timeout 시 ADB parent Scheduler job만 종료한다.
 
 ## 8. 최종 안전 검증 순서
 
@@ -161,7 +165,6 @@ LLM은 원본 SQL만 받지 않는다. 다음 근거를 함께 받아 구조적 
 
 Buffer Gets를 우선하되 사용자 지연을 함께 제한한다. 현재 코드 기준의 주요 채택 조건은 다음과 같다.
 
-- 후보 실행시간 3초 이하
 - Buffer Gets 5% 이상 감소하면서 실행시간이 악화되지 않음, 또는
 - Buffer Gets 20% 이상 감소하고 후보가 1초 이하이거나 실행시간 증가가 300ms 이하
 
@@ -176,6 +179,7 @@ run의 `QUEUED`, `RUNNING`, `COMPLETED`, `FAILED`는 처리 상태다. `COMPLETE
 | verdict | 의미 | 최종 사용 SQL |
 |---|---|---|
 | `IMPROVED` | 모든 필수 검증을 통과하고 실제 개선 | 검증된 후보 |
+| `ANALYSIS_ONLY` | 미실행 모드에서 후보와 예상 Plan을 제안했지만 성능·동등성은 미검증 | 원본 |
 | `NOT_IMPROVED` | 결과는 비교 가능하지만 성능 개선 없음 | 원본 |
 | `NON_EQUIVALENT` | 원본과 후보 결과가 다름 | 원본 |
 | `INSUFFICIENT_EVIDENCE` | 계획·결과·bind·반복 측정 근거 부족 | 원본 |
@@ -249,6 +253,8 @@ Source 객체 정보는 XPLAN의 owner/object를 기준으로 `DBA_TAB_STATISTIC
 - `ASTA_LLM_CALL_LOG`: LLM 단계·크기·상태 감사 정보
 - `ASTA_TUNING_CASES`: Vector 사례와 검증 metadata
 
+진행 조회에는 `ASTA_LLM_CALL_LOG`의 stage/attempt/profile/status/크기/timing 요약만 포함한다. 정확한 prompt와 provider 응답은 일반 polling payload에 넣지 않고, 인증된 OADT2 경로에서 사용자가 선택한 `run_id + call_id` 한 건만 lazy-load한다. 화면의 원문 블록은 운영 SQL·XPLAN 노출을 줄이기 위해 기본 접힘 상태를 유지한다.
+
 로그와 인계 문서에는 비밀번호, wallet password, token, cookie, raw bind 값을 기록하지 않는다. SQL 원문이 불필요한 운영 artifact에는 run ID, fingerprint, verdict와 허용된 측정값만 남긴다.
 
 ## 14. 설치·컴파일과 변경 경계
@@ -286,3 +292,21 @@ ASTA_SQL_GUARD_PKG
 화면은 OLTP 15개와 BATCH 5개를 제공한다. OLTP 02~15는 2026-07-06 현재 pipeline에서 `IMPROVED`, full-result equivalence, optimizer intent, `AUTO` 반복 측정, bind not-applicable 조건을 통과했다. BATCH 5개는 2026-07-07 Source 실환경에서 원본 35.8~55.0초, 결정론적 후보 1.0~1.1초와 full-result/metadata digest 일치를 사전 확인했다.
 
 샘플의 사전 검증은 새 run의 gate를 우회하지 않는다. 사용자가 샘플을 선택하면 SQL과 workload만 채워지고 일반 분석과 동일한 ORDS/ADB/Source 경로 및 deterministic 판정을 다시 거친다.
+
+## 17. 개발자 실행 추적
+
+### 플랫폼별 역할과 실제 코드
+
+UI 팝업의 세 번째 탭은 3절의 component 책임을 실제 파일·심볼 단위로 확장한다. 브라우저 `tuningAssistant`/`pollRunProgress`/`renderResult`, FastAPI `asta_proxy.analyze`/`_audited_run_lookup`, ORDS `ASTA_PKG.SUBMIT_RUN` handler, ADB `SUBMIT_RUN`/`EXECUTE_RUN`/private `RUN_PIPELINE`, bridge `RUN_SOURCE_EVIDENCE`, Source `RUN_EVIDENCE_STORE_PROC`/`RUN_EVIDENCE`, LLM `GENERATE_SQL_ONLY_TUNING`, 비교 `BUILD_COMPARISON_JSON`, report `BUILD_REPORT`/`BUILD_RESPONSE_JSON`만 운영 흐름으로 표시한다.
+
+### 버튼 클릭부터 보고서 다운로드까지
+
+실제 호출 순서는 `formatSql → POST /api/asta/analyze → asta_proxy.analyze → ASTA_PKG.SUBMIT_RUN → DBMS_SCHEDULER → EXECUTE_RUN → RUN_PIPELINE → SQL Guard → 원본 Source evidence → Vector search → LLM 후보 → 후보 Source evidence → BUILD_COMPARISON_JSON → SAVE_CASE → BUILD_REPORT/BUILD_RESPONSE_JSON → progress/report 조회 → renderReportTabs/downloadText`다. `execute_source_sql=false`에서는 Source evidence가 `ESTIMATED_PLAN_ONLY` 범위이고, 체크박스 opt-in에서만 runtime metrics와 full-result digest를 만든다. 결과서의 canonical Markdown과 response는 ADB `ASTA_REPORT_PKG`가 만들며 Python은 이를 대신 작성하지 않는다.
+
+### 실패·차단·원본 유지 분기
+
+`ANALYSIS_ONLY`는 실패가 아니라 Source runtime 미측정 분석 완료이며 원본을 유지한다. `SQL_GUARD_REJECTED`, `NO_REWRITE`, `CANDIDATE_FAILED`, `CANDIDATE_RUNTIME_LIMIT`, `NON_EQUIVALENT`, `INSUFFICIENT_EVIDENCE`, `NOT_IMPROVED`도 모두 원본 유지다. `IMPROVED`도 자동 배포가 아니라 검토 가능한 후보다. stage 11 Vector 저장 실패나 Advisor 실패가 comparison을 개선 성공으로 바꾸지 않는다.
+
+### Run ID로 추적하는 방법
+
+`/progress`의 최초 terminal stage, `ASTA_RUNS`, `ASTA_RUN_PROGRESS`, `ASTA_LLM_CALL_LOG`, API audit의 run prefix/hash, 해당 Scheduler job, Source의 `ASTA_RUN_ID` marker 순서로 소유 관계를 좁힌다. SQL·bind·credential은 진단 문서에 복사하지 않는다. 상세 call stack과 정적 회귀 명령은 `asta_source_execution_flow.md`와 `AI_SQL_TUNING_ASSISTANT_MANUAL.md` 13절을 따른다.

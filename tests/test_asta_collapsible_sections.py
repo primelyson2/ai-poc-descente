@@ -36,7 +36,7 @@ def test_collapsible_sections_have_visible_toggle_and_new_cache_version():
     assert ".tuning-collapsible-summary::-webkit-details-marker" in UI
     assert ".tuning-collapsible-summary::after" in UI
     assert ".tuning-report-collapse-summary::after" in UI
-    assert "tuning_assistant.js?v=20260707_manual_tabs1" in INDEX
+    assert "tuning_assistant.js?v=20260709_no_3s_latency1" in INDEX
 
 
 def test_input_and_result_sections_share_the_same_surface_contract():
@@ -55,7 +55,7 @@ def test_input_and_result_sections_share_the_same_surface_contract():
 def test_mobile_cards_and_single_report_action_keep_the_shared_shape():
     assert ".tuning-card { padding:0; border-radius:var(--radius-lg); box-shadow:none; }" in UI
     assert ".tuning-report-actions { grid-template-columns:1fr;" in UI
-    assert ".tuning-controls-row > .tuning-field:last-child { grid-column:1 / -1; }" in UI
+    assert ".tuning-controls-row > .tuning-field:last-child { grid-column:1 / -1; }" not in UI
     assert ".tuning-input:focus, .tuning-sql:focus" in UI
 
 

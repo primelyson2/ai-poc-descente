@@ -114,7 +114,8 @@ ADB_PACKAGE_FILES = {
         "Tune this Oracle SQL using the supplied runtime evidence",
         "SQL_ONLY_REWRITE",
         "ASTA_GROK_GENAI_PROFILE",
-        "ASTA_DB_GENAI_TEST",
+        "FUNCTION available_fallback_profile",
+        "user_cloud_ai_profiles",
         "candidate_sql must be a single safe Oracle SELECT or WITH statement",
         "Return JSON only; do not wrap the response in Markdown fences.",
         "asta_sql_guard_pkg.assert_safe_select(p_sql)",
@@ -162,6 +163,7 @@ ADB_PACKAGE_FILES = {
         "FUNCTION analyze_sql",
         "FUNCTION list_profiles",
         "FUNCTION get_progress",
+        "FUNCTION get_llm_call",
         "FUNCTION normalize_source_db_id",
         "FUNCTION normalize_run_id",
         "FUNCTION migration_boundary_json",
@@ -202,6 +204,7 @@ ADB_PACKAGE_FILES = {
         "ASTA_PKG.LIST_PROFILES",
         "ASTA_PKG.GET_RUN(:run_id)",
         "ASTA_PKG.GET_PROGRESS(:run_id)",
+        "ASTA_PKG.GET_LLM_CALL(:run_id, TO_NUMBER(:call_id))",
         "ASTA_PKG.GET_REPORT(:run_id)",
         "Pragma: no-cache",
         "X-Content-Type-Options: nosniff",
@@ -309,15 +312,17 @@ def test_ords_handlers_cover_required_asta_routes():
         "p_pattern     => 'runs/:run_id'",
         "p_pattern     => 'runs/:run_id/progress'",
         "ASTA_PKG.GET_PROGRESS(:run_id)",
+        "p_pattern     => 'runs/:run_id/llm-calls/:call_id'",
+        "ASTA_PKG.GET_LLM_CALL(:run_id, TO_NUMBER(:call_id))",
         "p_pattern     => 'runs/:run_id/report'",
         "HTP.prn(l_chunk)",
     ]:
         assert fragment in src
-    assert src.count("X-Content-Type-Options: nosniff") == 5
-    assert src.count("X-ASTA-Execution-Boundary: ADB_ORDS_PLSQL") == 5
-    assert src.count("X-ASTA-Api-Version: asta.v1") == 5
-    assert src.count("X-ASTA-Contract-Version: asta.v1") == 5
-    assert src.count("X-ASTA-Response-Mode: CLOB_CHUNKED_JSON") == 5
+    assert src.count("X-Content-Type-Options: nosniff") == 6
+    assert src.count("X-ASTA-Execution-Boundary: ADB_ORDS_PLSQL") == 6
+    assert src.count("X-ASTA-Api-Version: asta.v1") == 6
+    assert src.count("X-ASTA-Contract-Version: asta.v1") == 6
+    assert src.count("X-ASTA-Response-Mode: CLOB_CHUNKED_JSON") == 6
 
 
 def test_plsql_progress_codes_match_ui_contract():
@@ -499,7 +504,7 @@ def test_adb_public_run_lookup_contracts_are_validated_and_boundary_tagged():
     assert "FUNCTION normalize_run_id(p_run_id IN VARCHAR2) RETURN VARCHAR2" in src
     assert "ASTA_PKG: invalid run_id" in src
     # 조회 3개, Scheduler 실행, candidate-timeout watchdog 진입점이 동일한 검증을 사용한다.
-    assert src.count("l_run_id := normalize_run_id(p_run_id)") == 5
+    assert src.count("l_run_id := normalize_run_id(p_run_id)") == 6
     assert "FUNCTION migration_boundary_json RETURN VARCHAR2" in src
     assert '"contract_version":"asta.v1"' in src
     assert '"architecture":"ADB_ORDS_PLSQL"' in src
@@ -519,7 +524,8 @@ def test_adb_main_uses_llm_candidate_for_tuned_evidence_without_python_runtime()
     comparison_pos = src.index("l_comparison_json := build_comparison_json")
     assert llm_pos < extract_pos < after_pos < comparison_pos
     assert "asta_llm_pkg.final_review(" not in src
-    assert "p_run_id           => l_run_id || '-TUNED'" in src
+    assert "p_run_id           => l_run_id || '-TUNED-SCREEN'" in src
+    assert "p_run_id           => l_run_id || '-TUNED-FINAL'" in src
     assert "p_run_advisor      => 'N'" in src
 
 
@@ -599,6 +605,12 @@ def test_fastapi_asta_surface_forbids_python_local_runtime_strings():
     for rel_path in ["app/routers/asta_proxy.py", "static/js/extensions/tuning_assistant.js"]:
         src = _read(rel_path)
         for fragment in forbidden:
+            # Read-only developer help names these Oracle APIs, while the
+            # browser submit/runtime path must still never execute them.
+            if rel_path.endswith("tuning_assistant.js") and fragment in {"DBMS_XPLAN", "DBMS_SQLTUNE", "DBMS_CLOUD_AI"}:
+                runtime = src[src.index('document.getElementById("asta-run").addEventListener'):]
+                assert fragment not in runtime
+                continue
             assert fragment not in src, f"{fragment!r} leaked into {rel_path}"
     proxy = _read("app/routers/asta_proxy.py")
     ui = _read("static/js/extensions/tuning_assistant.js")

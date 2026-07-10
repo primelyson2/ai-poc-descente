@@ -40,7 +40,7 @@ def test_pipeline_correlates_repair_log_with_run_id():
     assert "p_error_message      => l_source_error" in call
     assert "p_run_id             => l_run_id" in call
     assert source.count("asta_llm_pkg.repair_sql_candidate(") == 2
-    assert "l_run_id || '-REPAIRED2'" in source
+    assert "l_run_id || '-REPAIRED2-SCREEN'" in source
     assert "SUCCESS_ROUND_2" in source
 
 

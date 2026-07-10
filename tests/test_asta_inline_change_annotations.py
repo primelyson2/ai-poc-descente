@@ -46,6 +46,17 @@ def test_guard_rejects_body_markers_and_validates_sequential_leading_header():
     assert "strip_leading_comments(l_head)" in guard
 
 
+def test_sql_response_normalizer_preserves_full_leading_comment_terminator():
+    llm = read("db/adb/asta_llm_pkg.sql")
+    start = llm.index("FUNCTION normalize_sql_response(p_response IN CLOB)")
+    normalizer = llm[start:llm.index("END normalize_sql_response;", start)]
+
+    assert "l_comment_end := CASE" in normalizer
+    assert "INSTR(l_text, '*/', 3)" in normalizer
+    assert "SUBSTR(l_text, 1, l_comment_end + 1)" in normalizer
+    assert "SUBSTR(l_text, 1, l_comment_end))" not in normalizer
+
+
 def test_report_explains_top_header_and_header_location_when_candidate_exists():
     report = read("db/adb/asta_report_pkg.sql")
     notice = "SQL 맨 앞의 `ASTA_TUNING_CHANGE_n` 주석에 전체 변경 사항을 설명합니다."
@@ -53,7 +64,9 @@ def test_report_explains_top_header_and_header_location_when_candidate_exists():
     assert "튜닝 SQL 상단 변경 요약" in report
     section = report[report.rindex("clob_app(l_report, '## 튜닝 후 SQL") :]
     candidate_if = section.index("IF l_candidate_sql_vc IS NOT NULL THEN")
-    candidate_else = section.index("ELSE", candidate_if)
+    candidate_else = section.index(
+        "ELSE\n      clob_app(l_report, '- 개선 SQL 없음.", candidate_if
+    )
     assert candidate_if < section.index(notice) < candidate_else
 
 

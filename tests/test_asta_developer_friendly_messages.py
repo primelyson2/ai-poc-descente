@@ -65,5 +65,5 @@ def test_manual_starts_with_developer_actions_and_common_messages():
 
 def test_cache_buster_serves_developer_message_ui():
     index = (ROOT / "static/index.html").read_text(encoding="utf-8")
-    assert "asta_report_tabs.js?v=20260707_verdict_popover1" in index
-    assert "tuning_assistant.js?v=20260707_manual_tabs1" in index
+    assert "asta_report_tabs.js?v=20260709_estimated_plan_tabs1" in index
+    assert "tuning_assistant.js?v=20260709_no_3s_latency1" in index

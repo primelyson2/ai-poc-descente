@@ -47,6 +47,7 @@ CREATE OR REPLACE PACKAGE asta_source_pkg AUTHID CURRENT_USER AS
    *   p_run_id           실행 SQL에 표식으로 삽입할 고유 실행 ID.
    *   p_fetch_rows       실행 범위를 제한할 최대 행 수(1~10000). 기본값: 100.
    *   p_repeat_policy    'AUTO'(warm-up 1회 + 측정 3회) | 'ONCE' | 'REPEAT:<n>'(n=1~5).
+   *   p_result_evidence_mode 'ESTIMATED_PLAN'(SQL 미실행 EXPLAIN PLAN) | 'PLAN_ONLY' | 'BOUNDED' | 'FULL_RESULT'.
    *   p_run_advisor      DBMS_SQLTUNE 실행은 'Y', 생략은 'N'. 기본값: 'N'.
    *   p_sqltune_time_sec DBMS_SQLTUNE 제한시간(초, 60~1800). 기본값: 1800.
    */
@@ -92,6 +93,8 @@ CREATE OR REPLACE PACKAGE asta_source_pkg AUTHID CURRENT_USER AS
     p_offset IN NUMBER DEFAULT 1,
     p_amount IN NUMBER DEFAULT 8000
   ) RETURN VARCHAR2;
+
+  FUNCTION cancel_run_vc(p_run_id IN VARCHAR2) RETURN VARCHAR2;
 
 END asta_source_pkg;
 /
@@ -382,6 +385,19 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
     END IF;
     RETURN l_run_id;
   END normalize_run_id;
+
+  FUNCTION cancel_run_vc(p_run_id IN VARCHAR2) RETURN VARCHAR2 IS
+    l_run_id VARCHAR2(64) := normalize_run_id(p_run_id);
+  BEGIN
+    RETURN '{"status":"SKIPPED","code":"SOURCE_CANCEL_NOT_AVAILABLE","run_id":' ||
+      json_str(l_run_id) ||
+      ',"cancelled_sql_count":0,"failed_sql_count":0,' ||
+      '"message":"ALTER SYSTEM is not permitted; ADB parent watchdog only"}';
+  EXCEPTION
+    WHEN OTHERS THEN
+      RETURN '{"status":"FAILED","code":"SOURCE_RUN_CANCEL","run_id":' ||
+        json_str(p_run_id) || ',"message":' || json_str(SUBSTR(SQLERRM, 1, 1000)) || '}';
+  END cancel_run_vc;
 
   -- 다음 기능을 수행하는 제한 실행 래퍼를 생성한다.
   --   1. LAST_* 통계를 활성화하기 위해 /*+ gather_plan_statistics */를 삽입한다.
@@ -1070,6 +1086,177 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
         || TO_CHAR(SQLCODE) || ',"message":' || json_str(SUBSTR(SQLERRM, 1, 2000)) || '}}');
   END collect_object_info;
 
+  -- EXPLAIN PLAN이 PLAN_TABLE에 기록한 object만 사용해 통계와 인덱스를
+  -- 수집한다. 입력 SQL은 실행하지 않으며 DBA_* dictionary만 조회한다.
+  FUNCTION collect_estimated_object_info(p_statement_id IN VARCHAR2) RETURN CLOB IS
+    l_out CLOB;
+    l_first_table BOOLEAN := TRUE;
+    l_first_col BOOLEAN;
+    l_first_idx BOOLEAN;
+  BEGIN
+    DBMS_LOB.CREATETEMPORARY(l_out, TRUE);
+    clob_app(l_out, '{"status":"COMPLETED","source":"ESTIMATED_PLAN_OBJECTS","table_stats":[');
+    FOR t IN (
+      SELECT DISTINCT p.object_owner owner, p.object_name table_name,
+             s.num_rows, s.blocks, s.avg_row_len, s.sample_size, s.stale_stats,
+             TO_CHAR(s.last_analyzed, 'YYYY-MM-DD"T"HH24:MI:SS') last_analyzed
+        FROM plan_table p
+        LEFT JOIN dba_tab_statistics s
+          ON s.owner=p.object_owner AND s.table_name=p.object_name
+       WHERE p.statement_id=p_statement_id
+         AND p.object_owner IS NOT NULL AND p.object_name IS NOT NULL
+         AND p.operation='TABLE ACCESS'
+       ORDER BY p.object_owner, p.object_name
+    ) LOOP
+      IF NOT l_first_table THEN clob_app(l_out, ','); END IF;
+      l_first_table := FALSE;
+      clob_app(l_out, '{"owner":' || json_str(t.owner) ||
+        ',"table_name":' || json_str(t.table_name) ||
+        ',"num_rows":' || json_num(t.num_rows) ||
+        ',"blocks":' || json_num(t.blocks) ||
+        ',"avg_row_len":' || json_num(t.avg_row_len) ||
+        ',"sample_size":' || json_num(t.sample_size) ||
+        ',"last_analyzed":' || json_str(t.last_analyzed) ||
+        ',"stale_stats":' || json_str(t.stale_stats) || ',"columns":[');
+      l_first_col := TRUE;
+      FOR c IN (
+        SELECT column_name, data_type, nullable, column_id
+          FROM dba_tab_columns
+         WHERE owner=t.owner AND table_name=t.table_name
+         ORDER BY column_id
+         FETCH FIRST 120 ROWS ONLY
+      ) LOOP
+        IF NOT l_first_col THEN clob_app(l_out, ','); END IF;
+        l_first_col := FALSE;
+        clob_app(l_out, '{"column_name":' || json_str(c.column_name) ||
+          ',"data_type":' || json_str(c.data_type) ||
+          ',"nullable":' || json_str(c.nullable) ||
+          ',"column_id":' || json_num(c.column_id) || '}');
+      END LOOP;
+      clob_app(l_out, '],"indexes":[');
+      l_first_idx := TRUE;
+      FOR i IN (
+        SELECT x.index_name, x.uniqueness, x.status, x.visibility,
+               x.blevel, x.leaf_blocks, x.distinct_keys,
+               LISTAGG(c.column_name, ',') WITHIN GROUP (ORDER BY c.column_position) columns_csv
+          FROM dba_indexes x
+          LEFT JOIN dba_ind_columns c
+            ON c.index_owner=x.owner AND c.index_name=x.index_name
+         WHERE x.table_owner=t.owner AND x.table_name=t.table_name
+         GROUP BY x.index_name, x.uniqueness, x.status, x.visibility,
+                  x.blevel, x.leaf_blocks, x.distinct_keys
+         ORDER BY x.index_name
+      ) LOOP
+        IF NOT l_first_idx THEN clob_app(l_out, ','); END IF;
+        l_first_idx := FALSE;
+        clob_app(l_out, '{"index_name":' || json_str(i.index_name) ||
+          ',"uniqueness":' || json_str(i.uniqueness) ||
+          ',"status":' || json_str(i.status) ||
+          ',"visibility":' || json_str(i.visibility) ||
+          ',"blevel":' || json_num(i.blevel) ||
+          ',"leaf_blocks":' || json_num(i.leaf_blocks) ||
+          ',"distinct_keys":' || json_num(i.distinct_keys) ||
+          ',"columns_csv":' || json_str(i.columns_csv) || '}');
+      END LOOP;
+      clob_app(l_out, ']}');
+    END LOOP;
+    clob_app(l_out, ']}');
+    RETURN l_out;
+  EXCEPTION WHEN OTHERS THEN
+    RETURN TO_CLOB('{"status":"FAILED","source":"ESTIMATED_PLAN_OBJECTS","table_stats":[],"message":') ||
+      TO_CLOB(json_str(SUBSTR(SQLERRM, 1, 1000))) || TO_CLOB('}');
+  END collect_estimated_object_info;
+
+  FUNCTION run_estimated_evidence(
+    p_sql IN CLOB, p_run_id IN VARCHAR2, p_source_sql_id IN VARCHAR2,
+    p_parsing_schema IN VARCHAR2, p_plan_table_owner IN VARCHAR2
+  ) RETURN CLOB IS
+    l_statement_id VARCHAR2(30);
+    l_plan_table_name VARCHAR2(300);
+    l_explain_sql CLOB;
+    l_plan_text CLOB;
+    l_object_info CLOB;
+    l_result CLOB;
+    l_first BOOLEAN := TRUE;
+    l_line VARCHAR2(4000);
+  BEGIN
+    l_statement_id := 'ASTA_' || TO_CHAR(ABS(DBMS_UTILITY.GET_HASH_VALUE(p_run_id, 1, 999999999)));
+    -- PLAN_TABLE is commonly exposed as Oracle's public SYS.PLAN_TABLE$ synonym;
+    -- qualify neither side so invoker schemas without a local table can use it.
+    l_plan_table_name := 'PLAN_TABLE';
+    EXECUTE IMMEDIATE 'DELETE FROM ' || l_plan_table_name || ' WHERE statement_id=:statement_id'
+      USING l_statement_id;
+    l_explain_sql := TO_CLOB('EXPLAIN PLAN SET STATEMENT_ID = ''') ||
+      TO_CLOB(l_statement_id) || TO_CLOB(''' INTO ') ||
+      TO_CLOB(l_plan_table_name) || TO_CLOB(' FOR ') || p_sql;
+    EXECUTE IMMEDIATE l_explain_sql;
+    -- EXPLAIN PLAN uses the requested parsing schema for name resolution, but
+    -- PLAN_TABLE and package dictionary queries belong to the helper owner.
+    EXECUTE IMMEDIATE 'ALTER SESSION SET CURRENT_SCHEMA = ' ||
+      DBMS_ASSERT.SIMPLE_SQL_NAME(UPPER(p_plan_table_owner));
+
+    DBMS_LOB.CREATETEMPORARY(l_plan_text, TRUE);
+    FOR r IN (
+      SELECT plan_table_output line_text
+        FROM TABLE(DBMS_XPLAN.DISPLAY('PLAN_TABLE', l_statement_id,
+          'TYPICAL +PREDICATE +ALIAS +NOTE'))
+    ) LOOP
+      IF NOT l_first THEN DBMS_LOB.WRITEAPPEND(l_plan_text, 1, CHR(10)); END IF;
+      l_first := FALSE;
+      l_line := NVL(r.line_text, '');
+      IF LENGTH(l_line) > 0 THEN DBMS_LOB.WRITEAPPEND(l_plan_text, LENGTH(l_line), l_line); END IF;
+    END LOOP;
+    l_object_info := collect_estimated_object_info(l_statement_id);
+    EXECUTE IMMEDIATE 'DELETE FROM ' || l_plan_table_name || ' WHERE statement_id=:statement_id'
+      USING l_statement_id;
+
+    DBMS_LOB.CREATETEMPORARY(l_result, TRUE);
+    clob_app(l_result,
+      '{"status":"COMPLETED","contract_version":"asta.v1"' ||
+      ',"execution_boundary":"SOURCE_BASEDB_DBLINK_ONLY"' ||
+      ',"guard_policy":' || json_str(C_GUARD_POLICY) ||
+      ',"evidence_method":"EXPLAIN_PLAN_DICTIONARY_ONLY"' ||
+      ',"source_sql_executed":false,"plan_kind":"ESTIMATED"' ||
+      ',"metrics_source":"NONE_SQL_NOT_EXECUTED"' ||
+      ',"run_id":' || json_str(p_run_id) ||
+      ',"source_sql_id":' || json_str(LOWER(TRIM(p_source_sql_id))) ||
+      ',"parsing_schema_name":' || json_str(p_parsing_schema) ||
+      ',"sql_id":null,"child_number":null,"plan_hash_value":null' ||
+      ',"fetch_rows_limit":null,"repeat_count":0,"repeat_policy":"NONE"' ||
+      ',"warmup_count":0,"measurement_count":0,"completed_measurement_count":0' ||
+      ',"measurement_status":"SKIPPED","measurement_reason":"SOURCE_SQL_NOT_EXECUTED"' ||
+      ',"median_elapsed_time_us":null,"median_buffer_gets":null,"median_disk_reads":null,"elapsed_noise_pct":null' ||
+      ',"advisor_requested":false,"sqltune_time_limit_sec":null,"row_count":null' ||
+      ',"result_digest":null,"result_digest_status":"SKIPPED"' ||
+      ',"result_digest_algorithm":null,"result_digest_scope":"ESTIMATED_PLAN"' ||
+      ',"result_digest_mode":null,"result_metadata_digest":null,"result_total_rows":null,"result_digest_rows":null' ||
+      ',"result_chunks_complete":false,"result_evidence_complete":false,"result_truncated":false' ||
+      ',"result_digest_error":"SOURCE_SQL_NOT_EXECUTED"' ||
+      ',"timing_scope":"EXPLAIN_PLAN_ONLY","elapsed_wall_ms":null,"elapsed_wall_ms_per_exec":null' ||
+      ',"last_output_rows":null,"last_cr_buffer_gets":null,"last_disk_reads":null,"last_elapsed_time_us":null' ||
+      ',"plan_text":');
+    clob_app_json_str(l_result, l_plan_text);
+    clob_app(l_result, ',"object_info":');
+    clob_app_clob(l_result, l_object_info);
+    clob_app(l_result,
+      ',"child_cursor_evidence":{"status":"SKIPPED","bind_coverage_status":"NOT_EVALUATED","bind_coverage_reason":"SOURCE_SQL_NOT_EXECUTED"}' ||
+      ',"optimizer_intent_evidence":{"status":"SKIPPED","reason":"ESTIMATED_PLAN_ONLY"}' ||
+      ',"measurement_runs":[]' ||
+      ',"advisor":{"status":"SKIPPED","report":null}' ||
+      ',"error":null}');
+    RETURN l_result;
+  EXCEPTION
+    WHEN OTHERS THEN
+      BEGIN
+        EXECUTE IMMEDIATE 'DELETE FROM ' || l_plan_table_name || ' WHERE statement_id=:statement_id'
+          USING l_statement_id;
+      EXCEPTION WHEN OTHERS THEN NULL; END;
+      RETURN TO_CLOB('{"status":"FAILED","code":"ESTIMATED_PLAN_FAILED"' ||
+        ',"contract_version":"asta.v1","source_sql_executed":false,"plan_kind":"ESTIMATED"' ||
+        ',"error":{"code":' || TO_CHAR(SQLCODE) || ',"message":' ||
+        json_str(SUBSTR(SQLERRM, 1, 2000)) || '}}');
+  END run_estimated_evidence;
+
   -- =========================================================================
   -- SQL Tuning Advisor(선택 사항)
   -- =========================================================================
@@ -1308,7 +1495,7 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
     l_run_advisor := normalize_run_advisor(p_run_advisor);
     l_sqltune_time_sec := normalize_sqltune_time_sec(p_sqltune_time_sec);
     l_evidence_mode := UPPER(TRIM(NVL(p_result_evidence_mode, 'BOUNDED')));
-    IF l_evidence_mode NOT IN ('BOUNDED', 'FULL_RESULT') THEN
+    IF l_evidence_mode NOT IN ('ESTIMATED_PLAN', 'PLAN_ONLY', 'BOUNDED', 'FULL_RESULT') THEN
       RAISE_APPLICATION_ERROR(-20001, 'ASTA_SOURCE: invalid result evidence mode');
     END IF;
     l_result_max_rows := LEAST(GREATEST(NVL(p_result_max_rows, 100000), 1), 1000000);
@@ -1322,6 +1509,20 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
     IF l_parsing_schema IS NOT NULL AND l_parsing_schema <> UPPER(l_original_schema) THEN
       EXECUTE IMMEDIATE 'ALTER SESSION SET CURRENT_SCHEMA = ' || l_parsing_schema;
       l_schema_changed := TRUE;
+    END IF;
+
+    -- Production-safe path: parse and optimize only. No SELECT cursor is
+    -- opened, no row is fetched, and no Advisor or result digest is run.
+    IF l_evidence_mode = 'ESTIMATED_PLAN' THEN
+      l_result := run_estimated_evidence(
+        p_sql, l_run_id, p_source_sql_id, l_parsing_schema, l_original_schema
+      );
+      IF l_schema_changed THEN
+        EXECUTE IMMEDIATE 'ALTER SESSION SET CURRENT_SCHEMA = ' ||
+          DBMS_ASSERT.SIMPLE_SQL_NAME(UPPER(l_original_schema));
+        l_schema_changed := FALSE;
+      END IF;
+      RETURN l_result;
     END IF;
 
     -- 4. gather_plan_statistics 힌트와 실행 표식이 포함된 제한 실행 SQL을 생성한다.
@@ -1424,7 +1625,12 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
     -- result evidence is a separate fail-closed pass and never overwrites the
     -- measured cursor metrics.
     BEGIN
-      IF l_evidence_mode = 'FULL_RESULT' THEN
+      IF l_evidence_mode = 'PLAN_ONLY' THEN
+        l_result_scope := 'PLAN_ONLY';
+        l_digest_status := 'SKIPPED';
+        l_digest_error := 'PLAN_ONLY_SCREEN';
+        l_result_complete := 'false';
+      ELSIF l_evidence_mode = 'FULL_RESULT' THEN
         EXECUTE IMMEDIATE build_full_count_sql(p_sql, l_run_id) INTO l_result_total_rows;
         l_result_scope := 'FULL_RESULT';
         IF l_result_total_rows > l_result_max_rows THEN
@@ -1587,7 +1793,11 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
         ',"advisor_requested":null,"sqltune_time_limit_sec":null,"row_count":null' ||
         ',"result_digest":null,"result_digest_status":"FAILED"' ||
         ',"result_digest_algorithm":"SHA256_CHAINED_ORDERED_JSON_V1"' ||
-        ',"result_digest_scope":' || json_str(CASE WHEN UPPER(TRIM(p_result_evidence_mode)) = 'FULL_RESULT' THEN 'FULL_RESULT' ELSE 'BOUNDED_ORDERED_FIRST_N' END) ||
+        ',"result_digest_scope":' || json_str(CASE
+          WHEN UPPER(TRIM(p_result_evidence_mode)) = 'FULL_RESULT' THEN 'FULL_RESULT'
+          WHEN UPPER(TRIM(p_result_evidence_mode)) = 'PLAN_ONLY' THEN 'PLAN_ONLY'
+          WHEN UPPER(TRIM(p_result_evidence_mode)) = 'ESTIMATED_PLAN' THEN 'ESTIMATED_PLAN'
+          ELSE 'BOUNDED_ORDERED_FIRST_N' END) ||
         ',"result_digest_mode":null,"result_metadata_digest":null,"result_total_rows":null,"result_digest_rows":null' ||
         ',"result_chunks_complete":false,"result_evidence_complete":false,"result_truncated":false' ||
         ',"result_digest_error":' || json_str(l_error_message) ||

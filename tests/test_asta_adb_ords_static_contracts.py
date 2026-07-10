@@ -308,13 +308,13 @@ def test_vector_save_receives_report_ref_before_final_report_generation():
 def test_ords_json_handlers_set_cache_and_content_type_headers():
     """ASTA 계약/회귀 조건을 검증한다: ords json handlers set cache and content type headers."""
     src = _read("db/ords/asta_ords_module.sql")
-    assert src.count("Cache-Control: no-store") == 5
-    assert src.count("Pragma: no-cache") == 5
-    assert src.count("X-Content-Type-Options: nosniff") == 5
-    assert src.count("X-ASTA-Execution-Boundary: ADB_ORDS_PLSQL") == 5
-    assert src.count("X-ASTA-Api-Version: asta.v1") == 5
-    assert src.count("X-ASTA-Contract-Version: asta.v1") == 5
-    assert src.count("X-ASTA-Response-Mode: CLOB_CHUNKED_JSON") == 5
+    assert src.count("Cache-Control: no-store") == 6
+    assert src.count("Pragma: no-cache") == 6
+    assert src.count("X-Content-Type-Options: nosniff") == 6
+    assert src.count("X-ASTA-Execution-Boundary: ADB_ORDS_PLSQL") == 6
+    assert src.count("X-ASTA-Api-Version: asta.v1") == 6
+    assert src.count("X-ASTA-Contract-Version: asta.v1") == 6
+    assert src.count("X-ASTA-Response-Mode: CLOB_CHUNKED_JSON") == 6
 
 
 def test_adb_public_lookup_endpoints_validate_run_id_and_emit_boundary_metadata():
@@ -323,7 +323,7 @@ def test_adb_public_lookup_endpoints_validate_run_id_and_emit_boundary_metadata(
     assert "FUNCTION normalize_run_id(p_run_id IN VARCHAR2) RETURN VARCHAR2" in src
     assert "ASTA_PKG: invalid run_id" in src
     # 조회 3개와 Scheduler 실행 진입점 1개가 동일한 run_id 검증을 사용한다.
-    assert src.count("l_run_id := normalize_run_id(p_run_id)") == 4
+    assert src.count("l_run_id := normalize_run_id(p_run_id)") == 6
     assert "IF p_status IN ('DONE', 'FAILED', 'SKIPPED') THEN\n      l_elapsed_ms := NULL;" in src
     assert "JSON_VALUE(p_body_json, '$.run_id' RETURNING VARCHAR2(64) NULL ON ERROR)" in src
     assert "l_run_id := normalize_run_id(l_run_id);" in src
@@ -423,7 +423,7 @@ def test_source_helper_collects_object_metadata_for_llm_evidence():
 
     metrics_pos = src.index("collect_metrics(")
     object_pos = src.index("l_object_info := collect_object_info(l_sql_id, l_child_number)")
-    json_pos = src.index(',"object_info":')
+    json_pos = src.index(',"object_info":', object_pos)
     assert metrics_pos < object_pos < json_pos
 
     assert "Object metadata JSON for table/column statistics and indexes" in llm
@@ -558,16 +558,16 @@ def test_sqltune_advisor_explicit_policy_and_report_contract():
 
 
 def test_ords_handlers_use_safe_clob_chunking_loop():
-    """All 5 ORDS handlers must use conservative chunks below the OWA 32KB response boundary."""
+    """All 6 ORDS handlers must use conservative chunks below the OWA 32KB response boundary."""
     src = _read("db/ords/asta_ords_module.sql")
     loop_pattern = "WHILE l_offset <= NVL(DBMS_LOB.GETLENGTH(l_response), 0) LOOP"
     chunk_read = "l_chunk := DBMS_LOB.SUBSTR(l_response, 2000, l_offset)"
     chunk_write = "HTP.prn(l_chunk)"
     advance = "l_offset := l_offset + 2000"
-    assert src.count(loop_pattern) == 5, f"expected 5 CLOB chunking loops, got {src.count(loop_pattern)}"
-    assert src.count(chunk_read) == 5, f"expected 5 DBMS_LOB.SUBSTR reads, got {src.count(chunk_read)}"
-    assert src.count(chunk_write) == 5, f"expected 5 HTP.prn writes, got {src.count(chunk_write)}"
-    assert src.count(advance) == 5, f"expected 5 offset advances, got {src.count(advance)}"
+    assert src.count(loop_pattern) == 6, f"expected 6 CLOB chunking loops, got {src.count(loop_pattern)}"
+    assert src.count(chunk_read) == 6, f"expected 6 DBMS_LOB.SUBSTR reads, got {src.count(chunk_read)}"
+    assert src.count(chunk_write) == 6, f"expected 6 HTP.prn writes, got {src.count(chunk_write)}"
+    assert src.count(advance) == 6, f"expected 6 offset advances, got {src.count(advance)}"
 
 
 def test_adb_reports_use_json_escaping_helpers_for_long_text_artifacts():
@@ -789,7 +789,7 @@ def test_sql_only_prompt_and_deterministic_verdict_contracts():
         assert prohibition in llm
     assert "FUNCTION structural_sql_key" in llm
     assert "NO_REWRITE" in llm
-    for verdict in ["IMPROVED", "NOT_IMPROVED", "NON_EQUIVALENT", "CANDIDATE_FAILED", "NO_REWRITE", "INSUFFICIENT_EVIDENCE"]:
+    for verdict in ["IMPROVED", "ANALYSIS_ONLY", "NOT_IMPROVED", "NON_EQUIVALENT", "CANDIDATE_FAILED", "NO_REWRITE", "INSUFFICIENT_EVIDENCE"]:
         assert verdict in main
     for field in ['\"verdict\"', '\"verdict_reason\"', '\"equivalence_status\"', '\"retain_original_sql\"']:
         assert field in main
@@ -837,9 +837,11 @@ def test_vector_save_metadata_and_semantic_chunks_cover_all_verdicts():
                  "$.after_elapsed_time_us", "$.before_plan_hash_value",
                  "$.after_plan_hash_value", "$.rewrite_type"]:
         assert path in vector
-    for chunk in ["VERIFIED_OUTCOME", "PLAN_EVIDENCE", "METRICS", "REJECTED_OBSERVATION", "REJECTION_REASON"]:
+    for chunk in ["VERIFIED_OUTCOME", "PLAN_EVIDENCE", "METRICS", "ANALYSIS_OBSERVATION", "ANALYSIS_SCOPE", "REJECTED_OBSERVATION", "REJECTION_REASON"]:
         assert f"'{chunk}'" in vector
     assert "'POSITIVE_VERIFIED'" in vector
+    assert "'ANALYSIS_OBSERVATION'" in vector
+    assert '"observation_reason":' in vector
     assert "$.learning_class" in vector
     assert "build_vector_metadata(" in main
     assert "p_metadata_json   => l_vector_metadata_json" in main
@@ -848,7 +850,7 @@ def test_vector_save_metadata_and_semantic_chunks_cover_all_verdicts():
 def test_report_conclusion_is_deterministic_and_vector_is_reference_only():
     report = _read("db/adb/asta_report_pkg.sql")
     assert "json_vc(p_comparison_json, '$.verdict'" in report
-    for verdict in ["IMPROVED", "NOT_IMPROVED", "NON_EQUIVALENT", "CANDIDATE_FAILED", "NO_REWRITE", "INSUFFICIENT_EVIDENCE"]:
+    for verdict in ["IMPROVED", "ANALYSIS_ONLY", "NOT_IMPROVED", "NON_EQUIVALENT", "CANDIDATE_FAILED", "NO_REWRITE", "INSUFFICIENT_EVIDENCE"]:
         assert verdict in report
     assert "개선 SQL 없음" in report
     assert "튜닝 후 XPLAN" in report and "SKIPPED" in report

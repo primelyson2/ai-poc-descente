@@ -53,6 +53,14 @@ def test_failed_run_lookup_contracts_include_code_message_and_error_object():
         assert "error_json(l_error_code, l_error_message)" in section
 
 
+def test_source_failure_prefers_exact_nested_oracle_message():
+    source = read("db/adb/asta_pkg.sql")
+    start = source.index("FUNCTION source_response_error_message(")
+    end = source.index("END source_response_error_message;", start)
+    section = source[start:end]
+    assert "RETURN NVL(l_error_message, l_message);" in section
+
+
 def test_canonical_response_exposes_top_level_error_fields():
     source = read("db/adb/asta_report_pkg.sql")
     section = source[source.index("FUNCTION build_response_json(", source.index("PACKAGE BODY")):]
@@ -111,3 +119,12 @@ def test_ui_prefers_persisted_error_message_over_generic_step_detail():
     assert '["FAILED", "ERROR"].includes(String(data?.status || "").toUpperCase())' in source
     assert "data?.error_message || data?.error?.message" in source
     assert "immediateError.progress = data" in source
+
+
+def test_ui_highlights_oracle_error_and_explains_ora_00942_privilege_case():
+    source = read("static/js/extensions/tuning_assistant.js")
+    assert "function extractAstaOracleError(value)" in source
+    assert "ORA-\\d{5}" in source
+    assert "Oracle 오류" in source
+    assert "조회 권한이 없을 때도 ORA-00942" in source
+    assert "직접 SELECT 권한" in source

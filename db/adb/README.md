@@ -38,7 +38,11 @@ immediately returns `QUEUED` JSON with the `run_id`. Consumers poll progress
 and fetch the complete run or report only after a terminal status.
 
 `GET /asta/runs/:run_id/progress` calls `ASTA.ASTA_PKG.GET_PROGRESS(:run_id)`
-and returns the canonical 11-step progress array used by the UI.
+and returns the canonical 11-step progress array plus LLM call summaries used
+by the UI. The polling response never embeds prompt or provider-response CLOBs.
+`GET /asta/runs/:run_id/llm-calls/:call_id` calls
+`ASTA.ASTA_PKG.GET_LLM_CALL(:run_id, :call_id)` only after the user requests one
+raw call detail; both identifiers are required so a call cannot cross Run scope.
 Progress rows store `elapsed_ms` when a step moves from `RUNNING` to a terminal
 state. `EXECUTE_RUN` persists the same progress array into the final run
 response JSON, so progress polling and terminal lookup use the same source of
