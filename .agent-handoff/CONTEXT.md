@@ -1,5 +1,13 @@
 # Real ASTA 작업 인계
 
+## GitHub ASTA push 완료 확인 — 2026-07-12
+
+- 요청/결론: 다른 작업 세션에서 완료된 Real ASTA remediation의 원격 반영과 미배포 항목을 확인했다. DB package·ORDS·정적 UI·FastAPI service 반영 및 인증 API smoke는 기존 완료 기록대로 모두 완료되어 추가 배포는 필요하지 않았다.
+- 변경 파일: `.agent-handoff/CONTEXT.md`만 갱신했다.
+- 실행한 검증과 실제 결과: `git push origin ASTA` 성공 (`ac27770..53338a9`). 이어서 `git fetch origin ASTA`, `git status --short --branch`, `git rev-parse HEAD`, `git rev-parse origin/ASTA`로 확인했으며 로컬과 원격은 모두 `53338a926dd39bad10b0e63de5636c3ca4fd1e40`이고 작업 트리는 clean이다.
+- 남은 문제/다음 단계: 없음.
+- 관련 커밋: remediation `53338a9`; 이 인계 기록 갱신은 후속 커밋 필요.
+
 ## Claude Real ASTA remediation 이어받기·완료 — 2026-07-12
 
 - 요청/결론: Claude Opus max-turns/usage-limit 중단 뒤의 전체 dirty worktree를 되돌리지 않고 독립 검토해 Real ASTA remediation을 완료했다. 최초 현 상태는 README 명령 그대로 Python `508 passed`; skip/xfail/삭제/무의미한 assertion 완화는 없었다. ORDS 신규 handler별 계약을 강화하고 History 검색 header의 C0/DEL 제어문자 경계를 strict TDD RED→GREEN으로 수정했다.
