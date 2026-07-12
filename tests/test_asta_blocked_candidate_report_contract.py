@@ -14,7 +14,7 @@ def test_blocked_candidate_with_after_evidence_remains_visible_but_unadopted():
     build = _section(report, "FUNCTION build_report(\n", "END build_report;")
 
     assert "IF l_verdict <> 'IMPROVED' THEN\n      l_candidate_sql_vc := NULL;" not in build
-    assert "l_candidate_sql_vc := llm_field(p_llm_json, 'candidate_sql', NULL);" in build
+    assert "l_candidate_sql_vc := effective_candidate_sql(p_run_id, p_llm_json, p_comparison_json);" in build
     assert "l_candidate_executed := l_candidate_sql_vc IS NOT NULL" in build
     assert "현재 적용하지 마세요" in build
     assert "PLAN_ONLY 선별 탈락 후보 SQL — 적용하지 마세요" in build
@@ -40,7 +40,12 @@ def test_top_level_candidate_contract_still_exposes_only_adopted_sql():
     report = (ROOT / "db/adb/asta_report_pkg.sql").read_text(encoding="utf-8")
     response = _section(report, "FUNCTION build_response_json(\n", "END build_response_json;")
 
-    assert "IF l_verdict = 'IMPROVED' AND llm_has_improved_sql(p_llm_json) THEN" in response
+    gate = response.split("-- Keep rejected SQL only in the raw LLM audit artifact.", 1)[1].split(
+        "DBMS_LOB.CREATETEMPORARY", 1
+    )[0]
+    assert "IF l_verdict = 'IMPROVED' THEN" in gate
+    assert "effective_candidate_sql(p_run_id, p_llm_json, p_comparison_json)" in gate
+    assert "ELSE\n      l_candidate_sql_vc := NULL;" in gate
     assert "Keep rejected SQL only in the raw LLM audit artifact" in response
 
 

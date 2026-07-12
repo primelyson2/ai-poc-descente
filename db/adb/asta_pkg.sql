@@ -7,6 +7,8 @@ CREATE OR REPLACE PACKAGE asta_pkg AUTHID DEFINER AS
   PROCEDURE enforce_candidate_timeout(p_run_id IN VARCHAR2);
   FUNCTION analyze_sql(p_body_json IN CLOB) RETURN CLOB;
   FUNCTION list_profiles RETURN CLOB;
+  FUNCTION list_history(p_search IN VARCHAR2 DEFAULT NULL, p_limit IN NUMBER DEFAULT 50) RETURN CLOB;
+  FUNCTION get_input_sql(p_run_id IN VARCHAR2) RETURN CLOB;
   FUNCTION get_run(p_run_id IN VARCHAR2) RETURN CLOB;
   FUNCTION get_progress(p_run_id IN VARCHAR2) RETURN CLOB;
   FUNCTION get_llm_call(p_run_id IN VARCHAR2, p_call_id IN NUMBER) RETURN CLOB;
@@ -1562,11 +1564,11 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
       advisor_progress_detail(l_source_json, l_run_advisor)
     );
 
-    record_progress(l_run_id, 9, 'VECTOR_KB', 'ADB Vector KB search for LLM evidence', 'RUNNING');
+    record_progress(l_run_id, 6, 'LLM_REWRITE', 'Evidence-aware structural rewrite', 'RUNNING',
+      'Verified history pattern lookup and LLM structural rewrite');
+    -- Historical-reference retrieval is part of LLM rewrite, not a separate
+    -- user-visible progress stage. Only compact safe metadata reaches the prompt.
     l_vector_json := asta_vector_pkg.search_similar_cases(l_sql, l_vector_top_k);
-    record_progress(l_run_id, 9, 'VECTOR_KB', 'ADB Vector KB search for LLM evidence', progress_status_from_json(l_vector_json));
-
-    record_progress(l_run_id, 6, 'LLM_REWRITE', 'Evidence-aware structural rewrite', 'RUNNING');
     IF l_validation_candidate_sql IS NULL AND l_use_llm = 'Y' THEN
       l_history_candidate_sql := verified_history_candidate(
         p_sql            => l_sql,
@@ -1619,6 +1621,13 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
       WHEN OTHERS THEN
         l_tuned_sql := NULL;
     END;
+
+    -- Make the completed LLM candidate available to the authenticated progress
+    -- view before the slower Source validation/comparison stages finish.
+    UPDATE asta_runs
+    SET    tuned_sql = l_tuned_sql
+    WHERE  run_id = l_run_id;
+    COMMIT;
 
     IF l_tuned_sql IS NOT NULL THEN
       record_progress(l_run_id, 7, 'AFTER_EVIDENCE', 'Tuned SQL evidence', 'RUNNING');
@@ -1931,6 +1940,9 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
 
     -- Build only after stage 11 has an actual terminal artifact.  A FAILED
     -- save is data, not an orchestration exception, and is visible in report.
+    -- Persist the adopted candidate before report assembly so the report/API
+    -- can recover it when a legacy/fallback LLM artifact lacks candidate_sql.
+    UPDATE asta_runs SET tuned_sql = l_tuned_sql WHERE run_id = l_run_id;
     l_report_markdown := asta_report_pkg.build_report(
       p_run_id               => l_run_id,
       p_input_sql            => l_sql,
@@ -2265,19 +2277,117 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
       );
   END get_run;
 
+  FUNCTION get_input_sql(p_run_id IN VARCHAR2) RETURN CLOB IS
+    l_run_id VARCHAR2(64);
+    l_status VARCHAR2(30);
+    l_sql    CLOB;
+    l_out    CLOB;
+  BEGIN
+    l_run_id := normalize_run_id(p_run_id);
+    SELECT status, input_sql INTO l_status, l_sql FROM asta_runs WHERE run_id = l_run_id;
+    DBMS_LOB.CREATETEMPORARY(l_out, TRUE);
+    clob_app(l_out, '{"run_id":' || json_str(l_run_id));
+    clob_app(l_out, ',"status":' || json_str(l_status));
+    clob_app(l_out, ',"source":"ADB_ORDS","architecture":"ADB_ORDS_PLSQL","contract_version":"asta.v1",');
+    clob_app(l_out, migration_boundary_json);
+    clob_app(l_out, ',"input_sql":');
+    clob_app_json_str(l_out, l_sql);
+    clob_app(l_out, '}');
+    RETURN l_out;
+  EXCEPTION
+    WHEN NO_DATA_FOUND THEN
+      RETURN TO_CLOB('{"run_id":') || json_str(NVL(l_run_id, p_run_id)) ||
+        TO_CLOB(',"status":"NOT_FOUND","error":{"code":"RUN_NOT_FOUND"}}');
+    WHEN OTHERS THEN
+      RETURN TO_CLOB('{"run_id":') || json_str(p_run_id) ||
+        TO_CLOB(',"status":"FAILED","error":{"code":"INPUT_SQL_LOOKUP","message":') ||
+        json_str(SUBSTR(SQLERRM, 1, 4000)) || TO_CLOB('}}');
+  END get_input_sql;
+
+  FUNCTION list_history(p_search IN VARCHAR2 DEFAULT NULL, p_limit IN NUMBER DEFAULT 50) RETURN CLOB IS
+    l_out   CLOB;
+    l_limit PLS_INTEGER := LEAST(GREATEST(NVL(TRUNC(p_limit), 50), 1), 100);
+    l_search VARCHAR2(200) := NULLIF(TRIM(SUBSTR(p_search, 1, 200)), '');
+    l_first BOOLEAN := TRUE;
+  BEGIN
+    DBMS_LOB.CREATETEMPORARY(l_out, TRUE);
+    clob_app(l_out, '{"status":"COMPLETED","source":"ADB_ORDS","architecture":"ADB_ORDS_PLSQL","contract_version":"asta.v1",');
+    clob_app(l_out, migration_boundary_json);
+    clob_app(l_out, ',"runs":[');
+    FOR r IN (
+      SELECT run_id,
+             status,
+             llm_profile,
+             source_db_id,
+             created_at,
+             started_at,
+             completed_at,
+             error_code,
+             error_message,
+             DBMS_LOB.SUBSTR(input_sql, 500, 1) AS sql_preview,
+             JSON_VALUE(response_json, '$.comparison.verdict' RETURNING VARCHAR2(64) NULL ON ERROR) AS verdict,
+             JSON_VALUE(response_json, '$.comparison.execution_mode' RETURNING VARCHAR2(64) NULL ON ERROR) AS execution_mode,
+             CASE WHEN detailed_report_md IS NULL THEN 'false' ELSE 'true' END AS report_ready
+      FROM (
+        SELECT run_id,
+               status,
+               llm_profile,
+               source_db_id,
+               created_at,
+               started_at,
+               completed_at,
+               error_code,
+               error_message,
+               input_sql,
+               response_json,
+               detailed_report_md
+        FROM asta_runs
+        WHERE l_search IS NULL
+           OR INSTR(UPPER(run_id), UPPER(l_search)) > 0
+           OR DBMS_LOB.INSTR(UPPER(input_sql), UPPER(l_search), 1, 1) > 0
+        ORDER BY created_at DESC NULLS LAST, run_id DESC
+      )
+      WHERE ROWNUM <= l_limit
+    ) LOOP
+      IF NOT l_first THEN clob_app(l_out, ','); END IF;
+      l_first := FALSE;
+      clob_app(l_out, '{"run_id":' || json_str(r.run_id));
+      clob_app(l_out, ',"status":' || json_str(r.status));
+      clob_app(l_out, ',"llm_profile":' || json_str(r.llm_profile));
+      clob_app(l_out, ',"source_db_id":' || json_str(r.source_db_id));
+      clob_app(l_out, ',"created_at":' || json_ts(r.created_at));
+      clob_app(l_out, ',"started_at":' || json_ts(r.started_at));
+      clob_app(l_out, ',"completed_at":' || json_ts(r.completed_at));
+      clob_app(l_out, ',"error_code":' || json_str(r.error_code));
+      clob_app(l_out, ',"error_message":' || json_str(r.error_message));
+      clob_app(l_out, ',"sql_preview":' || json_str(REGEXP_REPLACE(r.sql_preview, '[[:space:]]+', ' ')));
+      clob_app(l_out, ',"verdict":' || json_str(r.verdict));
+      clob_app(l_out, ',"execution_mode":' || json_str(r.execution_mode));
+      clob_app(l_out, ',"report_ready":' || r.report_ready || '}');
+    END LOOP;
+    clob_app(l_out, '],"limit":' || json_num(l_limit) || ',"search":' || json_str(l_search) || '}');
+    RETURN l_out;
+  EXCEPTION
+    WHEN OTHERS THEN
+      RETURN TO_CLOB('{"status":"FAILED","source":"ADB_ORDS","architecture":"ADB_ORDS_PLSQL","contract_version":"asta.v1",') ||
+        migration_boundary_json || TO_CLOB(',"runs":[],"error":{"code":"HISTORY_LOOKUP","message":') ||
+        json_str(SUBSTR(SQLERRM, 1, 4000)) || TO_CLOB('}}');
+  END list_history;
+
   FUNCTION get_progress(p_run_id IN VARCHAR2) RETURN CLOB IS
     l_status       VARCHAR2(30);
     l_started_at   TIMESTAMP;
     l_completed_at TIMESTAMP;
     l_error_code    VARCHAR2(128);
     l_error_message VARCHAR2(4000);
+    l_tuned_sql     CLOB;
     l_out          CLOB;
     l_run_id       VARCHAR2(64);
   BEGIN
     l_run_id := normalize_run_id(p_run_id);
 
-    SELECT status, started_at, completed_at, error_code, error_message
-    INTO   l_status, l_started_at, l_completed_at, l_error_code, l_error_message
+    SELECT status, started_at, completed_at, error_code, error_message, tuned_sql
+    INTO   l_status, l_started_at, l_completed_at, l_error_code, l_error_message, l_tuned_sql
     FROM   asta_runs
     WHERE  run_id = l_run_id;
 
@@ -2292,6 +2402,8 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
     clob_app_clob(l_out, build_progress_array_json(l_run_id));
     clob_app(l_out, ',"llm_calls":');
     clob_app_clob(l_out, build_llm_calls_json(l_run_id));
+    clob_app(l_out, ',"candidate_sql":');
+    clob_app_json_str(l_out, l_tuned_sql);
     clob_app(l_out, ',"started_at":');
     clob_app(l_out, json_ts(l_started_at));
     clob_app(l_out, ',"completed_at":');

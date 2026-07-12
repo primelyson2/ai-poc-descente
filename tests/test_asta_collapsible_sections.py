@@ -36,7 +36,7 @@ def test_collapsible_sections_have_visible_toggle_and_new_cache_version():
     assert ".tuning-collapsible-summary::-webkit-details-marker" in UI
     assert ".tuning-collapsible-summary::after" in UI
     assert ".tuning-report-collapse-summary::after" in UI
-    assert "tuning_assistant.js?v=20260709_no_3s_latency1" in INDEX
+    assert "tuning_assistant.js?v=20260711_progress_contiguous7" in INDEX
 
 
 def test_input_and_result_sections_share_the_same_surface_contract():

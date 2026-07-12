@@ -125,12 +125,15 @@ def test_source_bridge_uses_multibyte_safe_chunks_below_32k_boundary():
 
 
 def test_adb_smoke_verifies_analyze_run_persistence_endpoints():
-    """ASTA 계약/회귀 조건을 검증한다: adb smoke verifies analyze run persistence endpoints."""
+    """스모크는 asta_pkg.submit_run으로 run을 비동기 제출하고 Scheduler 완료까지 폴링한 뒤,
+    get_run/get_progress/get_report 재조회로 영속성 계약을 검증한다(동기 analyze_sql 직접 호출 금지)."""
     smoke = _read("tools/asta_smoke_adb.py")
-    assert "begin :out := asta_pkg.analyze_sql(:body); end;" in smoke
+    assert "begin :out := asta_pkg.submit_run(:body); end;" in smoke
+    assert "begin :out := asta_pkg.analyze_sql(:body); end;" not in smoke
     assert "begin :out := asta_pkg.get_run(:run_id); end;" in smoke
     assert "begin :out := asta_pkg.get_progress(:run_id); end;" in smoke
     assert "begin :out := asta_pkg.get_report(:run_id); end;" in smoke
+    assert "wait_for_run(" in smoke
     assert "require_run_retrievable(out, run_id)" in smoke
 
 
@@ -182,10 +185,7 @@ def test_report_and_main_carry_final_review_json_artifact():
         "## 튜닝 후 XPLAN",
         "원본 재수행 XPLAN",
         "## 상세 분석",
-        "### 과거 유사 튜닝 사례 — 참고 정보",
-        "### Oracle SQL Tuning Advisor 요약",
-        "### DBA 검토 사항",
-        "## 작업 수행 이력",
+        "### 유사 개선 사례를 LLM 프롬프트에 반영한 내용",
     ]:
         assert section in report
     assert "format_sql_basic(l_candidate_sql_vc)" in report
@@ -231,9 +231,9 @@ def test_report_and_main_carry_final_review_json_artifact():
     assert ',"after_evidence":' in report
     assert ',"comparison":' in report
     assert ',"vector_save":' in report
-    assert "clob_app_json_or_null(l_out, p_final_review_json)" in report
-    assert main.count("p_final_review_json    => l_final_review_json") == 4
-    assert main.count("p_comparison_json      => l_comparison_json") == 4
+    assert "clob_app_json_or_null(l_out, p_final_review_json, 'artifacts.final_review')" in report
+    assert main.count("p_final_review_json    => l_final_review_json") == 5
+    assert main.count("p_comparison_json      => l_comparison_json") == 5
     for fragment in [
         "FUNCTION normalized_fetch_rows(p_fetch_rows IN NUMBER) RETURN PLS_INTEGER",
         "FUNCTION normalized_vector_top_k(p_vector_top_k IN NUMBER) RETURN PLS_INTEGER",
@@ -306,15 +306,28 @@ def test_vector_save_receives_report_ref_before_final_report_generation():
 
 
 def test_ords_json_handlers_set_cache_and_content_type_headers():
-    """ASTA 계약/회귀 조건을 검증한다: ords json handlers set cache and content type headers."""
+    """모든 PL/SQL JSON 핸들러가 no-store/nosniff/소유권 헤더를 방출한다(신규 history·input-sql 포함).
+
+    개수는 하드코딩이 아니라 실제 PL/SQL 핸들러 수에서 유도하고, 신규 두 핸들러의
+    민감정보 캐시 금지(no-store)·MIME 스니핑 방지(nosniff)를 개별적으로 재검증한다."""
     src = _read("db/ords/asta_ords_module.sql")
-    assert src.count("Cache-Control: no-store") == 6
-    assert src.count("Pragma: no-cache") == 6
-    assert src.count("X-Content-Type-Options: nosniff") == 6
-    assert src.count("X-ASTA-Execution-Boundary: ADB_ORDS_PLSQL") == 6
-    assert src.count("X-ASTA-Api-Version: asta.v1") == 6
-    assert src.count("X-ASTA-Contract-Version: asta.v1") == 6
-    assert src.count("X-ASTA-Response-Mode: CLOB_CHUNKED_JSON") == 6
+    handler_count = src.count("p_source_type => ORDS.source_type_plsql")
+    assert handler_count == 8, f"expected 8 PL/SQL JSON handlers, got {handler_count}"
+    for header in [
+        "Cache-Control: no-store",
+        "Pragma: no-cache",
+        "X-Content-Type-Options: nosniff",
+        "X-ASTA-Execution-Boundary: ADB_ORDS_PLSQL",
+        "X-ASTA-Api-Version: asta.v1",
+        "X-ASTA-Contract-Version: asta.v1",
+        "X-ASTA-Response-Mode: CLOB_CHUNKED_JSON",
+    ]:
+        assert src.count(header) == handler_count, f"{header!r} count != handler count"
+    for marker in ["ASTA_PKG.GET_INPUT_SQL(", "ASTA_PKG.LIST_HISTORY("]:
+        handler = src[src.index(marker):]
+        handler = handler[:handler.index("]',")]
+        assert "Cache-Control: no-store" in handler, f"{marker} missing no-store"
+        assert "X-Content-Type-Options: nosniff" in handler, f"{marker} missing nosniff"
 
 
 def test_adb_public_lookup_endpoints_validate_run_id_and_emit_boundary_metadata():
@@ -322,8 +335,11 @@ def test_adb_public_lookup_endpoints_validate_run_id_and_emit_boundary_metadata(
     src = _read("db/adb/asta_pkg.sql")
     assert "FUNCTION normalize_run_id(p_run_id IN VARCHAR2) RETURN VARCHAR2" in src
     assert "ASTA_PKG: invalid run_id" in src
-    # 조회 3개와 Scheduler 실행 진입점 1개가 동일한 run_id 검증을 사용한다.
-    assert src.count("l_run_id := normalize_run_id(p_run_id)") == 6
+    # 공개 조회(get_run/get_input_sql/get_progress/get_llm_call/get_report)와 실행 진입점이
+    # 동일한 run_id 검증을 사용한다. 신규 input-sql lazy-load가 조회 계약에 추가되었다.
+    assert src.count("l_run_id := normalize_run_id(p_run_id)") == 7
+    input_sql_fn = src[src.index("FUNCTION get_input_sql(p_run_id IN VARCHAR2) RETURN CLOB IS"):]
+    assert "l_run_id := normalize_run_id(p_run_id);" in input_sql_fn[:input_sql_fn.index("END get_input_sql;")]
     assert "IF p_status IN ('DONE', 'FAILED', 'SKIPPED') THEN\n      l_elapsed_ms := NULL;" in src
     assert "JSON_VALUE(p_body_json, '$.run_id' RETURNING VARCHAR2(64) NULL ON ERROR)" in src
     assert "l_run_id := normalize_run_id(l_run_id);" in src
@@ -452,7 +468,7 @@ def test_report_elapsed_judgement_and_original_rerun_xplan_wording():
     assert "WHEN l_elapsed_delta > 0 THEN '빨라짐'" in report
     assert "WHEN l_elapsed_delta < 0 THEN '느려짐'" in report
     assert "ELSE '동일'" in report
-    assert "- SQL 변경 내용: " in report
+    assert "- 실제 SQL 변경 내용: " in report
     assert "- 변경 위치: " in report
     assert "append_xplan_raw_section(l_report, '원본 재수행 XPLAN', p_after_evidence_json)" in report
     assert "선택 메모가 아니라 명시적 튜닝 목표" in report
@@ -481,11 +497,14 @@ def test_asta_pkg_failure_path_sets_failed_and_persists_artifacts():
     # Both success and failure paths call build_report and build_response_json
     assert src.count("l_report_markdown := asta_report_pkg.build_report(") == 2
     assert src.count("l_response_json := asta_report_pkg.build_response_json(") == 2
-    # Failure path sets FAILED status and captures the error
+    # Failure path sets FAILED status and captures the classified error.
     assert "l_status := 'FAILED'" in src
-    assert "error_json('ASTA_PKG'" in src
-    # asta_runs UPDATE in failure path persists error_code and error_message
-    assert "error_code = 'ASTA_PKG'" in src
+    # 실패 경로는 SQLERRM/SQLCODE를 분류한 failure code를 error_json과 asta_runs에 영속화한다
+    # (하드코딩 'ASTA_PKG' 대신 classify_error_code 사용으로 원인별 구분 가능).
+    assert "l_failure_code := classify_error_code(l_error_message, SQLCODE)" in src
+    assert "l_error_json := error_json(l_failure_code, l_error_message)" in src
+    # asta_runs UPDATE in failure path persists the classified error_code and error_message.
+    assert "error_code = l_failure_code" in src
     assert "error_message = l_error_message" in src
 
 
@@ -547,27 +566,29 @@ def test_sqltune_advisor_explicit_policy_and_report_contract():
     assert "cannot be executed safely through the ADB DB Link path" in source
     assert "SOURCE_BASEDB_HELPER_DIRECT_RESTRICTED_FALLBACK" not in source
 
-    assert "PROCEDURE append_advisor_summary" in report
-    assert "## Oracle SQL Tuning Advisor 요약" in report
-    assert "runtime_evidence.advisor.report" in report
-    assert "PROCEDURE append_stage_check" in report
-    assert "## 단계별 수행 체크" in report
-    assert "SQL Tuning Advisor" in report
-    assert "실제 수행 여부/사유" in report
-    assert "sqltune_time_limit`(60..1800초 clamp)" in report
+    build = report.rsplit("FUNCTION build_report(", 1)[1].split("END build_report;", 1)[0]
+    assert "## 작업 수행 이력" not in build
+    assert "## 단계별 수행 체크" not in build
+    assert "append_stage_check(l_report" not in build
+    assert "append_stage_timing(l_report" not in build
+    assert "append_verified_history_prompt_summary(l_report, p_llm_json);" in report
+    assert "append_advisor_summary(l_report" not in report
 
 
 def test_ords_handlers_use_safe_clob_chunking_loop():
-    """All 6 ORDS handlers must use conservative chunks below the OWA 32KB response boundary."""
+    """모든 PL/SQL 핸들러(신규 history·input-sql 포함)가 OWA 32KB 경계 미만의 보수적 청크로
+    CLOB 응답을 스트리밍한다. 개수는 실제 핸들러 수에서 유도한다."""
     src = _read("db/ords/asta_ords_module.sql")
+    handler_count = src.count("p_source_type => ORDS.source_type_plsql")
+    assert handler_count == 8, f"expected 8 PL/SQL JSON handlers, got {handler_count}"
     loop_pattern = "WHILE l_offset <= NVL(DBMS_LOB.GETLENGTH(l_response), 0) LOOP"
     chunk_read = "l_chunk := DBMS_LOB.SUBSTR(l_response, 2000, l_offset)"
     chunk_write = "HTP.prn(l_chunk)"
     advance = "l_offset := l_offset + 2000"
-    assert src.count(loop_pattern) == 6, f"expected 6 CLOB chunking loops, got {src.count(loop_pattern)}"
-    assert src.count(chunk_read) == 6, f"expected 6 DBMS_LOB.SUBSTR reads, got {src.count(chunk_read)}"
-    assert src.count(chunk_write) == 6, f"expected 6 HTP.prn writes, got {src.count(chunk_write)}"
-    assert src.count(advance) == 6, f"expected 6 offset advances, got {src.count(advance)}"
+    assert src.count(loop_pattern) == handler_count, f"CLOB chunking loops != handler count ({src.count(loop_pattern)})"
+    assert src.count(chunk_read) == handler_count, f"DBMS_LOB.SUBSTR reads != handler count ({src.count(chunk_read)})"
+    assert src.count(chunk_write) == handler_count, f"HTP.prn writes != handler count ({src.count(chunk_write)})"
+    assert src.count(advance) == handler_count, f"offset advances != handler count ({src.count(advance)})"
 
 
 def test_adb_reports_use_json_escaping_helpers_for_long_text_artifacts():
@@ -747,16 +768,17 @@ def test_source_docs_and_reports_pin_devdo_dblink_contract():
 
 
 def test_evidence_aware_workflow_order_and_no_production_final_review():
-    """Source/Vector evidence를 모은 뒤 LLM을 호출하며 production 2차 LLM은 호출하지 않는다."""
+    """검증 사례 조회는 LLM 재작성 내부에서 수행하고 production 2차 LLM은 호출하지 않는다."""
     src = _read("db/adb/asta_pkg.sql")
     analyze = src[src.index("FUNCTION analyze_sql(p_body_json IN CLOB) RETURN CLOB"):]
-    markers = ["'BEFORE_EVIDENCE'", "'SQL_TUNING_ADVISOR'", "'VECTOR_KB'", "'LLM_REWRITE'",
+    markers = ["'BEFORE_EVIDENCE'", "'SQL_TUNING_ADVISOR'", "'LLM_REWRITE'",
                "'AFTER_EVIDENCE'", "'BEFORE_AFTER_COMPARE'",
                "'FINAL_REPORT'", "'VECTOR_SAVE'"]
     positions = [analyze.index(marker) for marker in markers]
     assert positions == sorted(positions)
     assert "asta_llm_pkg.final_review(" not in analyze
     assert analyze.index("asta_vector_pkg.search_similar_cases(") < analyze.index("asta_llm_pkg.generate_sql_only_tuning(")
+    assert "not a separate" in analyze
 
 
 def test_canonical_rewrite_call_receives_source_vector_and_user_context():
@@ -821,12 +843,12 @@ def test_vector_case_ux_is_summary_first_and_never_returns_full_artifacts():
     assert "'chunk_text' VALUE" not in search_json
     assert "REGEXP_REPLACE" in vector and "sql_preview" in vector
 
-    assert "### 과거 유사 튜닝 사례 — 참고 정보" in report
-    assert "유사 사례는 과거 실행의 참고 정보이며, 현재 SQL의 개선 판정은 이번 Before/After 실제 실행 결과를 기준으로 합니다." in report
-    assert "<details><summary>축약 SQL 보기</summary>" in report
-    assert "[전체 결과서 보기]" in report
-    assert "유사 사례 없음" in report
-    assert "REGEXP_LIKE(v.report_ref, '^/api/asta/runs/" in report
+    assert "### 유사 개선 사례를 LLM 프롬프트에 반영한 내용" in report
+    assert "동일 workload의 `IMPROVED / POSITIVE_VERIFIED` 사례" in report
+    assert "CANDIDATE_ACCEPTANCE_CHECKLIST" in report
+    assert "verified_history_reference_summary.cases" in report
+    assert "<details><summary>축약 SQL 보기</summary>" not in report
+    assert "[전체 결과서 보기]" not in report
 
 
 def test_vector_save_metadata_and_semantic_chunks_cover_all_verdicts():
@@ -854,6 +876,6 @@ def test_report_conclusion_is_deterministic_and_vector_is_reference_only():
         assert verdict in report
     assert "개선 SQL 없음" in report
     assert "튜닝 후 XPLAN" in report and "SKIPPED" in report
-    assert "report_ref" in report
+    assert "verified_history_reference_summary" in report
     assert "참고 자료" in report
     assert "final_review_report_markdown(p_final_review_json)" not in report

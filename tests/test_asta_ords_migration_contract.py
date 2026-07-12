@@ -253,7 +253,6 @@ EXPECTED_PROGRESS_CODES = [
     "LLM_REWRITE",
     "AFTER_EVIDENCE",
     "BEFORE_AFTER_COMPARE",
-    "VECTOR_KB",
     "FINAL_REPORT",
     "VECTOR_SAVE",
 ]
@@ -318,11 +317,11 @@ def test_ords_handlers_cover_required_asta_routes():
         "HTP.prn(l_chunk)",
     ]:
         assert fragment in src
-    assert src.count("X-Content-Type-Options: nosniff") == 6
-    assert src.count("X-ASTA-Execution-Boundary: ADB_ORDS_PLSQL") == 6
-    assert src.count("X-ASTA-Api-Version: asta.v1") == 6
-    assert src.count("X-ASTA-Contract-Version: asta.v1") == 6
-    assert src.count("X-ASTA-Response-Mode: CLOB_CHUNKED_JSON") == 6
+    assert src.count("X-Content-Type-Options: nosniff") == 8
+    assert src.count("X-ASTA-Execution-Boundary: ADB_ORDS_PLSQL") == 8
+    assert src.count("X-ASTA-Api-Version: asta.v1") == 8
+    assert src.count("X-ASTA-Contract-Version: asta.v1") == 8
+    assert src.count("X-ASTA-Response-Mode: CLOB_CHUNKED_JSON") == 8
 
 
 def test_plsql_progress_codes_match_ui_contract():
@@ -332,8 +331,12 @@ def test_plsql_progress_codes_match_ui_contract():
     ui = _read("static/js/extensions/tuning_assistant.js")
     for code in EXPECTED_PROGRESS_CODES:
         assert code in adb_main, f"{code!r} missing from db/adb/asta_pkg.sql"
-    # Task 7에서 report/UI 표시 계약은 별도로 갱신한다.
-    for code in [c for c in EXPECTED_PROGRESS_CODES if c != "BEFORE_AFTER_COMPARE"]:
+    # Internal Advisor marker remains in ADB compatibility progress only; the
+    # report and UI expose the user-facing 9-stage workflow instead.
+    for code in [
+        "REQUEST_RECEIVED", "ORDS_DISPATCH", "SQL_GUARD", "BEFORE_EVIDENCE",
+        "LLM_REWRITE", "AFTER_EVIDENCE", "FINAL_REPORT", "VECTOR_SAVE",
+    ]:
         assert code in report, f"{code!r} missing from db/adb/asta_report_pkg.sql"
         assert code in ui, f"{code!r} missing from tuning assistant DEFAULT_STEPS"
 
@@ -503,8 +506,8 @@ def test_adb_public_run_lookup_contracts_are_validated_and_boundary_tagged():
     src = _read("db/adb/asta_pkg.sql")
     assert "FUNCTION normalize_run_id(p_run_id IN VARCHAR2) RETURN VARCHAR2" in src
     assert "ASTA_PKG: invalid run_id" in src
-    # 조회 3개, Scheduler 실행, candidate-timeout watchdog 진입점이 동일한 검증을 사용한다.
-    assert src.count("l_run_id := normalize_run_id(p_run_id)") == 6
+    # Run/진행/LLM/보고서/입력 SQL 조회와 Scheduler·watchdog 진입점이 동일한 검증을 사용한다.
+    assert src.count("l_run_id := normalize_run_id(p_run_id)") == 7
     assert "FUNCTION migration_boundary_json RETURN VARCHAR2" in src
     assert '"contract_version":"asta.v1"' in src
     assert '"architecture":"ADB_ORDS_PLSQL"' in src

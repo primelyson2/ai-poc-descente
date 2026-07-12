@@ -1,5 +1,247 @@
 # Real ASTA 작업 인계
 
+## Claude Real ASTA remediation 이어받기·완료 — 2026-07-12
+
+- 요청/결론: Claude Opus max-turns/usage-limit 중단 뒤의 전체 dirty worktree를 되돌리지 않고 독립 검토해 Real ASTA remediation을 완료했다. 최초 현 상태는 README 명령 그대로 Python `508 passed`; skip/xfail/삭제/무의미한 assertion 완화는 없었다. ORDS 신규 handler별 계약을 강화하고 History 검색 header의 C0/DEL 제어문자 경계를 strict TDD RED→GREEN으로 수정했다.
+- 최종 검증: `uv run --with pytest pytest -q` → `510 passed in 1.36s`. JS 실행 테스트 4개 모두 PASS, 관련 JS `node --check`, Python `compileall`, `git diff --check` 통과. drawer는 내부 준비 3단계를 사용자 1번으로 묶고 전체 1~7 순서가 실제 Node 테스트와 일치한다.
+- 배포: active Scheduler job/run/progress 모두 0에서 `ASTA_LLM_PKG → ASTA_REPORT_PKG → ASTA_PKG`만 백업·반영했다. 최종 spec/body 6개는 workspace executable source와 hash 일치, 모두 VALID, USER_ERRORS=0. ORDS는 이미 8개 route와 신규 History/Input SQL/no-store/CLOB handler가 workspace와 일치해 재배포하지 않았다. artifact는 `reports/claude_realasta_remediation/20260712T141611Z/`다.
+- smoke/runtime: 기존 terminal run만 사용한 인증 History 검색/Input SQL lazy-load/API·실제 제공 UI asset smoke가 HTTP 200, no-store, nosniff, bounded preview, full SQL lazy-load 일치를 통과했다. 신규 tuning run과 DB data/schema 변경은 없다. 최종 artifact는 `reports/claude_realasta_remediation/20260712T142135Z/authenticated_history_input_sql_smoke.json`이다. Chromium이 없어 실제 브라우저 자동화 대신 제공 asset/API와 Node DOM 테스트로 검증했다. FastAPI 보안 수정 반영을 위해 service를 1회 재시작했고 최종 active/listening/DB pool ready다.
+- 상세 보고서: `reports/claude_realasta_remediation_20260712.md`. 비밀정보, cookie, SQL 원문은 보고서와 smoke artifact에 기록하지 않았다.
+- Git: remediation은 로컬 단일 커밋으로 기록했다. `git push origin ASTA`는 이 VM에 HTTPS credential helper/GitHub CLI/outbound SSH key/token 환경변수가 없어 `could not read Username`으로 인증 전에 차단됐다. GitHub 인증을 제공한 세션에서 push와 remote HEAD 일치 확인만 남는다.
+
+## DKADB ASTA 테이블 읽기 전용 구조 진단 — 2026-07-12
+
+- 요청/결론: DKADB의 현재 schema `ASTA`를 DB 변경 없이 메타데이터·건수·상태 분포로 분석했다. 핵심 실행 축은 `ASTA_RUNS`(235) → `ASTA_RUN_PROGRESS`(2,401) 및 `ASTA_LLM_CALL_LOG`(408)이고, 지식 축은 `ASTA_TUNING_CASES`(195) → `ASTA_TUNING_CASE_CHUNKS`(493)이다. Source allowlist `ASTA_SOURCE_CONNECTIONS`는 2건 모두 enabled다.
+- 관계/무결성: DB가 강제하는 FK는 `ASTA_TUNING_CASE_CHUNKS.case_id → ASTA_TUNING_CASES.case_id` 하나이며 orphan 0건이다. 사례의 `case_id`는 실행 `run_id`를 논리적으로 재사용하며 195건 모두 COMPLETED run에 연결된다. progress orphan 0건이다. LLM log에는 parent run이 없는 9건(CANDIDATE 4, DIAGNOSIS 1, REPAIR 4)이 있어 현재 FK가 없는 자율 감사 로그의 보존/정리 정책을 별도 결정할 필요가 있다. progress가 전혀 없는 FAILED run도 1건이다.
+- 운영 분포: run은 COMPLETED 195 / FAILED 40. LLM 수신은 Candidate 213, Diagnosis 121, Repair 65이고 Candidate failed 9다. 완료 run과 vector case 수가 195로 일치한다. 테이블 통계는 실제 건수보다 일부 늦어 최신 optimizer 통계 수집 여부를 운영 시 검토할 수 있다.
+- 변경 파일/테스트: repository 파일 변경 및 DB 변경 없음. `/tmp/inspect_asta_dkadb_schema.py`의 read-only `USER_*` dictionary/집계 조회를 네트워크 권한으로 실행해 확인했다.
+- 남은 문제/다음 단계: orphan LLM 9건과 progress 없는 failed run 1건은 원인/보존기간 정책 확인 후에만 정리한다. 실행 테이블의 논리 FK를 실제 FK로 바꾸려면 비동기·자율 트랜잭션과 기존 orphan 처리 영향을 먼저 검토해야 한다.
+
+## 분석 진행상태·화면 매뉴얼 사용자 순서 1~7 연속화 — 2026-07-11
+
+- 요청/결론: 진행 Drawer가 `1 요청 및 분석 준비` 다음에 내부 번호 `4`를 표시하던 문제를 수정했다. 내부 API/progress code 1~9는 호환성을 위해 유지하고, UI에서는 접수·연결·Guard를 사용자 1번으로 묶은 뒤 `BEFORE_EVIDENCE`부터 `VECTOR_SAVE`까지 2~7로 연속 재번호화한다.
+- UI: 진행 Drawer 카드, compact 현재 단계(`현재/7`), 같은 Run의 polling 부분 갱신, 단계 로그의 사용자 seq를 모두 동일한 7단계 배열로 계산한다. 표시 순서는 `1 준비 → 2 원본 수집 → 3 개선 SQL → 4 후보 검증 → 5 전후 비교 → 6 결과서 → 7 검증 결과 저장`이다. 기존 내부 seq는 `internal_seq`로 보존한다.
+- 화면 매뉴얼/문서: 상단 `매뉴얼 및 사용설명`의 Workflow도 첫 세 내부 단계를 `요청 및 분석 준비`로 합쳐 7개 카드만 연속 표시한다. 후보 SQL·원본 수집·선별 관련 번호를 사용자 2/3/4/5 기준으로 수정했다. `docs/README.md`, `docs/AI_SQL_TUNING_ASSISTANT_MANUAL.md`, `docs/OADT2_ASTA_ARCHITECTURE.md`, `docs/asta_source_execution_flow.md`도 내부 9개 code와 사용자 7단계를 명확히 구분했다.
+- cache/검증: cache marker는 `tuning_assistant.js?v=20260711_progress_contiguous7`이다. 신규 실제 mapping Node 테스트에서 seq `1,2,3,4,5,6,7`과 code 순서를 확인했고, 관련 pytest `67 passed`, `node --check`, `git diff --check` 통과. 운영 `select-ai-test.service`는 `active`, `/`가 새 marker를 제공하며 제공 JS와 workspace JS SHA-256이 일치한다.
+- 배포/DB: 정적 UI는 서비스에서 직접 제공되어 재시작 없이 반영됐다. ADB package·ORDS·Run 데이터 변경과 신규 LLM 호출은 없으며 관련 커밋도 없다.
+
+## 결과서 병목 상세화·수행 이력 제거·유사 사례 설명 상시 작성 — 2026-07-11
+
+- 요청/결론: 결과서 `## 병목 진단`을 진단 범위, 원본 evidence, 단일 지배 target의 operation ID·query block·object·correlation/join key·immediate consumer·국소 변경 경계·Buffers/A-Time/Starts, 진단 요약·변경 전략·semantic risk로 확장했다. `## 작업 수행 이력`과 그 안의 `## 단계별 수행 체크` 및 단계 timing 호출은 결과서 생성부에서 제거했다. 진행 상태와 timing은 기존 진행 Drawer에서 계속 확인한다.
+- 유사 사례: `### 유사 개선 사례를 LLM 프롬프트에 반영한 내용`은 포함 여부와 무관하게 항상 작성한다. 사례가 없거나 안전 조건을 충족하지 못해 미반영한 경우에도 검토 수행, 반영 결과, 사람이 읽을 수 있는 판단 사유, 현재 후보 생성에 사용한 근거를 명시한다. 과거 SQL 원문·identifier·literal·predicate·join은 계속 노출하지 않는다.
+- 문서/테스트: `docs/README.md`, `docs/AI_SQL_TUNING_ASSISTANT_MANUAL.md`, `docs/OADT2_ASTA_ARCHITECTURE.md`, `docs/asta_source_execution_flow.md`과 report/static/estimated-plan/DOM 계약을 새 형식에 맞췄다. 집중 pytest `39 passed`, `tests/js/asta_report_tabs_dom_test.cjs` PASS, `git diff --check` 통과. 전체 static 계약 실행에서 확인된 나머지 6건은 기존 endpoint-count/smoke/missing historical artifact 기준선 실패다.
+- 배포/DB: active Run·enabled ASTA job·RUNNING progress가 모두 0인 상태에서 `ASTA_REPORT_PKG`와 의존 `ASTA_PKG`를 배포했다. 최종 두 package의 spec/body 4개는 모두 `VALID`, `USER_ERRORS=0`이다. compile probe 자체는 새 report package를 오류 없이 VALID로 확인했지만, probe의 DBMS_METADATA delimiter 처리 오류로 복원 시 두 package가 잠시 INVALID가 됐다. 컴파일 검증된 workspace package 둘을 즉시 재적용해 위 VALID 상태로 복구·배포 완료했다.
+- 지정 Run 재생성: `OADT2-ASTA-4b6b29337be746aa878a4f066c5f3104`의 판정·comparison·SQL·evidence는 보존하고 `detailed_report_md`와 `response_json`만 새 형식으로 재생성했다. 새 결과서는 173,082자, 병목 진단 824자, 유사 사례 설명 312자이며 작업 수행 이력/단계별 체크 부재를 확인했다. 후보 SQL은 기존과 같은 17,533자다.
+- 운영 검증/artifact: 인증 `/report`와 `/report/view` HTTP 200, `no-store`, 상세 병목 표시, 수행 이력 두 heading 부재, 유사 사례 섹션 본문 존재를 확인했다. 결과는 `reports/asta_report_format/20260711T134416Z/deploy_summary.json`과 `http_verification.json`에 저장했다. 서비스 재시작·ORDS 변경·신규 LLM 호출은 없으며 관련 커밋도 없다.
+
+## 진행 Drawer 준비 단계 번호 `1` 표기 반영 — 2026-07-11
+
+- 요청/결론: 진행 상세 Drawer에서 접수·서버 연결·입력 SQL 확인을 묶은 `요청 및 분석 준비` 카드의 번호를 `1~3`에서 `1`로 변경했다. backend의 내부 progress 단계와 이후 사용자 단계 4~9의 번호·동작은 변경하지 않았다.
+- 문서: `docs/README.md`, `docs/AI_SQL_TUNING_ASSISTANT_MANUAL.md`, `docs/OADT2_ASTA_ARCHITECTURE.md`, `docs/asta_source_execution_flow.md`의 현재 사용자·개발자 설명도 사용자 단계 1번 표기로 통일했다. 역사 문서와 과거 인계 기록은 당시 사실 보존을 위해 수정하지 않았다.
+- UI/cache: `static/js/extensions/tuning_assistant.js`의 묶음 카드 `seq`를 `1`로 변경했고, `static/index.html` cache marker를 `20260711_progress_prep_step1`로 갱신했다.
+- 검증: `node --check static/js/extensions/tuning_assistant.js`, `git diff --check` 통과. 관련 UI·매뉴얼·runtime 계약 테스트 `67 passed`. 운영 `select-ai-test.service`는 `active`, `/`가 새 cache marker를 제공하며 운영 제공 JS와 workspace JS SHA-256이 일치한다.
+- 배포/DB: 정적 파일은 현재 서비스에서 직접 제공되어 별도 재시작 없이 반영됐다. ADB package·ORDS·데이터 변경은 없으며 관련 커밋도 없다.
+
+## 결과서 요약 결론 판정 결과·`?` 도움말 복구 — 2026-07-11
+
+- 증상/원인: Advisor/DBA 사용자 섹션을 제거한 뒤 결과서의 `## 결론`은 남았지만 UI `extractReportVerdict()`가 읽던 `비교 판정: verdict=...` 행도 함께 사라졌다. 운영 결과서는 comparison/final verdict marker가 모두 없어 `extractable_verdict=null`이었고, 그 결과 `요약` 탭의 판정 결과 카드와 `?` 판정 기준 버튼이 렌더링되지 않았다.
+- 변경: `ASTA_REPORT_PKG.BUILD_REPORT`의 결론에 항상 `- 최종 판정: \`<verdict>\``를 기록하도록 추가했다. Advisor/DBA 섹션 없이 이 marker만 있는 최신 결과서에서도 UI가 `IMPROVED`, `ANALYSIS_ONLY` 등 7개 verdict를 추출해 판정 요약과 `?` 도움말을 생성하는 DOM 회귀를 추가했다.
+- 배포/DB 변경: active Run/job/progress 0건에서 현재 `ASTA_REPORT_PKG` spec/body를 백업하고 body를 배포했다. 의존 `ASTA_PKG` body도 재컴파일했으며 최종 세 package 6개 객체는 모두 `VALID`, `USER_ERRORS=0`이다. 지정 `OADT2-ASTA-4b6b29337be746aa878a4f066c5f3104`의 report/response만 다시 생성해 update/commit했다. status/comparison/evidence/tuned_sql/completed_at은 보존했다.
+- 검증: 새 report는 174,442자, 저장/응답 후보 17,533자 일치, 튜닝 SQL·After XPLAN 본문 유지, comparison 불변, Advisor/DBA heading 부재다. 인증 HTTP 결과서에서 `final_verdict_marker_present=true`, `extractable_verdict=IMPROVED`를 확인했다. `tests/js/asta_report_tabs_dom_test.cjs` PASS, 관련 pytest `18 passed`, `git diff --check` 통과. 서비스 재시작이나 static cache 갱신은 필요하지 않았다.
+- artifact: `reports/asta_verdict_summary_fix/20260711T122246Z/`에 배포 전 backup과 `deploy_summary.json`을 보존했다. SQL/LLM 원문과 인증정보는 기록하지 않았다.
+- 관련 커밋: 없음. 작업 트리는 계속 미커밋 상태다.
+
+## 최신 ASTA workflow 운영 배포·지정 Run 재생성 완료 — 2026-07-11
+
+- 요청/결론: 다른 세션에서 준비된 최신 ASTA 변경을 Real ASTA에 배포했다. `ASTA_LLM_PKG → ASTA_REPORT_PKG → ASTA_PKG` 순으로 ADB package를 컴파일했고 최종 spec/body 6개 객체는 모두 `VALID`, `USER_ERRORS=0`이다. 사후 active Run, `ASTA_RUN_%` Scheduler job, RUNNING progress는 모두 0건이다.
+- 배포 전 보정: 최종 요구사항에 맞춰 진행 Drawer의 내부 1~3단계를 `요청 및 분석 준비` 하나로 묶고 4~9단계를 개별 표시하도록 문서·계약을 정합화했다. UI 매뉴얼에 `vector_evidence_included=false`, `VERIFIED_HISTORY_PATTERN_REFERENCE`, `verified_history_references_included`를 명시하고 사용자 Advisor 노출 기대를 제거했다. cache marker는 `tuning_assistant.js?v=20260711_progress_candidate_sql2`다.
+- 결과서 fallback 보정: 저장 `tuned_sql` fallback이 있어도 `llm_has_improved_sql` 선행 gate 때문에 legacy LLM artifact에서는 report/API 후보가 계속 비는 문제를 수정했다. `IMPROVED`이고 `effective_candidate_sql`이 존재하면 결과서 채택/응답 후보로 사용하며 다른 verdict는 계속 top-level candidate를 null로 유지한다.
+- 9단계 timing 보정: 운영 progress는 호환을 위해 내부 seq 5 Advisor, 10 Final report, 11 Vector save를 유지한다. 결과서가 단순 seq 1..9를 읽어 LLM/최종 timing을 잘못 표시하지 않도록 `REQUEST_RECEIVED`부터 `VECTOR_SAVE`까지 stage code로 사용자 9단계에 매핑한다.
+- Oracle 컴파일 보정: 신규 history summary의 `JSON_TABLE` 닫는 괄호 누락과 뒤에서 정의된 `safe_vector_text` 전방 선언 누락을 실제 Oracle 제한 compile probe로 발견·수정했다. 최종 `ASTA_REPORT_PKG`와 `ASTA_PKG` probe는 모두 spec/body `VALID`, 오류 0을 통과했다.
+- 배포 안전 이력: 첫 시도는 위 report 구문 오류로 중단됐다. 자동 rollback helper가 `CREATE OR REPLACE EDITIONABLE PACKAGE`의 끝 세미콜론을 제거해 6개 객체가 잠시 INVALID가 됐으나, 보존 backup DDL을 원문 실행해 즉시 이전 6개 객체를 `VALID`, 오류 0으로 복구했다. 이후 두 시도는 compile 성공 후 배포 marker 스크립트의 위치/주석 의존 검사 때문에 데이터 갱신 전에 정상 rollback됐다. rollback을 EDITIONABLE DDL 원문 실행 방식으로 고친 뒤 최종 배포는 rollback 없이 완료됐다.
+- 지정 Run DB 변경: 최신 지정 대상 `OADT2-ASTA-4b6b29337be746aa878a4f066c5f3104`만 갱신했다. 비영속 builder smoke에서 `COMPLETED / IMPROVED`, 저장 후보와 response candidate 모두 17,533자 및 hash 일치, comparison artifact 불변, `튜닝 후 SQL` 본문 11,475자, `튜닝 후 XPLAN` 본문 34,119자, Advisor/DBA user section 부재를 확인한 뒤 `detailed_report_md`와 `response_json` 두 컬럼만 update/commit했다. status, comparison, evidence, tuned_sql, completed_at은 보존했다. 이전 `OADT2-ASTA-65302d610ca843f3ab13561ce22f1a99`는 자동 갱신하지 않았다.
+- 운영 HTTP smoke: 인증된 `/progress`, `/runs/{run_id}`, `/report`, `/report/view`가 모두 HTTP 200이다. progress/run candidate는 모두 17,533자로 일치하고 report는 174,421자이며 튜닝 SQL/After XPLAN 본문과 `no-store`를 확인했다. root는 새 cache marker를 제공하고 실행 JS와 workspace JS의 SHA-256이 일치한다. `select-ai-test.service`는 `active`다. FastAPI Python은 이미 현재 파일로 기동돼 있고 ORDS progress handler는 `ASTA_PKG.GET_PROGRESS` passthrough이므로 서비스 재시작·ORDS 재배포는 하지 않았다.
+- 검증: 최종 관련 통합 계약 `250 passed, 8 deselected`; `node --check` 두 JS와 `git diff --check` 통과. 전체 회귀는 `493 passed, 기존 기준선 13 failed in 1.57s`; 실패는 구형 ADB/ORDS endpoint-count·smoke/static 기대 8건, 기존 FastAPI proxy 기대 2건, workload signature 기대 3건이며 이번 관련 집중 gate에는 신규 실패가 없다.
+- artifact: 성공 배포 backup, manifest, summary, HTTP 결과는 `reports/asta_latest_workflow_deploy/20260711T114951Z/`에 있다. 실패/복구 이력은 같은 상위 경로의 `20260711T114233Z`, `20260711T114816Z`, `20260711T114904Z`에 비민감 요약으로 보존했다. SQL/LLM 원문과 인증정보는 기록하지 않았다.
+- 변경 파일: 기존 pending ADB/UI/FastAPI/ORDS/문서/테스트 변경에 더해 `db/adb/asta_report_pkg.sql`, `static/js/extensions/tuning_assistant.js`, `static/index.html`, 진행·보고서·manual·legacy regression 계약 테스트, 이 handoff를 보정했다. Source package/schema DDL, 신규 분석 Run, 외부 LLM 호출은 수행하지 않았다.
+- 관련 커밋: 없음. 현재 변경은 여전히 미커밋 상태다.
+
+## 다른 세션 작업의 Real ASTA 적용 상태 재확인 — 2026-07-11
+
+- 요청/결론: 다른 Codex 세션에서 진행한 최신 ASTA 변경은 공유 작업 트리에는 모두 남아 있지만 Real ASTA 운영 환경에는 전부 배포된 상태가 아니다. 현재 작업 트리는 24개 tracked 파일 수정과 6개 신규 테스트가 미커밋 상태다.
+- UI/서비스: `select-ai-test.service`는 `active`다. 실행 `/`는 `tuning_assistant.js?v=20260711_progress_candidate_sql1`을 참조하며, 실제 제공 JS와 workspace JS의 SHA-256이 일치한다. 따라서 `요청 및 분석 준비` 묶음 단계, 4~9단계 표시, 후보 SQL 표시 UI 등 정적 변경은 현재 제공 중이다.
+- ADB 운영본: 읽기 전용 `USER_SOURCE` 확인 결과 `ASTA_LLM_PKG`에는 `DOMINANT_TARGET_CONTRACT`, `CANDIDATE_ACCEPTANCE_CHECKLIST`, `VERIFIED_HISTORY_PATTERN_REFERENCE`, `verified_history_reference_summary`가 모두 없고, `ASTA_REPORT_PKG`에는 `effective_candidate_sql`과 history summary가 없으며, `ASTA_PKG`에는 progress `candidate_sql` 반환 및 조기 tuned SQL 저장 marker가 없다. 세 package의 spec/body는 모두 `VALID`, `USER_ERRORS=0`이지만 최신 workspace 버전은 아니다.
+- 이미 운영 반영된 범위: Tuning History 조회·전체 SQL lazy load·ID/SQL 검색·특수문자 검색 수정, viewer 폭 확장, KST 표시 등 앞선 배포 항목은 유지된다. 최신 프롬프트 강화, 검증 사례 참조/결과서 공개, Advisor 사용자 노출 제거, 결과서 후보 SQL fallback, 진행 API 후보 SQL 즉시 반환은 미배포다.
+- 남은 단계: active Run/job/progress 0건 precheck 후 `ASTA_LLM_PKG`, `ASTA_REPORT_PKG`, `ASTA_PKG` 백업·배포·VALID 확인, 필요 시 FastAPI 재시작, 지정 Run 결과서/response 재생성, smoke 검증이 필요하다. 이번 확인에서는 배포·DB 변경·서비스 재시작·Run 실행을 하지 않았다.
+- 관련 커밋: 없음.
+
+## 진행 화면 후보 SQL 즉시 표시·내부 1~3단계 숨김 — 2026-07-11
+
+- 요청/결론: 분석 진행 상세에서 요청 접수·서버 연결·입력 Guard(내부 1~3단계)를 숨기고, 사용자에게 의미 있는 4~9단계만 표시하도록 변경했다. 5단계 `LLM_REWRITE`는 LLM 요청/응답 상태를 그대로 보이며, 응답 대기 중에는 대기 안내를 표시한다.
+- 후보 SQL: LLM이 후보를 만든 직후 `ASTA_RUNS.tuned_sql`을 저장·commit하고, 인증된 `GET_PROGRESS` 응답에 `candidate_sql`을 넣었다. UI는 5단계에서 전체 후보 SQL을 즉시 표시한다. 이는 After evidence/비교 전의 검증 중 후보이며 적용 권고가 아니라는 안내를 함께 표시한다. prompt/provider 응답 원문은 기존처럼 call ID 기반 lazy-load를 유지한다.
+- 문서: `docs/README.md`, `docs/AI_SQL_TUNING_ASSISTANT_MANUAL.md`, `docs/OADT2_ASTA_ARCHITECTURE.md`, `docs/asta_source_execution_flow.md`에 표시 범위·후보 SQL 시점·검증 전 상태를 반영했다.
+- 변경 파일: `db/adb/asta_pkg.sql`, `static/js/extensions/tuning_assistant.js`, 위 문서 4개, progress/ORDS migration contract tests, 이 handoff.
+- 검증: `node --check static/js/extensions/tuning_assistant.js`, `git diff --check`, 진행/UI/문서/ORDS migration 계약 `54 passed, 1 deselected`.
+- 미수행: 사용자 배포 지시 전이라 ADB `ASTA_PKG` 배포, FastAPI 재시작, UI cache-buster 갱신은 수행하지 않았다.
+
+## 이어서 할 배포/지정 Run 재확인 — 2026-07-11
+
+- 사용자 요청: 진행 Drawer의 내부 1~3을 완전히 생략하지 않고 `요청 및 분석 준비`라는 하나의 묶음 단계로 표시하도록 추가 수정했다. 4~9는 개별 표시하고 5단계는 LLM 응답 대기 후 후보 SQL을 즉시 표시한다. UI cache marker는 `20260711_progress_candidate_sql1`로 변경했다.
+- 지정 Run 진단(읽기 전용): `OADT2-ASTA-4b6b29337be746aa878a4f066c5f3104`는 `COMPLETED / IMPROVED`, 저장 `tuned_sql` 17,533자, after evidence 존재지만 기존 `response_json.candidate_sql`은 0자였고, 결과서의 `튜닝 후 SQL`과 `튜닝 후 XPLAN` heading이 바로 이어져 본문이 비어 있다. 앞서 구현한 `ASTA_REPORT_PKG.effective_candidate_sql` fallback으로 해결 대상이다.
+- 사용자 배포 지시가 있었으나 이후 다른 PC에서 이어서 작업한다고 요청해 실제 배포·서비스 재시작·기존 Run 재생성은 수행하지 않았다. 다음 작업은 active Run/job/progress 0건 precheck → `ASTA_LLM_PKG`, `ASTA_REPORT_PKG`, `ASTA_PKG` backup/deploy/VALID 확인 → FastAPI restart → static cache 제공 확인 → 지정 Run report/response를 저장 artifact로 재생성 순서다. 인증정보·SQL 원문을 출력/인계에 기록하지 않는다.
+
+## 결과서/UI Advisor 제거 및 유사 사례 프롬프트 공개 구현 — 2026-07-11
+
+- 요청/결론: 사용자 화면과 생성 결과서에서 Oracle SQL Tuning Advisor를 제거했다. backend의 기존 compatibility/opt-in 구현은 보존하되 결과서에는 Advisor 상태·요약·DBA review·진행 행을 렌더링하지 않는다. 사용자 workflow와 결과서 수행 이력은 9단계만 표시한다.
+- 유사 사례 공개: 같은 workload의 `IMPROVED / POSITIVE_VERIFIED` 사례가 실제 Source 실행 Run의 LLM prompt에 포함된 경우, LLM artifact에 `verified_history_reference_summary`를 저장한다. 결과서의 `유사 개선 사례를 LLM 프롬프트에 반영한 내용`에서 실제 추가 지시와 SQL-free 사례 요약(case ID, fingerprint 일치 여부, 변경 요약, 전후 Buffer Gets/elapsed)을 확인할 수 있다. 과거 SQL 원문·identifier·literal·predicate·join·SQL preview/report link는 표시하지 않는다.
+- UI/문서: 개선 SQL 만들기(5단계) 설명에 유사 사례가 DIAGNOSIS/CANDIDATE_SQL prompt에 안전한 참고로 추가되는 조건과 결과서 확인 위치를 반영했다. 화면 매뉴얼에서 Advisor/별도 유사 사례 단계를 제거했다.
+- 변경 파일: `db/adb/asta_llm_pkg.sql`, `db/adb/asta_report_pkg.sql`, `static/js/extensions/tuning_assistant.js`, `docs/README.md`, `docs/AI_SQL_TUNING_ASSISTANT_MANUAL.md`, 관련 static/manual/Advisor/DBA/LLM contract tests 및 신규 `tests/test_asta_report_history_prompt_summary.py`.
+- 검증: `node --check static/js/extensions/tuning_assistant.js`, `git diff --check`, 관련 pytest `84 passed, 6 deselected`. 제외 6개는 기존 ADB smoke/ORDS handler count/public endpoint count/source artifact 기준선 항목이다.
+- 미수행: 사용자 배포 지시 전이라 ADB `ASTA_LLM_PKG`·`ASTA_REPORT_PKG` 배포, FastAPI 재시작, UI cache-buster 갱신 및 기존 Run 결과서 재생성은 수행하지 않았다.
+
+## Run 65302 결과서 튜닝 SQL/After XPLAN 누락 보정 구현 — 2026-07-11
+
+- 진단: `OADT2-ASTA-65302d610ca843f3ab13561ce22f1a99`는 `COMPLETED / IMPROVED`, 저장 `tuned_sql` 17,533자, after evidence 존재지만 `response_json.candidate_sql`이 비어 있었다. 결과서의 `## 튜닝 후 SQL` 직후 `## 튜닝 후 XPLAN`이 와 두 본문이 빠진 원인은 `ASTA_REPORT_PKG`가 `llm_json.candidate_sql`만 사용하고 저장 tuned_sql을 fallback으로 쓰지 않은 것이다.
+- 변경: `ASTA_REPORT_PKG.effective_candidate_sql`을 추가했다. LLM artifact candidate가 비어도 verdict가 `IMPROVED`인 경우에만 해당 Run의 `ASTA_RUNS.tuned_sql`을 읽어 결과서와 API response의 후보 SQL fallback으로 사용한다. `ASTA_PKG`는 report assembly 전에 `tuned_sql`을 저장해 이후 Run의 이 경로를 보장한다. `NO_REWRITE` 등 원본 유지 verdict에는 fallback하지 않는다.
+- 검증: 신규 fallback/estimated report/static 계약 `52 passed, 7 deselected`; deselected 7개는 기존 ADB static smoke/endpoint count/report helper/source artifact 기준선 실패다. `git diff --check` 통과.
+- 남은 단계: 사용자 배포 지시 전이라 ADB `ASTA_REPORT_PKG`·`ASTA_PKG` 배포와 지정 Run 결과서 재생성은 수행하지 않았다. 배포 후 지정 Run의 report/response row를 현재 저장 artifact로 재구성해야 기존 결과서 파일도 SQL·After XPLAN을 표시한다.
+
+## UI 진행 9단계화·Advisor/별도 사례 검색 숨김 — 2026-07-11
+
+- 요청/결론: 사용자 화면에서 `SQL_TUNING_ADVISOR`와 별도 `VECTOR_KB` 진행 단계를 숨기고, 순서대로 9단계를 표시하도록 변경했다. Advisor는 사용하지 않는 내부 marker로만 남기고, 검증 사례 조회는 5번 `LLM_REWRITE`의 내부 `Verified history pattern lookup and LLM structural rewrite` 처리로 합쳤다.
+- 사용자 진행 순서: 요청 수신 → 분석 서버 연결 → 입력 SQL 확인 → 원본 실행 정보 수집 → 개선 SQL 만들기(내부 검증 사례 패턴 참고) → 개선 SQL 안전성·성능 확인 → 원본과 개선 결과 비교 → 결과서 만들기 → 검증 결과 저장.
+- UI/문서 변경: `static/js/extensions/tuning_assistant.js`는 backend code를 화면 9단계 index로 매핑하고 `SQL_TUNING_ADVISOR`/`VECTOR_KB` event를 렌더링에서 제외한다. Workflow/개발자 호출 흐름도 두 항목을 숨기고 번호를 재정렬했다. `docs/README.md`, `docs/AI_SQL_TUNING_ASSISTANT_MANUAL.md`, `docs/OADT2_ASTA_ARCHITECTURE.md`, `docs/asta_source_execution_flow.md`을 같은 정책으로 갱신했다.
+- backend: `ASTA_PKG.RUN_PIPELINE`은 stage 9 progress record를 제거하고 `search_similar_cases`를 stage 6 RUNNING 이후, `generate_sql_only_tuning` 전에 실행한다. raw artifact와 safe reference policy는 유지한다.
+- 검증: `node --check` 통과. progress/workflow/manual/LLM history reference/ORDS contract 관련 `105 passed, 7 deselected`; deselected 7개는 기존 ADB static smoke/endpoint count/report helper/source artifact 기준선 실패로 이번 변경과 무관하다. `git diff --check` 통과.
+- 미수행: 사용자 배포 지시 전이라 ADB `ASTA_PKG`·`ASTA_LLM_PKG` 배포, FastAPI 서비스 재시작, UI cache-buster 갱신은 수행하지 않았다.
+
+## 검증된 과거 개선 패턴 참고 프롬프트·매뉴얼 구현 — 2026-07-11
+
+- 요청/결론: 과거 유사 개선 사례를 현재 요청의 LLM prompt 강화에 활용하는 기능을 구현했다. raw SQL을 보내거나 과거 사례를 정답으로 채택하지 않고, 실제 실행된 현재 Run에서만 같은 workload의 `POSITIVE_VERIFIED` 사례를 change summary·전후 Buffer/elapsed·fingerprint 상태로 축약한 `VERIFIED_HISTORY_PATTERN_REFERENCE`로 제공한다.
+- 안전 정책: current SQL/XPLAN이 같은 지배 반복 작업·correlation/join key·immediate consumer를 독립적으로 증명할 때만 참고할 수 있다. raw SQL/identifier/literal/predicate/join 복사, 과거 사례만에 의한 target 선택·candidate 정당화·verdict 변경은 금지한다. 후보는 기존 `CANDIDATE_ACCEPTANCE_CHECKLIST`와 Guard·현재 Source 비교를 계속 독립적으로 통과해야 한다. 미실행 `ESTIMATED_PLAN_ONLY`에는 reference를 넣지 않는다.
+- 변경 파일: `db/adb/asta_llm_pkg.sql`, `static/js/extensions/tuning_assistant.js`, `docs/README.md`, `docs/AI_SQL_TUNING_ASSISTANT_MANUAL.md`, `docs/OADT2_ASTA_ARCHITECTURE.md`, `docs/asta_source_execution_flow.md`, 신규 `tests/test_asta_verified_history_reference_prompt.py`, UI 매뉴얼 계약 테스트 갱신, 이 handoff.
+- API artifact: raw Vector artifact의 `vector_evidence_included=false`는 유지한다. 새 LLM artifact에는 `verified_history_references_included=true/false`를 별도로 기록한다.
+- 검증: `node --check static/js/extensions/tuning_assistant.js` 통과. verified-history/dominant-target/UI manual/LLM guard·column dictionary 관련 `59 passed`, `git diff --check` 통과.
+- 미수행: 사용자 배포 지시 전이라 `ASTA_LLM_PKG` ADB 배포, 신규 LLM 호출/Run, 서비스 재시작, UI cache-buster 갱신은 수행하지 않았다.
+
+## 검증 Run 654959 기반 지배 작업 프롬프트 강화 구현 — 2026-07-11
+
+- 요청/결론: 검증된 `OADT2-ASTA-6549592f8b204ff7925b2c4bb21389e2`의 성공 패턴을 ASTA two-stage LLM prompt에 반영했다. 실제 Source 실행 증거가 있는 diagnosis는 정확히 하나의 지배 반복 작업을 확정하고, candidate는 그 하나만 구조적으로 제거하는 acceptance checklist를 통과해야 한다.
+- 변경: `db/adb/asta_llm_pkg.sql`에 `DOMINANT_TARGET_CONTRACT`와 `CANDIDATE_ACCEPTANCE_CHECKLIST`를 추가했다. diagnosis target은 operation_id/query block/object/correlation-or-join key/immediate consumer/local boundary/measured Buffers/A-Time/Starts를 모두 갖춰야 하며, 후보는 반복 access 1회화, 원래 grain·NULL·duplicates·COUNT DISTINCT 보존, helper의 consumer당 최대 1행 매칭, 근거 기반 Buffer Gets 효과 주석을 모두 내부 점검한다. 하나라도 불확실하면 `NO_REWRITE`다.
+- 안전: 이 계약은 Source SQL이 실제 실행된 diagnosis branch에만 적용한다. ESTIMATED_PLAN_ONLY에는 측정값을 주장하지 않는 기존 안전 모드를 유지한다. unrelated full-query redesign·hint-only 변경은 계속 금지한다.
+- 변경 파일: `db/adb/asta_llm_pkg.sql`, 신규 `tests/test_asta_dominant_target_prompt_contract.py`, 이 handoff.
+- 검증: dominant target/inline annotation/candidate recovery/column dictionary/ORA repair 관련 `43 passed`; `git diff --check` 통과.
+- 미수행: 사용자 배포 지시 전이라 ADB package 배포, 신규 LLM 호출, 신규 Run, FastAPI/서비스 재시작은 수행하지 않았다.
+
+## Run 654959 프롬프트 강화 방향 읽기 전용 진단 — 2026-07-11
+
+- 대상/결론: `OADT2-ASTA-6549592f8b204ff7925b2c4bb21389e2`는 `IMPROVED / OLTP_BUFFER_READS_IMPROVED`, 결과 동등성 `EQUIVALENT`의 좋은 기준 사례다. Buffer Gets `9,160,632 → 1,079,348`(88.22% 감소), disk reads `124 → 0`, elapsed `124,007,852µs → 1,457,303µs`이고 digest·row count·output rows가 모두 일치했다.
+- LLM 흐름: Grok Reasoning profile의 DIAGNOSIS 1회와 CANDIDATE_SQL 1회만 모두 RECEIVED로 성공했다. 원문 SQL 18,411자, 후보 18,514자이며 broad rewrite가 아니라 한 구조적 반복 작업을 바꾼 패턴으로 판단된다. SQL/LLM prompt·response 원문은 출력·저장하지 않았다.
+- 프롬프트 권고: diagnosis가 실측 Buffers/A-Time/Starts 최상위 반복 작업 하나에 대해 query block·object·correlation key·immediate consumer·localized rewrite boundary를 계약 필드로 확정하게 하고, candidate는 그 하나만 완결적으로 제거하는 helper/aggregate/anti-existence rewrite를 하도록 강제한다. 후보 acceptance checklist에 반복 access 제거 증거, original grain/NULL/COUNT DISTINCT 보존, helper join이 1행으로 제한됨, 예상 Buffer 감소 근거를 추가하는 것이 좋다. 전체 18K SQL 재설계나 hint-only 변경은 계속 금지한다.
+- 변경: 진단만 수행했으며 코드/package/DB/서비스 변경 없음.
+
+## Tuning History SQL 특수문자 검색 ORDS 400 수정·배포 — 2026-07-11
+
+- 원인/조치: SQL 주석의 `/`·`*`가 ORDS URL path parameter에서 illegal character로 거부됐다. 검색어를 path가 아닌 FastAPI→ORDS 내부 `X-ASTA-History-Search` header로 전달하고 ORDS `DEFINE_PARAMETER`(HEADER, bind `:search`)으로 `ASTA_PKG.LIST_HISTORY`에 바인딩하도록 변경했다.
+- 배포/검증: active Run/Scheduler/running progress 0건 precheck 후 ADB package/ORDS module을 배포하고 FastAPI를 재시작했다. package spec/body는 `VALID`, errors 0, 서비스 `active`다. 실제 `/*  SESL0640.selectList  */` 주석 포함 검색이 `COMPLETED`, 50건 반환으로 성공했다. SQL 원문은 출력/저장하지 않았다.
+- 테스트: 관련 history/ORDS/proxy 계약 `33 passed`, `git diff --check` 통과. 전체 ORDS proxy 묶음의 `analyze` 실패 기대 1건은 이 변경과 무관한 기존 기준선으로 재현됐다.
+- artifact: `reports/asta_tuning_history_deploy/20260711T003348Z/`에 package backup과 deploy summary를 보존했다.
+
+## Tuning History 검색 FastAPI 경로 404 수정 — 2026-07-11
+
+- 원인/조치: 화면이 ORDS 전용 `/history/:search` 형식을 FastAPI `/api/asta/history/:search`에 직접 요청해 404가 발생했다. 화면 요청을 FastAPI 계약인 `/api/asta/history?q=<search>`로 수정했으며 FastAPI가 이미 배포된 대로 ORDS path parameter로 변환한다.
+- 변경 파일: `static/js/extensions/tuning_assistant.js`, `static/index.html`, cache 계약 7개, `tests/test_asta_tuning_history_contract.py`, `tests/test_asta_proxy.py`, 이 handoff.
+- 검증/반영: Node syntax와 관련 계약·proxy 묶음 `69 passed`, `git diff --check` 통과. 실행 서비스 `/`가 `tuning_assistant.js?v=20260711_tuning_history_search_fix1`을 제공한다. 정적 파일 직접 제공 변경이라 FastAPI/ADB/ORDS 재시작·재배포는 필요 없었다.
+
+## Tuning History 전체 SQL 조회·LIKE 검색 운영 반영 — 2026-07-11
+
+- 증상/결론: 배포 전 전체 SQL endpoint와 search route가 FastAPI/ORDS에 없어 404였다. 사용자 요청에 따라 전체 SQL lazy endpoint와 SQL 텍스트 부분 일치 검색을 Real ASTA에 배포하고 API를 재시작했다.
+- 배포: `ASTA_PKG` spec/body 및 ORDS `asta.v1` module을 배포하고 `select-ai-test.service`를 재시작했다. 새 UI cache-buster는 `tuning_assistant.js?v=20260711_tuning_history_full_sql1`이다.
+- 검증: precheck의 active Run/Scheduler/running progress는 모두 0이었다. 최종 `ASTA_PKG` PACKAGE/PACKAGE BODY `VALID`, errors 0, 서비스 `active`다. 실제 `GET /runs/OADT2-ASTA-6517d444147e4d32acc29684694d7393/input-sql`은 `COMPLETED`, 원문 길이 18,497자로 성공했다. `GET /history/SESL0640.selectList`도 `COMPLETED`, 50건을 반환해 SQL 텍스트 대소문자 무시 부분 일치 검색을 확인했다. 원문 SQL은 로그/artifact에 출력·저장하지 않았다.
+- artifact: `reports/asta_tuning_history_deploy/20260711T002656Z/`에 package backup과 deploy summary를 보존했다.
+
+## Tuning History 전체 입력 SQL 지연 조회 구현 — 2026-07-11
+
+- 요청/결론: History 상세가 500자 SQL 미리보기만 보여 주던 것을 수정했다. 항목 선택 시 상세 영역의 `요청 SQL 전체`에 원문을 lazy-load해 표시한다. 목록/검색 응답에는 원문을 계속 보내지 않아 검색·목록 전송량은 유지한다.
+- API/DB 계약: 인증된 `GET /api/asta/runs/{run_id}/input-sql` → ORDS `GET /runs/:run_id/input-sql` → `ASTA_PKG.GET_INPUT_SQL(:run_id)`를 추가했다. package는 저장 `INPUT_SQL` CLOB을 JSON-escape chunk 처리해 반환하고 `RUN_NOT_FOUND`/lookup 오류를 명시한다.
+- 변경 파일: `static/js/extensions/tuning_assistant.js`, `app/routers/asta_proxy.py`, `db/adb/asta_pkg.sql`, `db/ords/asta_ords_module.sql`, `tests/test_asta_tuning_history_contract.py`, `tests/test_asta_ords_migration_contract.py`, 이 handoff.
+- 검증: `node --check` 통과. `uv run --with pytest python -m pytest -q tests/test_asta_tuning_history_contract.py tests/test_asta_ords_migration_contract.py tests/test_asta_proxy.py` 결과 `32 passed`, `git diff --check` 통과.
+- 배포: ADB/ORDS 배포, FastAPI 재시작, UI cache-buster 반영과 실제 endpoint smoke를 완료했다.
+
+## Tuning History ID·SQL 검색 운영 배포 완료 — 2026-07-11
+
+- 요청/결론: 사용자 승인에 따라 Tuning History의 Run ID·SQL 검색을 Real ASTA ADB/ORDS와 FastAPI에 배포했다. 화면은 `?q=`를 FastAPI로 보내며 FastAPI가 ORDS path parameter로 변환해 검색한다.
+- 배포/수정: 첫 배포 후 ORDS가 query-string bind `:q`를 400으로 거절한 것을 확인했다. ORDS의 URI parameter 방식인 `GET /history/:search`로 변경하고 `ASTA_PKG.LIST_HISTORY(p_search => :search)`로 재배포했다. 기본 `/history`는 전체 최근 이력 조회로 유지한다.
+- 안전/검증: 두 배포 전 active Run/Scheduler/running progress 모두 0건이었다. 최종 `ASTA_PKG` PACKAGE/PACKAGE BODY는 `VALID`, errors 0, `select-ai-test.service`는 재시작 후 `active`다. 실제 ORDS smoke에서 Run ID 검색과 SQL 키워드 검색이 각각 `COMPLETED / runs=1`로 성공했다. 실행 서비스 `/`는 `tuning_assistant.js?v=20260711_tuning_history_search1`을 제공한다.
+- artifact: `reports/asta_tuning_history_deploy/20260710T231053Z/`에 ASTA_PKG 배포 전 backup과 deploy summary를 보존했다. SQL 원문/인증정보는 artifact에 저장하지 않았다.
+- 관련 커밋: 없음.
+
+## Tuning History Run ID·SQL 검색 구현 — 2026-07-11
+
+- 요청/결론: Tuning History에 `Run ID 또는 SQL 키워드로 검색` 입력창과 조회 버튼을 추가했다. Enter/조회/새로고침으로 검색하며, 빈 조건은 최근 이력을, 입력 조건은 서버 검색 결과를 표시한다.
+- API/DB 계약: `GET /api/asta/history?q=<search>` → ORDS `GET /history?q=<search>` → `ASTA_PKG.LIST_HISTORY(p_search => :q)`로 연결했다. 검색어는 200자로 제한하고 `ASTA_RUNS.RUN_ID`의 대소문자 무시 부분 일치 또는 `INPUT_SQL` CLOB의 대소문자 무시 부분 일치를 적용한 뒤 최신순 최대 100건을 반환한다.
+- 변경 파일: `static/js/extensions/tuning_assistant.js`, `app/routers/asta_proxy.py`, `db/adb/asta_pkg.sql`, `db/ords/asta_ords_module.sql`, `tests/test_asta_tuning_history_contract.py`, 이 handoff.
+- 검증: `node --check static/js/extensions/tuning_assistant.js`, `uv run --with pytest python -m pytest -q tests/test_asta_tuning_history_contract.py tests/test_asta_ords_migration_contract.py tests/test_asta_proxy.py` 결과 `32 passed`, `git diff --check` 통과.
+- 배포: ADB package/ORDS module과 FastAPI를 함께 배포·재시작했으며 실제 ID/SQL 검색 smoke까지 완료했다.
+
+## 결과서 Plan 뷰어 폭 확장 — 2026-07-10
+
+- 요청/결론: Tuning History의 `결과서 열기` viewer가 1080px로 제한돼 XPLAN을 보기 어려운 문제를 수정했다. viewer 본문 최대 폭을 1800px로 확장했고 Plan/SQL `pre` 블록에 가로·세로 스크롤, 70vh 최대 높이, 넓은 화면용 14px monospace 표시를 적용했다. 모바일은 기존보다 작은 padding/12px과 64vh 높이로 유지한다.
+- 변경 파일: `app/routers/asta_proxy.py`, `tests/test_asta_proxy.py`, 이 handoff.
+- 검증/반영: `uv run --with pytest python -m pytest -q tests/test_asta_proxy.py tests/test_asta_tuning_history_contract.py` 결과 `11 passed`, `git diff --check` 통과. `sudo -n systemctl restart select-ai-test.service` 후 서비스 `active`를 확인했다.
+- 배포 범위: FastAPI viewer HTML/CSS만 반영했으며 ADB/ORDS/Source DB 및 업무 SQL은 변경하지 않았다.
+
+## Tuning History 시간 KST 고정 — 2026-07-10
+
+- 요청/결론: Tuning History의 created_at 표시는 브라우저 로컬 time zone 대신 `Asia/Seoul`을 명시한 `ko-KR` 형식으로 고정했고, 값 끝에 `KST`를 표시한다.
+- 변경 파일: `static/js/extensions/tuning_assistant.js`, `static/index.html`, cache 계약 테스트 7개, `tests/test_asta_tuning_history_contract.py`.
+- 검증: `node --check` 통과. `uv run --with pytest python -m pytest -q` 관련 묶음 결과 `60 passed`; `git diff --check` 통과. 실행 서비스 `/`가 `tuning_assistant.js?v=20260710_tuning_history_kst1` 및 `app_extensions.js?v=20260710_tuning_history_kst1`을 제공한다.
+- 배포: 정적 파일 직접 제공 구조라 서비스 재시작/ADB/ORDS 변경 없이 반영됐다.
+
+## Tuning History 404 FastAPI 라우트 반영·서비스 복구 — 2026-07-10
+
+- 증상/원인: 정적 `Tuning History` 메뉴는 새 JS를 제공했지만 실행 중 Uvicorn이 코드 변경 전부터 기동 중이라 `/api/asta/history`가 실제로 404를 반환했다. ADB/ORDS 배포 문제가 아니라 FastAPI router reload 누락이다.
+- 조치/결과: `app/routers/asta_proxy.py`의 `/history` route 존재를 확인하고 Uvicorn을 새 코드로 기동했다. systemd의 `Restart=on-failure`에서 SIGTERM 정상 종료는 자동 재기동되지 않는 점을 확인했으며, 무비밀번호 sudo로 `select-ai-test.service`를 systemd 관리 상태에서 다시 start했다. 최종 서비스는 `active`, PID `1504934`이며 새 `app.main:app`을 실행한다.
+- 검증: 비인증 localhost `GET /api/asta/history`는 보안 정책상 `401 unauthorized`를 반환한다. 이는 이전의 인증된 브라우저 요청 `404 Not Found`와 달리 새 route가 로드되고 인증 경계까지 도달했음을 확인한 것이다. 로그인 브라우저에서는 새로고침 후 이력 조회가 가능하다.
+- 주의: 서비스 재시작 중 수 초간 UI 접속이 중단됐으며, Source/업무 SQL 실행·DB 데이터 변경·신규 Run 생성·인증정보 출력은 없었다.
+
+## Tuning History 502 업스트림 재검증 — 2026-07-10
+
+- 진단: route 재기동 직후 보고된 502를 추적했다. 설정된 ORDS `GET /asta/asta/history`는 HTTP 200이고 `status=COMPLETED`, `runs=50`, `limit=50`을 반환했다. FastAPI가 사용하는 동일 `urllib` 경로도 같은 비민감 요약으로 성공했다.
+- 결론: ADB package/ORDS module/프록시 업스트림은 정상이며 502는 router 재기동 전 요청의 잔여 오류로 판단했다. 서비스는 계속 `active`다. 로그인 브라우저에서 hard refresh 후 다시 호출한다.
+
+## Tuning History 운영 배포 완료 — 2026-07-10
+
+- 요청/결론: 사용자 승인에 따라 고객 튜닝 이력 조회 기능을 Real ASTA ADB/ORDS에 배포했다. `GET /api/asta/history`가 최근 `ASTA_RUNS` 50건의 SQL 미리보기·상태·판정·결과서 준비 여부를 반환하고 화면의 `Tuning History` 메뉴에서 결과서를 열거나 내려받는다.
+- 배포 범위: `ASTA_PKG` spec/body와 ORDS `asta.v1` module만 컴파일/설치했다. Source package, 업무 SQL 실행, 신규 튜닝 Run 생성, 서비스 재시작은 수행하지 않았다.
+- 안전/검증: 배포 전후 active Run 0건, ASTA Scheduler running job 0건, RUNNING progress 0건이다. `ASTA_PKG` PACKAGE/PACKAGE BODY 모두 `VALID`, `USER_ERRORS=0`, deployed `LIST_HISTORY` marker 2건을 확인했다. 실제 `ASTA_PKG.LIST_HISTORY` smoke는 `COMPLETED`, `runs=50`, `limit=50`으로 JSON contract를 통과했다. 실행 서비스 `/`는 `tuning_assistant.js?v=20260710_tuning_history1`와 `app_extensions.js?v=20260710_tuning_history1`를 제공한다.
+- artifact: `reports/asta_tuning_history_deploy/20260710T141210Z/`에 배포 전 ASTA_PKG spec/body 백업과 `deploy_summary.json`, 별도 smoke 기록에 `smoke_summary.json`을 보존했다. SQL 원문·인증정보는 저장하지 않았다.
+- 관련 커밋: 없음.
+
+## Tuning History 메뉴·결과서 조회 구현 — 2026-07-10
+
+- 요청/결론: 고객이 요청한 튜닝 SQL과 결과를 조회할 수 있도록 `Tuning History` 메뉴를 구현했다. 최근 ASTA Run을 생성 시각 내림차순으로 표시하고 SQL 500자 미리보기, 상태/판정, Source DB, 모델, 실행 범위를 보여 준다. 항목을 선택하면 결과서 열기·Markdown 다운로드가 가능하다.
+- 변경 파일: `static/js/extensions/app_extensions.js`, `static/js/extensions/tuning_assistant.js`, `static/index.html`, `app/routers/asta_proxy.py`, `db/adb/asta_pkg.sql`, `db/ords/asta_ords_module.sql`, 신규 `tests/test_asta_tuning_history_contract.py`, ORDS endpoint-count 계약 갱신.
+- API/DB 계약: `GET /api/asta/history` → ORDS `GET /asta/history` → `ASTA_PKG.LIST_HISTORY`로 연결했다. 목록은 `ASTA_RUNS`의 최대 100건을 읽고 full SQL은 전송하지 않으며 `DBMS_LOB.SUBSTR(input_sql, 500, 1)` 미리보기만 반환한다. 원문 결과서는 기존 run-scoped `/report/view` 및 `/report/download` 경로로만 연다.
+- 검증: `node --check` 두 JS 통과. `uv run --with pytest pytest -q tests/test_asta_tuning_history_contract.py tests/test_asta_ords_migration_contract.py tests/test_asta_proxy.py` 결과 `32 passed`. `git diff --check` 통과.
+- 미수행/다음 단계: 서비스 재시작, Source package 변경, 업무 SQL 실행, commit/push는 수행하지 않았다.
+- 관련 커밋: 없음.
+
+## Real ASTA UI 매뉴얼 최신 구현 현행화 — 2026-07-10 완료
+
+- 요청/결론: 현재 Real ASTA의 UI/API/ADB·Source package/report 구현을 기계적으로 대조해 UI 팝업의 `01 아키텍처`, `02 11단계 Workflow`, `03 개발자 실행 추적`과 사용자/아키텍처/소스 흐름 문서를 현행화했다. 문서·정적 UI·계약 테스트만 변경했으며 기존 작업은 되돌리지 않았다.
+- 실행 모드: 화면 기본값은 `execute_source_sql=false`다. 미실행 후보 분석은 `ANALYSIS_ONLY / ESTIMATED_PLAN_ONLY / SOURCE_SQL_NOT_EXECUTED`, `source_sql_executed=false`, runtime·실제 XPLAN·동등성·반복 성능·개선율 미측정으로 명시했다. 체크박스 ON에서만 PLAN_ONLY 선별과 `BASELINE-FINAL`/`TUNED-FINAL` AUTO·FULL_RESULT 실측을 거쳐 성능 verdict를 만든다.
+- 최신 흐름: `VERIFIED_HISTORY_REUSE`, 실제 등록 profile 기반 `available_fallback_profile`, Source `compact_column_dictionary`, `guard_repair_attempted`/`candidate_source`, `PLAN_SCREEN_*` reason과 Run `CANDIDATE_RUNTIME_LIMIT` error_code 구분을 반영했다. comparison verdict 7종(`IMPROVED`, `ANALYSIS_ONLY`, `NOT_IMPROVED`, `NON_EQUIVALENT`, `INSUFFICIENT_EVIDENCE`, `CANDIDATE_FAILED`, `NO_REWRITE`)만 verdict로 문서화했다.
+- Vector/trace/report: 현재 정식 two-stage prompt는 `p_vector_json`을 사용하지 않고 `vector_evidence_included=false`인 사실을 문서 전체에 통일했다. Vector 저장은 `POSITIVE_VERIFIED / ANALYSIS_OBSERVATION / REJECTED_OBSERVATION`과 observation/rejection reason으로 구분했다. `/progress`의 `llm_calls`, `GET_LLM_CALL`/`get_run_llm_call` lazy 원문 조회, `/report`·`/report/view`·`/report/download`, 화면 `downloadText` 로컬 저장을 실제 심볼·경로대로 반영했다.
+- 과장 제거: 샘플 20개는 입력 예시이며 특정 `IMPROVED`나 개선율을 보장하지 않는다고 정리했다. 기본 미실행 모드를 실제 비교 완료로 표현하던 문구와 Vector가 정식 LLM prompt에 들어간다는 구식 설명을 제거했다.
+- 변경 파일: `static/js/extensions/tuning_assistant.js`, `static/index.html`, `docs/AI_SQL_TUNING_ASSISTANT_MANUAL.md`, `docs/OADT2_ASTA_ARCHITECTURE.md`, `docs/asta_source_execution_flow.md`, `docs/README.md`, 신규 `tests/test_asta_ui_manual_current_contract.py`, cache/date 관련 계약 테스트 7개, 이 handoff.
+- Strict TDD: 신규 계약을 먼저 추가해 예상 RED `7 failed`를 확인한 뒤 구현했다. 신규+기존 매뉴얼 계약 `19 passed`, 관련 UI/API/미실행/Vector/후보 복구/Stage 7/문서 묶음 `119 passed`다.
+- JS/DOM: `node --check` 두 JS 통과. `asta_report_tabs_dom_test`, `asta_llm_trace_render_test`, `asta_progress_time_test` 모두 PASS. `git diff --check` 통과.
+- 전체 회귀: `483 passed, 기존 기준선 8 failed in 1.46s`, 신규 실패 0건. 기존 실패는 ADB static 계약 4건, FastAPI/ORDS proxy 기대 2건, workload signature 계약 2건으로 변경 전 `476 passed, 8 failed`와 같은 계열이다.
+- 실제 HTTP: 서비스 재시작 없이 `/`와 `/static/js/extensions/tuning_assistant.js?v=20260710_manual_current1` 모두 HTTP 200. 제공 index/JS는 workspace 파일과 각각 SHA-256·byte equality가 일치하며 새 mode/Vector/LLM trace marker를 포함한다.
+- 배포/운영 변경: 정적 파일 직접 제공 구조라 현재 실행 웹 서비스에는 새 cache-buster와 UI 매뉴얼이 이미 제공된다. DB/ORDS/package 배포, Source/업무 SQL 실행, 서비스 재시작, commit/push는 수행하지 않았다. 별도 DB 배포는 필요 없고 브라우저는 새 cache URL로 다시 로드하면 된다.
+- 관련 커밋: 없음.
+
 ## 작업 트리 변경 Git 커밋 — 2026-07-10
 
 - 요청/결론: 사용자가 요청한 현재 작업 트리 변경 전체를 단일 Git 커밋으로 반영했다. 기존 변경을 되돌리거나 제외하지 않았다.

@@ -12,3 +12,8 @@ dependencies = [
     "pyyaml>=6.0.3",
     "uvicorn[standard]>=0.48.0",
 ]
+
+[tool.pytest.ini_options]
+# 저장소 루트를 import 경로에 추가해 `app`/`tools` 패키지를 PYTHONPATH 없이 수집한다.
+# 이로써 README의 `uv run --with pytest pytest -q`가 루트에서 그대로 동작한다.
+pythonpath = ["."]

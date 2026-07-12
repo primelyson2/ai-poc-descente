@@ -641,13 +641,11 @@ ORDER BY SRC.COMP_CD, SRC.BRAND_CD, SRC.ITEM_CD`,
     { seq: 2, code: "ORDS_DISPATCH", label: "분석 서버 연결", status: "PENDING" },
     { seq: 3, code: "SQL_GUARD", label: "입력 SQL 확인", status: "PENDING" },
     { seq: 4, code: "BEFORE_EVIDENCE", label: "원본 SQL 실행 정보 수집", status: "PENDING" },
-    { seq: 5, code: "SQL_TUNING_ADVISOR", label: "Oracle 튜닝 권고 (기본 사용 안 함)", status: "PENDING" },
-    { seq: 6, code: "LLM_REWRITE", label: "개선 SQL 만들기", status: "PENDING" },
-    { seq: 7, code: "AFTER_EVIDENCE", label: "개선 SQL 안전성·성능 확인", status: "PENDING" },
-    { seq: 8, code: "BEFORE_AFTER_COMPARE", label: "원본과 개선 결과 비교", status: "PENDING" },
-    { seq: 9, code: "VECTOR_KB", label: "비슷한 튜닝 사례 찾기", status: "PENDING" },
-    { seq: 10, code: "FINAL_REPORT", label: "결과서 만들기", status: "PENDING" },
-    { seq: 11, code: "VECTOR_SAVE", label: "검증 결과 저장", status: "PENDING" },
+    { seq: 5, code: "LLM_REWRITE", label: "개선 SQL 만들기", status: "PENDING" },
+    { seq: 6, code: "AFTER_EVIDENCE", label: "개선 SQL 안전성·성능 확인", status: "PENDING" },
+    { seq: 7, code: "BEFORE_AFTER_COMPARE", label: "원본과 개선 결과 비교", status: "PENDING" },
+    { seq: 8, code: "FINAL_REPORT", label: "결과서 만들기", status: "PENDING" },
+    { seq: 9, code: "VECTOR_SAVE", label: "검증 결과 저장", status: "PENDING" },
   ];
   const ASTA_ARCHITECTURE_ZONES = Object.freeze([
     {
@@ -695,8 +693,8 @@ ORDER BY SRC.COMP_CD, SRC.BRAND_CD, SRC.ITEM_CD`,
       ],
       functions: [
         "ASTA_RUNS/PROGRESS 영속화와 비동기 Scheduler orchestration",
-        "SQL Guard, AI 후보 생성, Vector 사례 검색·저장",
-        "full-result·optimizer intent·bind·반복 측정 gate와 결과서 생성",
+        "SQL Guard, AI 후보 생성, Vector 사례 검색과 POSITIVE_VERIFIED·ANALYSIS_OBSERVATION·REJECTED_OBSERVATION 분리 저장",
+        "execute_source_sql=true에서만 full-result·optimizer intent·bind·반복 측정 gate로 성능 판정",
       ],
     },
     {
@@ -712,9 +710,9 @@ ORDER BY SRC.COMP_CD, SRC.BRAND_CD, SRC.ITEM_CD`,
         { type: "Schema", name: "ERP 업무 Schema", detail: "DSNT 업무 객체와 dictionary evidence" },
       ],
       functions: [
-        "원본/후보 SQL bounded 실행과 warm-up 1회·측정 3회",
-        "Oracle cursor metrics, 실행계획(XPLAN), bind/child cursor, 객체 통계 수집",
-        "전체 결과 typed digest와 선택적 SQL Tuning Advisor 수행",
+        "execute_source_sql=false: ESTIMATED_PLAN으로 EXPLAIN PLAN·객체 통계/컬럼/인덱스만 수집하고 source_sql_executed=false 기록",
+        "execute_source_sql=true: 원본 MINIMAL 실행 후 후보 PLAN_ONLY 선별, 통과 시 AUTO·FULL_RESULT 실측",
+        "실측 opt-in에서만 cursor metrics·실제 XPLAN·bind/child cursor·전체 결과 typed digest 수집",
       ],
     },
   ]);
@@ -781,81 +779,52 @@ ORDER BY SRC.COMP_CD, SRC.BRAND_CD, SRC.ITEM_CD`,
     },
     {
       seq: 5,
-      code: "SQL_TUNING_ADVISOR",
-      title: "Oracle 튜닝 권고",
-      zone: "OCI ERP Database (BaseDB)",
-      procedure: "ASTA_SOURCE_PKG.RUN_ADVISOR_OPT / ASTA_SOURCE_PKG.RUN_ADVISOR_JOB",
-      tasks: [
-        "사용자가 run_advisor/use_sqltune을 명시적으로 켰는지 확인하며 일반 ASTA 화면 기본값은 OFF다.",
-        "활성화된 경우 4단계 Source 호출 안에서 DBMS_SQLTUNE task를 만들고 지정 시간 한도로 SQL Tuning Advisor를 실행한다.",
-        "권고 report를 CLOB evidence로 회수하고 임시 task/job cleanup 상태까지 기록한다.",
-        "5단계 progress는 별도 재실행이 아니라 4단계 Source response의 advisor.status를 DONE·SKIPPED·FAILED로 표시한다.",
-      ],
-      evidence: "4단계 Source response의 advisor.status를 ASTA_RUN_PROGRESS 5단계에 반영한다.",
-      failure: "SKIPPED/FAILED여도 deterministic 후보 검증은 가능한 범위에서 계속하며 권고를 자동 적용하지 않는다.",
-    },
-    {
-      seq: 6,
       code: "LLM_REWRITE",
       title: "개선 SQL 만들기",
       zone: "OCI AI Lakehouse",
       procedure: "ASTA_LLM_PKG.GENERATE_SQL_ONLY_TUNING",
       tasks: [
-        "DIAGNOSIS: 원본 SQL·Plan·workload·사용자 참고사항으로 병목과 localized rewrite 전략·위험을 JSON으로 만든다. 미실행 모드는 Cost/Cardinality 추정만 사용하고 A-Time/Buffer/Starts 실측을 주장하지 않는다.",
-        "CANDIDATE_SQL: diagnosis·원본 SQL·전체 XPLAN으로 실행 가능한 Oracle SELECT/WITH 한 문장만 생성한다. profile fallback은 최대 4회다.",
-        "출력 컬럼·순서·datatype, predicate/JOIN, row grain·중복, NULL·집계 의미와 CTE/alias/컬럼 name resolution을 보존하도록 prompt에서 사전 점검한다.",
-        "32,767자 한도, NO_REWRITE, 원본과 동일/comment-only/hint-only 여부와 SQL Guard를 검사하고 통과한 후보에 변경 주석을 보장한다. 정상 LLM 호출은 보통 2회, fallback 포함 최대 6회다.",
+        "validation candidate가 없으면 동일 SQL·Source·workload의 과거 IMPROVED/full-result 검증 후보를 verified_history_candidate로 찾고, 있으면 VERIFIED_HISTORY_REUSE로 표시한 뒤에도 5단계 비교·검증을 다시 수행한다.",
+        "Source SQL을 실제 실행한 경우에는 같은 workload의 IMPROVED/POSITIVE_VERIFIED 사례를 SQL 원문 없이 변경 요약·전후 지표·fingerprint 일치 여부로 축약해 DIAGNOSIS와 CANDIDATE_SQL prompt에 추가한다. 현재 SQL/XPLAN이 같은 반복 작업 구조·key·immediate consumer를 독립적으로 증명할 때만 참고하며, 결과서에서 실제 추가 지시와 안전한 사례 요약을 확인할 수 있다.",
+        "DIAGNOSIS는 원본 SQL·Plan·workload·참고사항으로 전략을 JSON으로 만들며, CANDIDATE_SQL은 실제 compact_column_dictionary와 XPLAN을 받아 Oracle SELECT/WITH를 만든다. 미실행 모드는 Cost/Cardinality 추정만 사용한다.",
+        "호출 실패 시 실제 등록된 ASTA profile을 available_fallback_profile로 고른다. 정상 LLM 호출은 보통 2회, fallback 포함 최대 6회이며 diagnosis 최대 2회·candidate 최대 4회다.",
+        "32,767자·NO_REWRITE·동일/comment-only/hint-only·SQL Guard를 검사한다. guard 실패는 REPAIR_SQL을 한 번 시도하며 artifact의 guard_repair_attempted와 candidate_source(LLM_GENERATED/VALIDATION_CANDIDATE/VERIFIED_HISTORY_REUSE/GUARD_REPAIR)로 출처를 구분한다.",
       ],
-      evidence: "DIAGNOSIS/CANDIDATE_SQL별 attempt·profile·status를 ASTA_LLM_CALL_LOG에 남기고 candidate SQL·change summary·semantic risk를 artifact로 만든다.",
+      evidence: "DIAGNOSIS/CANDIDATE_SQL/REPAIR_SQL별 attempt·profile·status를 ASTA_LLM_CALL_LOG에 남기고 candidate SQL·change summary·semantic risk·candidate_source를 artifact로 만든다.",
       failure: "안전한 후보가 없으면 NO_REWRITE로 원본을 유지한다. LLM 설명만으로 개선 성공을 선언하지 않는다.",
     },
     {
-      seq: 7,
+      seq: 6,
       code: "AFTER_EVIDENCE",
       title: "개선 SQL 안전성·성능 확인",
       zone: "OCI AI Lakehouse ↔ OCI ERP Database (BaseDB)",
       procedure: "ASTA_SOURCE_BRIDGE_PKG.RUN_SOURCE_EVIDENCE / ASTA_LLM_PKG.REPAIR_SQL_CANDIDATE",
       tasks: [
         "후보 SQL에서 ANSI JOIN과 구식 (+) 외부 조인이 혼용되면 ORA-25156 사전 검사로 Source 실행 전에 차단한다.",
-        "기본 미실행 모드는 후보도 EXPLAIN PLAN만 생성한다. 실제 실행 체크 시에만 PLAN_ONLY·ONCE로 XPLAN, Elapsed, Buffer Gets와 optimizer intent를 확인한다.",
-        "PLAN_ONLY에서 workload 기준 성능과 optimizer intent를 통과한 후보만 AUTO·FULL_RESULT로 반복 측정과 전체 결과 count/digest를 수행한다.",
-        "watchdog은 PLAN_ONLY 1회와 정밀 검증 최대 6회를 구분해 총 실행예산을 계산한다. ALTER SYSTEM을 사용하지 않으므로 timeout에는 ADB parent job만 종료한다.",
+        "기본 미실행 모드는 후보도 ESTIMATED_PLAN으로 EXPLAIN PLAN만 생성하고 ESTIMATED_PLAN_ONLY_RUNTIME_NOT_EXECUTED reason을 남긴다. 이 완료는 runtime·동등성·개선율 판정이 아니다.",
+        "실제 실행 체크 시에만 PLAN_ONLY·ONCE로 실제 XPLAN, Elapsed, Buffer Gets와 optimizer intent를 확인하고 PLAN_SCREEN_* reason으로 선별한다.",
+        "선별을 통과하면 원본 BASELINE-FINAL과 후보 TUNED-FINAL을 각각 AUTO·FULL_RESULT로 실행한다. 각 AUTO는 warm-up 1회·측정 3회에 count/digest를 더하며 watchdog도 각 구간별로 계산한다.",
       ],
       evidence: "PLAN_ONLY screen 판정과 통과 후보의 XPLAN, 반복 metrics, 전체 결과 digest, optimizer intent와 bind evidence를 수집한다.",
       failure: "timeout·Oracle 오류·repair 실패는 CANDIDATE_FAILED 또는 CANDIDATE_RUNTIME_LIMIT로 원본을 유지한다.",
     },
     {
-      seq: 8,
+      seq: 7,
       code: "BEFORE_AFTER_COMPARE",
       title: "원본과 개선 결과 비교",
       zone: "OCI AI Lakehouse",
       procedure: "ASTA_PKG.BUILD_COMPARISON_JSON",
       tasks: [
-        "후보가 의도한 반복 subtree 제거·Starts 감소·ANTI/set-operation 구조를 실제 Before/After XPLAN에서 먼저 확인한다.",
-        "전체 결과 mode, 컬럼 metadata digest, 행 수와 result digest가 모두 같은지 검사하며 일부 결과만 있으면 fail-closed 처리한다.",
-        "bind bucket별 plan family·shape·Starts 안정성과 Before/After 동일 bind 집합을 확인한다.",
-        "반복 측정 완전성·noise·Buffer Gets와 workload별 절대/상대 elapsed 기준을 순서대로 적용해 최종 verdict와 reason을 결정한다.",
+        "execute_source_sql=false이면 verdict=ANALYSIS_ONLY, analysis_mode=ESTIMATED_PLAN_ONLY, execution_mode=SOURCE_SQL_NOT_EXECUTED로 완료한다.",
+        "이때 source_sql_executed=false, source_runtime_metrics_status=NOT_MEASURED, runtime_verification_status=NOT_EXECUTED, equivalence_status=NOT_EVALUATED, repeat_performance_status=NOT_MEASURED이며 수치 개선율은 만들지 않는다.",
+        "실측 opt-in은 반복 subtree 제거·Starts 감소를 확인한 뒤 FULL_RESULT metadata와 result digest·bind 안정성·반복 측정/noise를 순서대로 검사한다.",
+        "마지막에 workload 성능 기준을 적용해 comparison verdict를 만든다. PLAN_SCREEN_*는 5단계 비교의 선별 reason이고 CANDIDATE_RUNTIME_LIMIT은 Run error_code다.",
       ],
       evidence: "IMPROVED, ANALYSIS_ONLY, NOT_IMPROVED, NON_EQUIVALENT, INSUFFICIENT_EVIDENCE, CANDIDATE_FAILED, NO_REWRITE 중 하나와 reason을 만든다.",
       failure: "앞 gate가 불완전하면 뒤의 좋은 성능 수치만으로 채택하지 않는 fail-closed 방식이다.",
     },
     {
-      seq: 9,
-      code: "VECTOR_KB",
-      title: "비슷한 튜닝 사례 찾기",
-      zone: "OCI AI Lakehouse",
-      procedure: "ASTA_VECTOR_PKG.SEARCH_SIMILAR_CASES",
-      tasks: [
-        "화면 번호는 9지만 LLM 후보 생성 전에 현재 SQL fingerprint/embedding으로 Vector 검색을 먼저 수행한다.",
-        "gate-complete POSITIVE_VERIFIED 사례만 검색 대상으로 삼고 similarity와 allowlist metadata를 반환한다.",
-        "raw SQL·literal·bind 값은 Vector metadata에 저장하거나 검색 결과로 노출하지 않는다.",
-        "현재 구현은 검색 결과를 artifact로 보존하지만 generate_sql_only_tuning prompt에는 p_vector_json을 넣지 않아 6단계 후보 생성에는 아직 사용하지 않는다.",
-      ],
-      evidence: "유사도, 안전한 요약과 내부 report 경로를 Vector search artifact로 남기며 응답에는 vector_evidence_included=false가 기록된다.",
-      failure: "유사 사례가 없어도 분석은 계속된다. 과거 사례만으로 현재 후보를 채택하지 않는다.",
-    },
-    {
-      seq: 10,
+      seq: 8,
       code: "FINAL_REPORT",
       title: "결과서 만들기",
       zone: "OCI AI Lakehouse → UI (VM)",
@@ -863,25 +832,26 @@ ORDER BY SRC.COMP_CD, SRC.BRAND_CD, SRC.ITEM_CD`,
       tasks: [
         "deterministic comparison verdict와 동일한 결론으로 Markdown 결과서 초안을 만든다. ANALYSIS_ONLY는 미실행 분석 완료이며 성능 개선 성공/실패가 아니다.",
         "결론·병목·전후 수치·전후 SQL/XPLAN 요약·객체정보·사용자 참고사항·실패 reason을 섹션별로 구성한다.",
-        "11단계 Vector 저장 결과와 terminal progress timing을 포함하도록 마지막에 결과서를 다시 구성한다.",
+        "검증 결과 저장과 terminal progress timing을 포함하도록 마지막에 결과서를 다시 구성한다.",
         "BUILD_RESPONSE_JSON으로 report와 allowlist artifact를 API JSON에 묶고 ASTA_RUNS의 최종 status·tuned_sql·report·response를 영속화한다.",
       ],
-      evidence: "결론, 전후 SQL/XPLAN, SQL 변경, 상세 분석, 객체정보와 11단계 timing을 ASTA_RUNS에 저장한다.",
+      evidence: "결론, 전후 SQL/XPLAN, SQL 변경, 상세 분석, 객체정보와 저장 timing을 ASTA_RUNS에 저장한다.",
       failure: "rich response 저장 실패도 RUNNING으로 방치하지 않고 ASTA_PERSIST 실패로 종결한다.",
     },
     {
-      seq: 11,
+      seq: 9,
       code: "VECTOR_SAVE",
       title: "검증 결과 저장",
       zone: "OCI AI Lakehouse",
       procedure: "ASTA_VECTOR_PKG.SAVE_CASE",
       tasks: [
-        "8단계 verdict와 intent/full-result/bind/measurement gate가 모두 완료됐는지 다시 확인한다.",
+        "5단계 비교 verdict와 intent/full-result/bind/measurement gate가 모두 완료됐는지 다시 확인한다.",
         "모든 필수 gate를 통과한 개선만 POSITIVE_VERIFIED로 분류하고 검색 가능한 positive 영역에 저장한다.",
-        "NO_REWRITE·ORA·비동등·bounded evidence·timeout·plan flip은 REJECTED_OBSERVATION으로 분리 저장한다.",
+        "ANALYSIS_ONLY는 검증 성공/실패 사례가 아닌 ANALYSIS_OBSERVATION으로 저장하고 observation_reason에 ESTIMATED_PLAN_ONLY_RUNTIME_NOT_EXECUTED를 남긴다.",
+        "NO_REWRITE·ORA·비동등·bounded evidence·timeout·plan flip은 REJECTED_OBSERVATION과 rejection_reason으로 분리 저장한다.",
         "원본/후보 SQL과 bind 값은 저장하지 않고 reason code·안전한 수치·내부 report 경로 등 allowlist metadata만 보존한다.",
       ],
-      evidence: "모든 필수 gate를 통과한 사례만 positive verified 검색 대상이 되며 결과서 참조는 내부 API 경로를 사용한다.",
+      evidence: "learning_class는 POSITIVE_VERIFIED, ANALYSIS_OBSERVATION, REJECTED_OBSERVATION 중 하나다. observation_reason/rejection_reason과 내부 report 경로만 안전하게 보존한다.",
       failure: "Vector 저장 실패는 결과서에 evidence로 남지만 기존 comparison verdict를 성공으로 바꾸지 않는다.",
     },
   ]);
@@ -906,7 +876,7 @@ ORDER BY SRC.COMP_CD, SRC.BRAND_CD, SRC.ITEM_CD`,
       files: ["app/main.py", "app/routers/asta_proxy.py", "app/asta_audit.py"],
       symbols: [
         "analyze", "_coerce_payload", "_post_json_to_ords", "_audited_run_lookup",
-        "get_run_progress", "get_run_report", "download_run_report",
+        "get_run_progress", "get_run_llm_call", "get_run_report", "get_run_report_view", "download_run_report",
       ],
       boundary: "FastAPI는 thin proxy다. Source SQL 실측, AI 호출, 비교 판정, 결과서 생성은 Python에서 수행하지 않는다.",
     },
@@ -914,7 +884,7 @@ ORDER BY SRC.COMP_CD, SRC.BRAND_CD, SRC.ITEM_CD`,
       title: "ORDS adapter",
       role: "HTTP handler를 ADB PL/SQL 함수에 연결하고 JSON CLOB을 chunked response로 반환한다.",
       files: ["db/ords/asta_ords_module.sql"],
-      symbols: ["ASTA_PKG.SUBMIT_RUN", "ASTA_PKG.GET_PROGRESS", "ASTA_PKG.GET_RUN", "ASTA_PKG.GET_REPORT"],
+      symbols: ["ASTA_PKG.SUBMIT_RUN", "ASTA_PKG.GET_PROGRESS", "ASTA_PKG.GET_LLM_CALL", "ASTA_PKG.GET_RUN", "ASTA_PKG.GET_REPORT"],
       boundary: "ORDS module asta.v1은 adapter이며 분석 로직이나 verdict를 만들지 않는다.",
     },
     {
@@ -925,7 +895,7 @@ ORDER BY SRC.COMP_CD, SRC.BRAND_CD, SRC.ITEM_CD`,
         "db/adb/asta_vector_pkg.sql", "db/adb/asta_report_pkg.sql",
       ],
       symbols: [
-        "submit_run", "execute_run", "run_pipeline", "record_progress", "build_comparison_json",
+        "submit_run", "execute_run", "run_pipeline", "record_progress", "build_llm_calls_json", "get_progress", "get_llm_call", "build_comparison_json", "verified_history_candidate",
         "run_source_evidence", "get_connection_json", "generate_sql_only_tuning", "repair_sql_candidate",
         "search_similar_cases", "save_case", "build_report", "build_response_json",
       ],
@@ -937,45 +907,47 @@ ORDER BY SRC.COMP_CD, SRC.BRAND_CD, SRC.ITEM_CD`,
       files: ["db/source/asta_source_pkg.sql"],
       symbols: [
         "run_evidence_store_proc", "run_evidence", "collect_metrics", "collect_xplan",
-        "collect_object_info", "build_full_count_sql", "build_full_digest_sql",
-        "DBMS_XPLAN.DISPLAY_CURSOR", "DBMS_SQLTUNE",
+        "collect_object_info", "collect_estimated_object_info", "build_full_count_sql", "build_full_digest_sql",
+        "DBMS_XPLAN.DISPLAY_CURSOR",
       ],
       boundary: "allowlisted DB Link로 호출된 ASTA_SOURCE_PKG만 실측한다. DML/DDL이나 권고 자동 적용은 하지 않는다.",
     },
     {
       title: "AI / LLM",
-      role: "Source evidence와 Vector 사례, workload, 사용자 참고사항으로 구조적 SQL 후보를 생성하고 제한적으로 repair한다.",
+      role: "Source SQL·XPLAN·실제 컬럼 dictionary, workload, 사용자 참고사항으로 구조적 SQL 후보를 생성하고 제한적으로 repair한다.",
       files: ["db/adb/asta_llm_pkg.sql"],
-      symbols: ["ASTA_LLM_PKG.GENERATE_SQL_ONLY_TUNING", "ASTA_LLM_PKG.REPAIR_SQL_CANDIDATE", "DBMS_CLOUD_AI.GENERATE"],
-      boundary: "LLM 출력은 후보일 뿐이다. Source 재실측과 deterministic gate를 통과하기 전에는 채택되지 않는다.",
+      symbols: ["ASTA_LLM_PKG.GENERATE_SQL_ONLY_TUNING", "ASTA_LLM_PKG.REPAIR_SQL_CANDIDATE", "available_fallback_profile", "compact_column_dictionary", "DBMS_CLOUD_AI.GENERATE"],
+      boundary: "정식 two-stage 경로는 raw Vector 검색을 prompt에 넣지 않고 artifact에 vector_evidence_included=false로 기록한다. 실측 실행에서만 POSITIVE_VERIFIED의 안전한 패턴 메타데이터를 VERIFIED_HISTORY_PATTERN_REFERENCE로 참고하며 verified_history_references_included로 포함 여부를 기록한다. SQL/identifier/literal 복사와 과거 사례만의 채택은 금지한다. LLM 출력은 Source 검증 전에는 채택되지 않는다.",
     },
   ]);
   const ASTA_DEVELOPER_CALL_FLOW = Object.freeze([
     { n: 1, call: "stripTrailingSqlTerminator / formatSql", where: "Browser · tuning_assistant.js", detail: "빈 SQL을 차단하고 마지막 세미콜론 하나를 제거한 뒤 formatting한다. 원문 의미를 바꾸는 서버 판정은 하지 않는다." },
-    { n: 2, call: "POST /api/asta/analyze", where: "Browser → FastAPI", detail: "sql/sql_text, logical source_db_id, profile, workload, 참고사항과 ASYNC option을 JSON으로 보낸다." },
+    { n: 2, call: "POST /api/asta/analyze", where: "Browser → FastAPI", detail: "sql/sql_text, logical source_db_id, profile, workload, 참고사항, execute_source_sql(기본 false), before_evidence_mode=MINIMAL과 ASYNC option을 JSON으로 보낸다." },
     { n: 3, call: "asta_proxy.analyze", where: "app/routers/asta_proxy.py", detail: "_coerce_payload로 입력을 정규화하고 run_id를 만든 뒤 _post_json_to_ords로 ORDS 제출 응답을 받는다." },
     { n: 4, call: "ASTA_PKG.SUBMIT_RUN", where: "ORDS asta.v1 → Target ADB", detail: "SQL Guard, idempotency/run 충돌을 확인하고 ASTA_RUNS에 QUEUED를 저장한 뒤 Scheduler job을 enable한다." },
     { n: 5, call: "ASTA_PKG.EXECUTE_RUN", where: "Target ADB · DBMS_SCHEDULER", detail: "QUEUED/RETRY row를 잠가 RUNNING으로 바꾸고 저장된 request_json을 읽는다." },
     { n: 6, call: "ASTA_PKG.RUN_PIPELINE", where: "Target ADB", detail: "1~11 호환 progress를 기록하며 실제 의존 순서 3→4→5→9→6→7→8→11→10을 조정한다." },
     { n: 7, call: "ASTA_SQL_GUARD_PKG.ASSERT_SAFE_SELECT", where: "Target ADB", detail: "단일 SELECT/WITH인지 실행 직전에 다시 검사한다. DML/DDL, PL/SQL, 다중 문장, FOR UPDATE는 Source로 보내지 않는다." },
     { n: 8, call: "ASTA_SOURCE_BRIDGE_PKG.RUN_SOURCE_EVIDENCE", where: "Target ADB → DB Link", detail: "GET_CONNECTION_JSON의 allowlist mapping을 사용해 원본 SQL을 Source package에 전달하고 chunk 결과를 CLOB으로 조립한다." },
-    { n: 9, call: "ASTA_SOURCE_PKG.RUN_EVIDENCE_STORE_PROC", where: "Source DB", detail: "execute_source_sql=false면 ESTIMATED_PLAN으로 EXPLAIN PLAN과 객체정보만 저장하고, true면 RUN_EVIDENCE를 호출해 metrics, DBMS_XPLAN.DISPLAY_CURSOR, full count/digest를 저장한다." },
-    { n: 10, call: "ASTA_VECTOR_PKG.SEARCH_SIMILAR_CASES", where: "Target ADB", detail: "positive verified 사례를 검색한다. 단계 번호는 9지만 LLM 입력이므로 실제로 후보 생성보다 먼저 호출된다." },
-    { n: 11, call: "ASTA_LLM_PKG.GENERATE_SQL_ONLY_TUNING", where: "Target ADB → DBMS_CLOUD_AI.GENERATE", detail: "원본 SQL과 compact evidence로 후보를 만든다. 실행 오류 시 REPAIR_SQL_CANDIDATE를 최대 두 차례 사용할 수 있다." },
+    { n: 9, call: "ASTA_SOURCE_PKG.RUN_EVIDENCE_STORE_PROC", where: "Source DB", detail: "execute_source_sql=false면 ESTIMATED_PLAN으로 EXPLAIN PLAN과 객체정보만 저장하고 source_sql_executed=false를 반환한다. true면 RUN_EVIDENCE가 metrics, DBMS_XPLAN.DISPLAY_CURSOR, full count/digest를 저장한다." },
+    { n: 10, call: "ASTA_VECTOR_PKG.SEARCH_SIMILAR_CASES", where: "Target ADB", detail: "positive verified 사례를 검색해 raw artifact로 남긴다. 실측 실행일 때만 같은 workload의 안전한 change summary·전후 지표 패턴을 LLM 참고 정보로 축약한다. 현재 SQL/XPLAN 증거가 항상 우선이며 raw SQL 복사는 금지한다." },
+    { n: 11, call: "ASTA_PKG.VERIFIED_HISTORY_CANDIDATE / ASTA_LLM_PKG.GENERATE_SQL_ONLY_TUNING", where: "Target ADB → DBMS_CLOUD_AI.GENERATE", detail: "동일 SQL의 과거 full-result 검증 후보가 있으면 VERIFIED_HISTORY_REUSE로 재검증하고, 없으면 사용자 3단계 내부에서 검증된 과거 개선 패턴의 안전한 메타데이터를 조회한 뒤 SQL·XPLAN·compact_column_dictionary로 two-stage 후보를 만든다. Guard/Source 오류는 REPAIR_SQL_CANDIDATE 경로를 사용한다." },
     { n: 12, call: "ASTA_SOURCE_BRIDGE_PKG.RUN_SOURCE_EVIDENCE", where: "Target ADB → Source DB", detail: "미실행 모드는 후보도 ESTIMATED_PLAN으로 예상 Plan만 수집한다. 실행 opt-in이면 PLAN_ONLY 선별 후 FULL_RESULT/AUTO 재실측으로 승격한다." },
-    { n: 13, call: "ASTA_PKG.BUILD_COMPARISON_JSON", where: "Target ADB", detail: "실측 모드는 optimizer intent → full-result/metadata → bind/plan → 반복 측정/noise → workload 성능 gate 순서로 verdict를 만든다. 미실행 후보는 ANALYSIS_ONLY로 성능·동등성 미검증을 명시한다." },
-    { n: 14, call: "ASTA_VECTOR_PKG.SAVE_CASE", where: "Target ADB", detail: "gate-complete success와 rejected observation을 분리해 저장한다. 저장 실패가 comparison verdict를 개선으로 바꾸지 않는다." },
+    { n: 13, call: "ASTA_PKG.BUILD_COMPARISON_JSON", where: "Target ADB", detail: "실측 모드는 optimizer intent → full-result/metadata → bind/plan → 반복 측정/noise → workload 성능 gate 순서로 verdict를 만든다. 미실행 후보는 ANALYSIS_ONLY / ESTIMATED_PLAN_ONLY / SOURCE_SQL_NOT_EXECUTED이며 runtime과 개선율을 측정하지 않는다." },
+    { n: 14, call: "ASTA_VECTOR_PKG.SAVE_CASE", where: "Target ADB", detail: "IMPROVED는 POSITIVE_VERIFIED, ANALYSIS_ONLY는 ANALYSIS_OBSERVATION, 나머지는 REJECTED_OBSERVATION으로 분리한다. 저장 실패가 comparison verdict를 바꾸지 않는다." },
     { n: 15, call: "ASTA_REPORT_PKG.BUILD_REPORT", where: "Target ADB", detail: "comparison과 동일한 결론의 Markdown을 만들고 terminal progress timing을 포함하도록 다시 구성한다." },
     { n: 16, call: "ASTA_REPORT_PKG.BUILD_RESPONSE_JSON", where: "Target ADB", detail: "report와 artifact를 API JSON으로 묶어 ASTA_RUNS에 최종 status, tuned_sql, report, response를 commit한다." },
-    { n: 17, call: "pollRunProgress / fetchReport", where: "Browser", detail: "GET /api/asta/runs/{run_id}/progress를 1초 간격으로 조회하고 terminal이면 GET /api/asta/runs/{run_id}/report를 한 번 가져온다." },
+    { n: 17, call: "pollRunProgress / fetchReport", where: "Browser", detail: "GET /api/asta/runs/{run_id}/progress의 progress와 llm_calls 요약을 1초 간격으로 조회한다. Prompt·응답 원문 보기는 get_run_llm_call → ASTA_PKG.GET_LLM_CALL을 통해 GET /api/asta/runs/{run_id}/llm-calls/{call_id} 한 건만 lazy-load하며, terminal이면 GET /api/asta/runs/{run_id}/report를 가져온다." },
     { n: 18, call: "renderResult / renderReportTabs", where: "Browser", detail: "안전하게 redaction한 Markdown을 6개 탭 DOM으로 표시한다. 원문은 window.__astaLastReport.rawReport에 분리한다." },
-    { n: 19, call: "downloadText", where: "Browser", detail: "보고서 다운로드를 누르면 rawReport를 로컬 Markdown 파일로 저장한다. 서버 download endpoint는 GET /api/asta/runs/{run_id}/report/download다." },
+    { n: 19, call: "downloadText", where: "Browser", detail: "보고서 다운로드 버튼은 브라우저의 downloadText로 rawReport를 로컬 Markdown 파일에 저장한다. 조회용 서버 경로는 GET /api/asta/runs/{run_id}/report, GET /api/asta/runs/{run_id}/report/view, GET /api/asta/runs/{run_id}/report/download다." },
   ]);
   const ASTA_DEVELOPER_BRANCHES = Object.freeze([
     { code: "SQL_GUARD_REJECTED", result: "제출 또는 실행 직전 차단", action: "Source SQL 미실행 · 원본 SQL 유지" },
-    { code: "ANALYSIS_ONLY", result: "execute_source_sql=false에서 후보와 예상 Plan 생성", action: "정상 분석 완료 · Source runtime metrics/동등성/반복 성능은 미검증" },
-    { code: "NO_REWRITE", result: "안전한 구조 후보 없음", action: "7단계 SKIPPED · retain_original_sql=true" },
-    { code: "CANDIDATE_FAILED / CANDIDATE_RUNTIME_LIMIT", result: "후보 Oracle 오류 또는 시간 초과", action: "repair 후에도 실패하면 원본 재실측 artifact와 실패 verdict 보존" },
+    { code: "ANALYSIS_ONLY / ESTIMATED_PLAN_ONLY / SOURCE_SQL_NOT_EXECUTED", result: "execute_source_sql=false에서 후보와 예상 Plan 생성", action: "정상 분석 완료 · source_runtime_metrics_status=NOT_MEASURED · runtime_verification_status=NOT_EXECUTED · equivalence_status=NOT_EVALUATED · repeat_performance_status=NOT_MEASURED" },
+    { code: "PLAN_SCREEN_* reason", result: "PLAN_SCREEN_*는 verdict가 아니라 사용자 4~5단계의 선별 reason", action: "comparison verdict=NOT_IMPROVED · full_result_executed=false · 원본 SQL 유지" },
+    { code: "CANDIDATE_RUNTIME_LIMIT error_code", result: "CANDIDATE_RUNTIME_LIMIT은 comparison verdict가 아니라 Run error_code", action: "watchdog이 ADB parent job을 종료하며 원본 SQL 유지" },
+    { code: "NO_REWRITE", result: "안전한 구조 후보 없음", action: "후속 검증 SKIPPED · retain_original_sql=true" },
+    { code: "CANDIDATE_FAILED", result: "후보 Guard/Oracle 오류가 repair 후에도 남음", action: "comparison 실패 artifact와 사용자 2단계 원본 근거를 보존하고 원본 SQL 유지" },
     { code: "NON_EQUIVALENT", result: "result/metadata digest 불일치", action: "성능이 좋아도 후보 사용 금지 · 원본 SQL 유지" },
     { code: "INSUFFICIENT_EVIDENCE", result: "intent/full-result/bind/반복 측정 중 하나가 불완전", action: "fail-closed · 원본 SQL 유지" },
     { code: "NOT_IMPROVED", result: "동등하지만 workload 성능 기준 미달", action: "원본 SQL 유지" },
@@ -983,7 +955,7 @@ ORDER BY SRC.COMP_CD, SRC.BRAND_CD, SRC.ITEM_CD`,
   ]);
   const ASTA_DEVELOPER_TRACE = Object.freeze([
     "화면의 Run ID와 최초 FAILED/BLOCKED 단계 code를 먼저 확보한다. SQL·bind·credential을 운영 메신저나 인계 문서에 복사하지 않는다.",
-    "GET /api/asta/runs/{run_id}/progress로 ASTA_RUN_PROGRESS의 status/detail/timing을 확인하고, terminal이면 /report와 필요 시 /runs/{run_id}를 대조한다.",
+    "GET /api/asta/runs/{run_id}/progress로 ASTA_RUN_PROGRESS와 llm_calls 요약을 확인한다. 필요한 한 호출만 GET /api/asta/runs/{run_id}/llm-calls/{call_id}로 보고, terminal이면 GET /api/asta/runs/{run_id}/report와 필요 시 GET /api/asta/runs/{run_id}를 대조한다.",
     "API 서버 감사는 app/asta_audit.py가 쓰는 logs/asta/asta_request_audit.jsonl에서 run_id_prefix/hash와 endpoint event를 찾는다. 이 로그는 SQL 원문을 저장하지 않는다.",
     "ADB에서는 ASTA_RUNS, ASTA_RUN_PROGRESS, ASTA_LLM_CALL_LOG와 해당 run의 Scheduler job을 확인한다. Source 장기 작업은 ASTA_RUN_ID marker 소유 관계를 확인한 뒤에만 중단을 검토한다.",
     "정적 회귀: pytest -q tests/test_asta_manual_dialog.py tests/test_asta_developer_manual_contract.py",
@@ -1079,18 +1051,34 @@ ORDER BY SRC.COMP_CD, SRC.BRAND_CD, SRC.ITEM_CD`,
       </aside>`;
   }
 
-  /** 11단계별 실행 영역, package/procedure, 상세 처리와 실패 동작을 렌더링한다. */
+  /** 내부 9단계를 사용자가 보는 연속 7단계로 묶어 매뉴얼과 진행 Drawer의 순서를 맞춘다. */
+  function userWorkflowGuide() {
+    const preparation = ASTA_WORKFLOW_GUIDE.slice(0, 3);
+    return [{
+      seq: 1,
+      code: "REQUEST_PREPARATION",
+      title: "요청 및 분석 준비",
+      zone: "User / 개발자 → UI (VM) → OCI AI Lakehouse",
+      procedure: "FastAPI asta_proxy.analyze → ASTA_PKG.SUBMIT_RUN / EXECUTE_RUN → ASTA_SQL_GUARD_PKG.ASSERT_SAFE_SELECT",
+      tasks: preparation.flatMap((step) => step.tasks),
+      evidence: "요청 접수, 비동기 분석 서버 연결, read-only SQL Guard 완료 상태와 timing을 하나의 준비 단계로 표시합니다.",
+      failure: "요청 형식, Scheduler 연결 또는 SQL Guard가 실패하면 Source SQL 실행 전에 이 단계에서 중단합니다.",
+    }, ...ASTA_WORKFLOW_GUIDE.slice(3).map((step, index) => ({ ...step, seq: index + 2 }))];
+  }
+
+  /** 사용자 화면 7단계의 실행 영역, package/procedure, 상세 처리와 실패 동작을 렌더링한다. */
   function renderWorkflowManual() {
+    const visibleSteps = userWorkflowGuide();
     return `
       <div class="tuning-manual-workflow-note">
-        <strong>호환 단계 번호와 실제 호출 순서</strong>
-        <span>화면/API 번호는 1~11을 유지하지만 실제 호출은 9 → 6 순서입니다. 현재 Vector 검색 결과는 artifact로만 보존되고 6단계 prompt에는 아직 포함되지 않습니다. 종료부는 11 저장 결과를 포함해 10 결과서를 완성합니다.</span>
+        <strong>화면 진행 순서</strong>
+        <span>3번 개선 SQL 만들기에서만 검증된 과거 개선 패턴을 안전한 요약으로 프롬프트에 추가할 수 있습니다. 현재 SQL/XPLAN 증거가 항상 우선이며 과거 SQL 원문이나 identifier/literal/predicate는 복사하지 않습니다. 실제로 추가된 내용은 결과서에서 확인합니다.</span>
       </div>
       <div class="tuning-manual-workflow-list">
-        ${ASTA_WORKFLOW_GUIDE.map((step) => `
-          <article class="tuning-manual-workflow-card" data-manual-step="${step.seq}">
+        ${visibleSteps.map((step, index) => `
+          <article class="tuning-manual-workflow-card" data-manual-step="${index + 1}">
             <div class="tuning-manual-workflow-head">
-              <span class="tuning-manual-step-number">${step.seq}</span>
+              <span class="tuning-manual-step-number">${index + 1}</span>
               <div>
                 <span class="tuning-manual-step-code">${escapeHtml(step.code)}</span>
                 <h3>${escapeHtml(step.title)}</h3>
@@ -1136,12 +1124,12 @@ ORDER BY SRC.COMP_CD, SRC.BRAND_CD, SRC.ITEM_CD`,
       <section class="tuning-manual-developer-section" aria-labelledby="asta-developer-flow-title">
         <div class="tuning-manual-developer-heading">
           <div><span class="tuning-manual-eyebrow">End-to-end</span><h3 id="asta-developer-flow-title">버튼 클릭부터 보고서 다운로드까지</h3></div>
-          <p>화면의 11단계 번호와 별개로, 개발자가 call stack을 따라가는 실제 호출 순서입니다.</p>
+          <p>화면의 연속 7단계와 별개로, 개발자가 내부 call stack을 따라가는 실제 호출 순서입니다.</p>
         </div>
         <ol class="tuning-manual-call-flow">
-          ${ASTA_DEVELOPER_CALL_FLOW.map((item) => `
+          ${ASTA_DEVELOPER_CALL_FLOW.filter((item) => item.n !== 10).map((item, index) => `
             <li>
-              <span class="tuning-manual-call-number">${item.n}</span>
+              <span class="tuning-manual-call-number">${index + 1}</span>
               <div><strong>${escapeHtml(item.call)}</strong><small>${escapeHtml(item.where)}</small><p>${escapeHtml(item.detail)}</p></div>
             </li>
           `).join("")}
@@ -1274,8 +1262,49 @@ ORDER BY SRC.COMP_CD, SRC.BRAND_CD, SRC.ITEM_CD`,
     return logs;
   }
 
+  /** 내부 접수·연결·Guard를 사용자가 읽는 하나의 준비 단계로 묶는다. */
+  function progressDrawerSteps(steps) {
+    const preparation = steps.filter((step) => Number(step.seq) >= 1 && Number(step.seq) <= 3);
+    if (preparation.length !== 3) return steps;
+    const failed = preparation.find((step) => ["FAILED", "ERROR", "BLOCKED", "REJECTED"].includes(String(step.status || "").toUpperCase()));
+    const running = preparation.find((step) => String(step.status || "").toUpperCase() === "RUNNING");
+    const pending = preparation.find((step) => String(step.status || "").toUpperCase() === "PENDING");
+    const status = failed ? failed.status : running ? "RUNNING" : pending ? "PENDING" : "DONE";
+    const active = failed || running || pending || preparation[2];
+    const detail = failed
+      ? active.detail || "요청 및 분석 준비 중 문제가 발생했습니다."
+      : running
+        ? `${active.label}: ${active.detail || "진행 중"}`
+        : pending
+          ? "요청 접수·분석 서버 연결·입력 SQL 확인 대기"
+          : "요청 접수·분석 서버 연결·입력 SQL 확인 완료";
+    const elapsed = preparation.reduce((total, step) => total + (Number(step.elapsed_ms) || 0), 0);
+    return [{
+      seq: "1", code: "REQUEST_PREPARATION", label: "요청 및 분석 준비", status, detail,
+      at: preparation[0].at,
+      started_at: preparation[0].started_at || preparation[0].at || null,
+      completed_at: pending || running ? null : preparation[2].completed_at || null,
+      elapsed_ms: elapsed || null,
+    }, ...steps.filter((step) => Number(step.seq) >= 4).map((step, index) => ({
+      ...step,
+      internal_seq: step.seq,
+      seq: index + 2,
+    }))];
+  }
+
   /** 상세보기에서 한 단계의 상태, timing, 로그를 렌더링한다. */
-  function renderProgressDetailStep(step, isComplete, llmCalls = [], runId = "") {
+  function renderCandidateSqlPreview(candidateSql, status) {
+    const sql = String(candidateSql || "").trim();
+    if (sql) {
+      return `<section class="tuning-candidate-sql-preview" aria-label="생성된 개선 SQL"><strong>생성된 개선 SQL</strong><span>${escapeHtml(sql.length.toLocaleString())}자 · 이후 안전성·성능 검증이 계속됩니다.</span><details open><summary>SQL 보기</summary><pre><code>${escapeHtml(sql)}</code></pre></details></section>`;
+    }
+    if (["RUNNING", "PENDING"].includes(String(status || "").toUpperCase())) {
+      return `<section class="tuning-candidate-sql-preview"><strong>생성된 개선 SQL</strong><span>LLM 응답을 기다리는 중입니다. 응답을 받으면 여기에 SQL을 표시합니다.</span></section>`;
+    }
+    return `<section class="tuning-candidate-sql-preview"><strong>생성된 개선 SQL</strong><span>안전한 개선 SQL을 만들지 못해 원본 SQL을 유지합니다.</span></section>`;
+  }
+
+  function renderProgressDetailStep(step, isComplete, llmCalls = [], runId = "", candidateSql = "") {
     const status = String(step?.status || "PENDING").toUpperCase();
     const statusClass = ["RUNNING", "DONE", "COMPLETED", "SKIPPED", "FAILED", "ERROR", "BLOCKED", "REJECTED"].includes(status)
       ? status.toLowerCase() : "pending";
@@ -1301,20 +1330,20 @@ ORDER BY SRC.COMP_CD, SRC.BRAND_CD, SRC.ITEM_CD`,
           <div class="tuning-progress-step-log-title">단계 로그</div>
           <ul class="tuning-progress-step-logs" data-progress-log-signature="${escapeHtml(logs.join("\n"))}">${logs.map((line) => `<li class="tuning-progress-step-log">${escapeHtml(line)}</li>`).join("")}</ul>
           ${String(step.code || "").toUpperCase() === "LLM_REWRITE"
-            ? `<div class="tuning-llm-call-host" data-llm-call-signature="${escapeHtml(llmCallSignature(llmCalls))}">${renderLlmCallActivity(llmCalls, runId)}</div>`
+            ? `<div class="tuning-candidate-sql-host">${renderCandidateSqlPreview(candidateSql, status)}</div><div class="tuning-llm-call-host" data-llm-call-signature="${escapeHtml(llmCallSignature(llmCalls))}">${renderLlmCallActivity(llmCalls, runId)}</div>`
             : ""}
         </div>
       </details>`;
   }
 
-  /** 4단계의 실제 Source 작업 범위를 표시하되 확인되지 않은 세부 진척은 추정하지 않는다. */
+  /** 사용자 2단계의 실제 Source 작업 범위를 표시하되 확인되지 않은 세부 진척은 추정하지 않는다. */
   function renderBeforeEvidenceActivity() {
     const executeSourceSql = Boolean(document.getElementById("asta-execute-source-sql")?.checked);
     if (!executeSourceSql) {
       return `
-        <section class="tuning-before-evidence-activity" aria-label="4단계 원본 SQL 예상계획 수집 상세">
+        <section class="tuning-before-evidence-activity" aria-label="2단계 원본 SQL 예상계획 수집 상세">
           <div class="tuning-before-evidence-heading">
-            <strong>4단계에서 수행 중인 작업</strong>
+            <strong>2단계에서 수행 중인 작업</strong>
             <span>Source DB 미실행 안전 모드</span>
           </div>
           <ol class="tuning-before-evidence-tasks">
@@ -1327,9 +1356,9 @@ ORDER BY SRC.COMP_CD, SRC.BRAND_CD, SRC.ITEM_CD`,
     }
     const policy = { execution: "제한 실행 1회", executionDetail: "워밍업·반복 측정 없음", total: "최대 3회", full: true };
     return `
-      <section class="tuning-before-evidence-activity" aria-label="4단계 원본 SQL 실행 정보 수집 상세">
+      <section class="tuning-before-evidence-activity" aria-label="2단계 원본 SQL 실행 정보 수집 상세">
         <div class="tuning-before-evidence-heading">
-          <strong>4단계에서 수행 중인 작업</strong>
+          <strong>2단계에서 수행 중인 작업</strong>
           <span>Source DB 단일 호출</span>
         </div>
         <ol class="tuning-before-evidence-tasks">
@@ -1445,7 +1474,7 @@ ORDER BY SRC.COMP_CD, SRC.BRAND_CD, SRC.ITEM_CD`,
         </article>`;
     }).join("");
     return `
-      <section class="tuning-llm-call-activity" aria-label="6단계 LLM 요청과 응답 상세">
+      <section class="tuning-llm-call-activity" aria-label="3단계 LLM 요청과 응답 상세">
         <div class="tuning-llm-call-heading"><strong>LLM 요청·응답</strong><span>${escapeHtml(calls.length)}회</span></div>
         <p>목록은 progress에서 실시간 조회합니다. 원문은 버튼을 누를 때만 별도 API로 불러옵니다.</p>
         <div class="tuning-llm-call-list">${rows}</div>
@@ -1515,7 +1544,7 @@ ORDER BY SRC.COMP_CD, SRC.BRAND_CD, SRC.ITEM_CD`,
     const previous = PROGRESS_LOG_STATE.get(target);
     const state = previous?.runId === runId ? previous.signatures : new Map();
     const next = new Map();
-    steps.forEach((step) => {
+    progressDrawerSteps(steps).forEach((step) => {
       const status = String(step.status || "PENDING").toUpperCase();
       const signature = [status, step.started_at || step.at || "", step.completed_at || "", step.elapsed_ms ?? "", step.detail || ""].join("|");
       next.set(step.code, signature);
@@ -1534,7 +1563,7 @@ ORDER BY SRC.COMP_CD, SRC.BRAND_CD, SRC.ITEM_CD`,
 
   /** 같은 Run의 DOM 골격을 유지한 채 현재 단계와 각 카드만 부분 갱신한다. */
   function refreshProgressView(target, steps, options) {
-    const { isComplete, detail, totalElapsedText, label, compactLabel, dotClass, isRunning, isFailed, beforeEvidenceRunning, llmCalls, runId } = options;
+    const { isComplete, detail, totalElapsedText, label, compactLabel, dotClass, isRunning, isFailed, beforeEvidenceRunning, llmCalls, runId, candidateSql } = options;
     const running = steps.find((step) => String(step.status || "").toUpperCase() === "RUNNING");
     const failed = steps.find((step) => ["FAILED", "ERROR", "BLOCKED", "REJECTED"].includes(String(step.status || "").toUpperCase()));
     const done = steps.filter((step) => ["DONE", "COMPLETED"].includes(String(step.status || "").toUpperCase()));
@@ -1603,6 +1632,9 @@ ORDER BY SRC.COMP_CD, SRC.BRAND_CD, SRC.ITEM_CD`,
         logsElement.innerHTML = logs.map((line) => `<li class="tuning-progress-step-log">${escapeHtml(line)}</li>`).join("");
       }
     });
+    const candidateHost = target.querySelector(".tuning-candidate-sql-host");
+    const llmStep = steps.find((step) => String(step.code || "").toUpperCase() === "LLM_REWRITE");
+    if (candidateHost && llmStep) candidateHost.innerHTML = renderCandidateSqlPreview(candidateSql, llmStep.status);
     refreshLlmCallActivity(target, llmCalls, runId);
   }
 
@@ -2009,37 +2041,37 @@ ORDER BY SRC.COMP_CD, SRC.BRAND_CD, SRC.ITEM_CD`,
    * 진행 단계 코드를 UI 단계 순서 인덱스로 변환한다.
    */
   function progressStageIndex(step) {
-    const seq = Number(step?.seq);
-    if (Number.isInteger(seq) && seq >= 1 && seq <= DEFAULT_STEPS.length) return seq - 1;
-
     const code = String(step?.code || "").toUpperCase();
     const codeMap = {
       REQUEST_RECEIVED: 0,
       ORDS_DISPATCH: 1,
       SQL_GUARD: 2,
       BEFORE_EVIDENCE: 3,
-      SQL_TUNING_ADVISOR: 4,
-      LLM_REWRITE: 5,
-      AFTER_EVIDENCE: 6,
-      BEFORE_AFTER_COMPARE: 7,
-      LLM_FINAL_REVIEW: 7,
-      VECTOR_KB: 8,
-      FINAL_REPORT: 9,
-      VECTOR_SAVE: 10,
+      SQL_TUNING_ADVISOR: -1,
+      LLM_REWRITE: 4,
+      AFTER_EVIDENCE: 5,
+      BEFORE_AFTER_COMPARE: 6,
+      LLM_FINAL_REVIEW: 6,
+      VECTOR_KB: -1,
+      FINAL_REPORT: 7,
+      VECTOR_SAVE: 8,
     };
     if (Object.prototype.hasOwnProperty.call(codeMap, code)) return codeMap[code];
+
+    const seq = Number(step?.seq);
+    if (Number.isInteger(seq) && seq >= 1 && seq <= DEFAULT_STEPS.length) return seq - 1;
 
     const raw = `${step.stage || ""} ${step.code || ""} ${step.label || ""} ${step.message || ""}`.toLowerCase();
     if (raw.includes("accepted") || raw.includes("request") || raw.includes("queued") || raw.includes("요청")) return 0;
     if (raw.includes("ords") || raw.includes("dispatch") || raw.includes("proxy") || raw.includes("호출")) return 1;
     if (raw.includes("guard") || raw.includes("safe") || raw.includes("안전")) return 2;
-    if (raw.includes("sqltune") || raw.includes("advisor") || raw.includes("dbms_sqltune")) return 4;
-    if (raw.includes("vector_save") || raw.includes("save_case") || raw.includes("auto_vector_save") || (raw.includes("vector") && (raw.includes("save") || raw.includes("저장")))) return 10;
-    if (raw.includes("final_report") || raw.includes("report") || raw.includes("최종 보고서") || raw.includes("추천") || raw.includes("결과")) return 9;
-    if (raw.includes("final_review") || raw.includes("second") || raw.includes("2차") || raw.includes("before/after")) return 8;
-    if (raw.includes("candidate") || raw.includes("after") || raw.includes("equiv") || raw.includes("변경") || raw.includes("재수행") || raw.includes("비교")) return 7;
-    if (raw.includes("genai_first") || raw.includes("first_pass") || raw.includes("rewrite") || raw.includes("1차") || raw.includes("후보")) return 6;
-    if (raw.includes("vector") || raw.includes("similar") || raw.includes("유사")) return 5;
+    if (raw.includes("sqltune") || raw.includes("advisor") || raw.includes("dbms_sqltune")) return -1;
+    if (raw.includes("vector_save") || raw.includes("save_case") || raw.includes("auto_vector_save") || (raw.includes("vector") && (raw.includes("save") || raw.includes("저장")))) return 8;
+    if (raw.includes("final_report") || raw.includes("report") || raw.includes("최종 보고서") || raw.includes("추천") || raw.includes("결과")) return 7;
+    if (raw.includes("final_review") || raw.includes("second") || raw.includes("2차") || raw.includes("before/after")) return 6;
+    if (raw.includes("candidate") || raw.includes("after") || raw.includes("equiv") || raw.includes("변경") || raw.includes("재수행") || raw.includes("비교")) return 6;
+    if (raw.includes("genai_first") || raw.includes("first_pass") || raw.includes("rewrite") || raw.includes("1차") || raw.includes("후보")) return 4;
+    if (raw.includes("vector") || raw.includes("similar") || raw.includes("유사")) return 4;
     if (raw.includes("baseline") || raw.includes("before") || raw.includes("원본") || raw.includes("xplan") || raw.includes("metrics")) return 3;
     return null;
   }
@@ -2056,6 +2088,7 @@ ORDER BY SRC.COMP_CD, SRC.BRAND_CD, SRC.ITEM_CD`,
     }));
     incoming.forEach((rawStep, rawIndex) => {
       const mappedIndex = progressStageIndex(rawStep);
+      if (mappedIndex === -1) return;
       const index = mappedIndex == null ? Math.min(rawIndex, DEFAULT_STEPS.length - 1) : mappedIndex;
       const base = DEFAULT_STEPS[index];
       byIndex[index] = {
@@ -2075,11 +2108,11 @@ ORDER BY SRC.COMP_CD, SRC.BRAND_CD, SRC.ITEM_CD`,
     if (progressedBeyondOrds && String(byIndex[1].status || "PENDING").toUpperCase() === "PENDING") {
       byIndex[1] = { ...byIndex[1], status: "DONE", detail: "ADB ORDS 분석 호출 완료" };
     }
-    if (String(byIndex[7].status || "PENDING").toUpperCase() !== "PENDING" && String(byIndex[6].status || "PENDING").toUpperCase() === "PENDING") {
-      byIndex[6] = { ...byIndex[6], status: "DONE", detail: "AI 1차 튜닝 완료" };
+    if (String(byIndex[6].status || "PENDING").toUpperCase() !== "PENDING" && String(byIndex[5].status || "PENDING").toUpperCase() === "PENDING") {
+      byIndex[5] = { ...byIndex[5], status: "DONE", detail: "개선 SQL 생성 완료" };
     }
-    if (String(byIndex[10].status || "PENDING").toUpperCase() !== "PENDING" && String(byIndex[8].status || "PENDING").toUpperCase() === "PENDING") {
-      byIndex[8] = { ...byIndex[8], status: "DONE", detail: "AI Before/After 정리 완료" };
+    if (String(byIndex[8].status || "PENDING").toUpperCase() !== "PENDING" && String(byIndex[7].status || "PENDING").toUpperCase() === "PENDING") {
+      byIndex[7] = { ...byIndex[7], status: "DONE", detail: "결과서 생성 완료" };
     }
     const overall = String(progress?.status || "").toUpperCase();
     const doneStatuses = ["DONE", "COMPLETED", "SUCCESS", "ACCEPTED", "BASELINE_CAPTURED", "DBLINK_DEFERRED", "SKIPPED"];
@@ -2110,7 +2143,7 @@ ORDER BY SRC.COMP_CD, SRC.BRAND_CD, SRC.ITEM_CD`,
     });
   }
 
-  /** 현재 진행 요약과 분리된 11단계 상세 Drawer를 연다. */
+  /** 현재 진행 요약과 분리된 사용자 7단계 상세 Drawer를 연다. */
   function openProgressDrawer(target, focusClose = true) {
     const drawer = target.querySelector(".tuning-progress-drawer");
     if (!drawer) return;
@@ -2133,16 +2166,18 @@ ORDER BY SRC.COMP_CD, SRC.BRAND_CD, SRC.ITEM_CD`,
     const drawerWasOpen = !target.querySelector(".tuning-progress-drawer")?.hidden;
     const drawerScrollTop = target.querySelector(".tuning-progress-drawer-body")?.scrollTop || 0;
     const steps = normalizeSteps(progress);
+    const drawerSteps = progressDrawerSteps(steps);
     const llmCalls = normalizeLlmCalls(progress);
+    const candidateSql = typeof progress?.candidate_sql === "string" ? progress.candidate_sql : "";
     const runId = String(progress?.run_id || progress?.runId || "").trim();
     const statusText = progress?.status || "READY";
     const overall = String(statusText || "READY").toUpperCase();
-    const running = steps.find((step) => String(step.status || "").toUpperCase() === "RUNNING");
-    const failed = steps.find((step) => ["FAILED", "ERROR", "BLOCKED", "REJECTED"].includes(String(step.status || "").toUpperCase()));
-    const completedSteps = steps.filter((step) => ["DONE", "COMPLETED"].includes(String(step.status || "").toUpperCase()));
+    const running = drawerSteps.find((step) => String(step.status || "").toUpperCase() === "RUNNING");
+    const failed = drawerSteps.find((step) => ["FAILED", "ERROR", "BLOCKED", "REJECTED"].includes(String(step.status || "").toUpperCase()));
+    const completedSteps = drawerSteps.filter((step) => ["DONE", "COMPLETED"].includes(String(step.status || "").toUpperCase()));
     const isOverallComplete = ["COMPLETED", "DONE", "BASELINE_CAPTURED"].includes(overall);
     const isOverallFailed = ["FAILED", "ERROR", "BLOCKED", "REJECTED"].includes(overall);
-    const current = isOverallComplete ? null : (isOverallFailed ? (failed || running) : (running || failed)) || completedSteps[completedSteps.length - 1] || steps[0];
+    const current = isOverallComplete ? null : (isOverallFailed ? (failed || running) : (running || failed)) || completedSteps[completedSteps.length - 1] || drawerSteps[0];
     const currentStatus = isOverallComplete ? "COMPLETED" : String(current?.status || overall || "PENDING").toUpperCase();
     const isRunning = currentStatus === "RUNNING";
     const isFailed = !isOverallComplete && (["FAILED", "ERROR", "BLOCKED", "REJECTED"].includes(currentStatus) || isOverallFailed || progress?.stale_warning || progress?.observation_level === "STALE_OR_FAILED");
@@ -2167,14 +2202,14 @@ ORDER BY SRC.COMP_CD, SRC.BRAND_CD, SRC.ITEM_CD`,
     const progressIssue = isFailed ? friendlyAstaIssue(progress, current?.detail || statusText) : null;
     const label = ready ? "대기 중" : isComplete ? "완료" : isFailed ? "확인 필요" : current?.label || statusText;
     const detail = isComplete ? "AI 분석이 종료되었습니다" : ready ? "SQL 입력 후 AI 분석 실행을 누르세요" : isFailed ? progressIssue.message : observationDetail || current?.detail || statusText;
-    const currentPosition = current ? Math.max(1, steps.indexOf(current) + 1) : steps.length;
-    const compactLabel = `${currentPosition}/${steps.length}`;
+    const currentPosition = current ? Math.max(1, drawerSteps.indexOf(current) + 1) : drawerSteps.length;
+    const compactLabel = `${currentPosition}/${drawerSteps.length}`;
     const dotClass = isFailed ? "failed" : isComplete ? "done" : isRunning ? "running" : "pending";
     logChangedProgressSteps(target, runId, steps);
     const previousRender = PROGRESS_RENDER_STATE.get(target);
     if (previousRender?.runId === runId && target.querySelector(".tuning-current-progress")) {
-      refreshProgressView(target, steps, {
-        isComplete, detail, totalElapsedText, label, compactLabel, dotClass, isRunning, isFailed, beforeEvidenceRunning, llmCalls, runId,
+      refreshProgressView(target, drawerSteps, {
+        isComplete, detail, totalElapsedText, label, compactLabel, dotClass, isRunning, isFailed, beforeEvidenceRunning, llmCalls, runId, candidateSql,
       });
       return;
     }
@@ -2189,7 +2224,7 @@ ORDER BY SRC.COMP_CD, SRC.BRAND_CD, SRC.ITEM_CD`,
         <button class="tuning-progress-open" type="button" aria-haspopup="dialog">상세</button>
       </div>
       <div class="tuning-progress-drawer" hidden>
-        <section class="tuning-progress-drawer-panel" role="dialog" aria-modal="true" aria-label="ASTA 11단계 전체 진행상태와 로그" tabindex="-1">
+        <section class="tuning-progress-drawer-panel" role="dialog" aria-modal="true" aria-label="ASTA 사용자 7단계 전체 진행상태와 로그" tabindex="-1">
           <header class="tuning-progress-drawer-header">
             <div>
               <span class="tuning-progress-drawer-eyebrow">ASTA RUN PROGRESS</span>
@@ -2205,7 +2240,7 @@ ORDER BY SRC.COMP_CD, SRC.BRAND_CD, SRC.ITEM_CD`,
             </div>
             <div class="tuning-before-evidence-host"${beforeEvidenceRunning ? "" : " hidden"}>${renderBeforeEvidenceActivity()}</div>
             <div class="tuning-progress-step-list">
-              ${steps.map((step) => renderProgressDetailStep(step, isComplete, llmCalls, runId)).join("")}
+              ${drawerSteps.map((step) => renderProgressDetailStep(step, isComplete, llmCalls, runId, candidateSql)).join("")}
             </div>
           </div>
         </section>
@@ -2577,6 +2612,12 @@ ORDER BY SRC.COMP_CD, SRC.BRAND_CD, SRC.ITEM_CD`,
         .tuning-progress-step-logs { margin:2px 0 0; padding:0; list-style:none; }
         .tuning-progress-step-log { color:#475569; font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; font-size:9px; line-height:1.45; overflow-wrap:anywhere; }
         .tuning-llm-call-activity { margin-top:8px; padding:9px; border:1px solid #c7d2fe; border-radius:9px; background:#f5f7ff; }
+        .tuning-candidate-sql-preview { display:grid; gap:5px; margin-top:8px; padding:9px; border:1px solid #86efac; border-radius:9px; background:#f0fdf4; }
+        .tuning-candidate-sql-preview > strong { color:#166534; font-size:11px; }
+        .tuning-candidate-sql-preview > span { color:#166534; font-size:9px; line-height:1.45; }
+        .tuning-candidate-sql-preview details { margin-top:3px; }
+        .tuning-candidate-sql-preview summary { cursor:pointer; color:#166534; font-size:10px; font-weight:750; }
+        .tuning-candidate-sql-preview pre { max-height:300px; margin:6px 0 0; overflow:auto; padding:8px; border-radius:7px; background:#102018; color:#dcfce7; font:10px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; white-space:pre; }
         .tuning-llm-call-heading { display:flex; align-items:center; justify-content:space-between; gap:8px; }
         .tuning-llm-call-heading strong { color:#312e81; font-size:11px; }
         .tuning-llm-call-heading span { padding:2px 6px; border-radius:999px; background:#e0e7ff; color:#4338ca; font-size:9px; font-weight:800; }
@@ -3097,13 +3138,13 @@ ORDER BY SRC.COMP_CD, SRC.BRAND_CD, SRC.ITEM_CD`,
               <div>
                 <span class="tuning-manual-eyebrow">ASTA Guide</span>
                 <h2 id="asta-manual-title">매뉴얼 및 사용설명</h2>
-                <p>구성 영역별 책임, 실제 11단계 흐름, 개발자용 파일·함수·추적 절차를 확인합니다.</p>
+                <p>구성 영역별 책임, 사용자 7단계 흐름, 개발자용 파일·함수·추적 절차를 확인합니다.</p>
               </div>
               <button class="tuning-manual-close" type="button" aria-label="매뉴얼 닫기">닫기</button>
             </header>
             <div class="tuning-manual-tabs" role="tablist" aria-label="ASTA 도움말 목차">
               <button id="asta-manual-tab-architecture" class="tuning-manual-tab" type="button" role="tab" aria-selected="true" aria-controls="asta-manual-architecture" data-manual-tab="architecture"><span class="tuning-manual-tab-index">01</span><span class="tuning-manual-tab-label">아키텍처</span></button>
-              <button id="asta-manual-tab-workflow" class="tuning-manual-tab" type="button" role="tab" aria-selected="false" aria-controls="asta-manual-workflow" data-manual-tab="workflow" tabindex="-1"><span class="tuning-manual-tab-index">02</span><span class="tuning-manual-tab-label">11단계 Workflow</span></button>
+              <button id="asta-manual-tab-workflow" class="tuning-manual-tab" type="button" role="tab" aria-selected="false" aria-controls="asta-manual-workflow" data-manual-tab="workflow" tabindex="-1"><span class="tuning-manual-tab-index">02</span><span class="tuning-manual-tab-label">분석 Workflow</span></button>
               <button id="asta-manual-tab-developer" class="tuning-manual-tab" type="button" role="tab" aria-selected="false" aria-controls="asta-manual-developer" data-manual-tab="developer" tabindex="-1"><span class="tuning-manual-tab-index">03</span><span class="tuning-manual-tab-label">개발자 실행 추적</span></button>
             </div>
             <div class="tuning-manual-content">
@@ -3422,13 +3463,11 @@ ORDER BY SRC.COMP_CD, SRC.BRAND_CD, SRC.ITEM_CD`,
         executeSourceSqlInput?.checked
           ? "원본 SQL 실제 실행 Evidence 수집: metrics, SQL_ID, XPLAN, object 통계"
           : "원본 SQL 미실행: EXPLAIN PLAN 예상계획과 객체 통계·인덱스 수집",
-        "SQL Advisor 생략 (기본 OFF)",
-        "ADB Vector KB 유사 결과서 조회",
-        "AI 1차 튜닝: 분석결과 + Vector 사례 참조",
+        "AI 개선 SQL 생성: 현재 분석결과 + 검증된 유사 개선 패턴의 안전한 참고",
         "튜닝 SQL 분석: 튜닝 SQL 재수행/비교",
         "AI Before/After 정리",
         "최종 보고서 생성",
-        "ADB Vector KB 결과서 저장",
+        "검증 결과 저장",
       ];
       runButton.disabled = true;
       runButton.textContent = "분석중";
@@ -3555,5 +3594,99 @@ ORDER BY SRC.COMP_CD, SRC.BRAND_CD, SRC.ITEM_CD`,
         if (!completedOk) runButton.disabled = false;
       }
     });
+  };
+
+  /** 최근 고객 튜닝 요청을 조회하고 선택한 결과서를 안전한 별도 viewer로 연다. */
+  window.Views.tuningHistory = async function tuningHistory() {
+    const main = document.getElementById("main");
+    main.innerHTML = `
+      <style>
+        .asta-history { max-width:1180px; margin:0 auto; color:var(--text); }
+        .asta-history-head { display:flex; justify-content:space-between; align-items:end; gap:16px; margin-bottom:18px; }
+        .asta-history-head h1 { margin:0; font-size:28px; }
+        .asta-history-head p { margin:6px 0 0; color:var(--text-muted); }
+        .asta-history-refresh { white-space:nowrap; }
+        .asta-history-search { display:flex; gap:8px; margin:0 0 18px; }.asta-history-search input { flex:1; min-width:0; }
+        .asta-history-grid { display:grid; grid-template-columns:minmax(0,1fr) minmax(340px,.9fr); gap:18px; }
+        .asta-history-list, .asta-history-detail { background:var(--surface); border:1px solid var(--border); border-radius:14px; box-shadow:var(--shadow-sm); }
+        .asta-history-list { overflow:hidden; }
+        .asta-history-row { width:100%; border:0; border-bottom:1px solid var(--border); background:transparent; padding:15px 17px; text-align:left; cursor:pointer; color:inherit; }
+        .asta-history-row:hover, .asta-history-row[aria-current="true"] { background:var(--surface-alt); }
+        .asta-history-row:last-child { border-bottom:0; }
+        .asta-history-row-top { display:flex; gap:9px; align-items:center; justify-content:space-between; }
+        .asta-history-run { font:600 12px ui-monospace,SFMono-Regular,Menlo,monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .asta-history-badge { padding:3px 8px; border-radius:999px; font-size:11px; background:#e8edf5; color:#334155; white-space:nowrap; }
+        .asta-history-badge.improved { background:#dcfce7; color:#166534; }.asta-history-badge.failed { background:#fee2e2; color:#991b1b; }.asta-history-badge.analysis { background:#fef3c7; color:#92400e; }
+        .asta-history-meta, .asta-history-sql { margin-top:7px; color:var(--text-muted); font-size:12px; }
+        .asta-history-sql { color:var(--text); font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .asta-history-detail { padding:20px; min-height:330px; }.asta-history-detail h2 { margin:0 0 8px; font-size:17px; }.asta-history-detail code { word-break:break-all; }
+        .asta-history-detail pre { white-space:pre-wrap; overflow:auto; max-height:280px; padding:12px; background:#0f172a; color:#e2e8f0; border-radius:9px; font-size:12px; }
+        .asta-history-actions { display:flex; flex-wrap:wrap; gap:8px; margin:16px 0; }.asta-history-empty { padding:30px; color:var(--text-muted); text-align:center; }
+        @media (max-width:800px) { .asta-history-grid { grid-template-columns:1fr; }.asta-history-head { align-items:start; flex-direction:column; }.asta-history-detail { min-height:auto; } }
+      </style>
+      <section class="asta-history">
+        <header class="asta-history-head"><div><h1>Tuning History</h1><p>고객이 요청한 SQL과 분석 결과서를 최근 요청 순으로 확인합니다.</p></div><button id="asta-history-refresh" class="btn btn-secondary asta-history-refresh" type="button">새로고침</button></header>
+        <form id="asta-history-search" class="asta-history-search"><input id="asta-history-query" class="input" type="search" maxlength="200" placeholder="Run ID 또는 SQL 키워드로 검색" aria-label="Run ID 또는 SQL 키워드 검색" /><button class="btn btn-primary" type="submit">조회</button></form>
+        <div class="asta-history-grid"><div id="asta-history-list" class="asta-history-list" aria-live="polite"><div class="asta-history-empty">튜닝 이력을 불러오는 중입니다.</div></div><aside id="asta-history-detail" class="asta-history-detail"><div class="asta-history-empty">왼쪽 목록에서 요청을 선택하면 SQL과 결과서 링크를 확인할 수 있습니다.</div></aside></div>
+      </section>`;
+    const list = document.getElementById("asta-history-list");
+    const detail = document.getElementById("asta-history-detail");
+    const refresh = document.getElementById("asta-history-refresh");
+    const searchForm = document.getElementById("asta-history-search");
+    const searchInput = document.getElementById("asta-history-query");
+    let currentSearch = "";
+    const formatTime = (value) => {
+      if (!value) return "시간 정보 없음";
+      const date = new Date(value);
+      return Number.isNaN(date.getTime())
+        ? String(value)
+        : `${date.toLocaleString("ko-KR", { timeZone: "Asia/Seoul" })} KST`;
+    };
+    const badgeClass = (run) => {
+      const verdict = String(run.verdict || run.status || "").toUpperCase();
+      if (verdict === "IMPROVED") return "improved";
+      if (["FAILED", "ERROR", "REJECTED", "BLOCKED"].includes(verdict)) return "failed";
+      if (verdict === "ANALYSIS_ONLY") return "analysis";
+      return "";
+    };
+    const badgeText = (run) => run.verdict || run.status || "UNKNOWN";
+    const showDetail = async (run) => {
+      const runId = String(run.run_id || "");
+      const reportUrl = `${DEFAULT_ORDS_BASE_URL}/runs/${encodeURIComponent(runId)}/report/view`;
+      const downloadUrl = `${DEFAULT_ORDS_BASE_URL}/runs/${encodeURIComponent(runId)}/report/download`;
+      detail.dataset.runId = runId;
+      detail.innerHTML = `<h2>선택한 튜닝 요청</h2><p><code>${escapeHtml(runId)}</code></p><p class="asta-history-meta">${escapeHtml(formatTime(run.created_at))} · ${escapeHtml(run.source_db_id || "Source DB 미상")} · ${escapeHtml(run.llm_profile || "AI profile 미상")}</p><p><span class="asta-history-badge ${badgeClass(run)}">${escapeHtml(badgeText(run))}</span> ${escapeHtml(run.execution_mode || "실행 범위 미상")}</p><h3>요청 SQL 전체</h3><pre id="asta-history-full-sql">SQL 원문을 불러오는 중입니다.</pre><div class="asta-history-actions">${run.report_ready ? `<a class="btn btn-primary" href="${reportUrl}" target="_blank" rel="noopener">결과서 열기</a><a class="btn btn-secondary" href="${downloadUrl}">결과서 다운로드</a>` : "<span class=\"muted\">아직 결과서가 생성되지 않았습니다.</span>"}</div>${run.error_message ? `<p class="muted">오류: ${escapeHtml(run.error_code || "ASTA") } — ${escapeHtml(run.error_message)}</p>` : ""}`;
+      list.querySelectorAll(".asta-history-row").forEach((row) => row.setAttribute("aria-current", String(row.dataset.runId === runId)));
+      try {
+        const payload = await fetchJson(`${DEFAULT_ORDS_BASE_URL}/runs/${encodeURIComponent(runId)}/input-sql`);
+        if (detail.dataset.runId !== runId) return;
+        const target = detail.querySelector("#asta-history-full-sql");
+        if (target) target.textContent = payload?.input_sql || "저장된 SQL이 없습니다.";
+      } catch (error) {
+        if (detail.dataset.runId !== runId) return;
+        const target = detail.querySelector("#asta-history-full-sql");
+        if (target) target.textContent = `SQL 원문을 불러오지 못했습니다. ${error.message || ""}`;
+      }
+    };
+    const load = async (query = currentSearch) => {
+      currentSearch = String(query || "").trim().slice(0, 200);
+      searchInput.value = currentSearch;
+      refresh.disabled = true;
+      searchInput.disabled = true;
+      try {
+        const suffix = currentSearch ? `?q=${encodeURIComponent(currentSearch)}` : "";
+        const data = await fetchJson(`${DEFAULT_ORDS_BASE_URL}/history${suffix}`);
+        const runs = Array.isArray(data?.runs) ? data.runs : [];
+        if (!runs.length) { list.innerHTML = `<div class="asta-history-empty">${currentSearch ? "검색 조건에 맞는 튜닝 요청이 없습니다." : "표시할 튜닝 요청 이력이 없습니다."}</div>`; detail.innerHTML = '<div class="asta-history-empty">Run ID 또는 SQL 키워드를 바꿔 다시 조회해 주세요.</div>'; return; }
+        list.innerHTML = runs.map((run) => `<button class="asta-history-row" type="button" data-run-id="${escapeHtml(run.run_id)}"><div class="asta-history-row-top"><span class="asta-history-run">${escapeHtml(run.run_id)}</span><span class="asta-history-badge ${badgeClass(run)}">${escapeHtml(badgeText(run))}</span></div><div class="asta-history-meta">${escapeHtml(formatTime(run.created_at))} · ${escapeHtml(run.source_db_id || "Source DB 미상")}</div><div class="asta-history-sql">${escapeHtml(run.sql_preview || "저장된 SQL 없음")}</div></button>`).join("");
+        list.querySelectorAll(".asta-history-row").forEach((row) => row.addEventListener("click", () => { void showDetail(runs.find((run) => run.run_id === row.dataset.runId) || {}); }));
+        showDetail(runs[0]);
+      } catch (error) {
+        list.innerHTML = `<div class="asta-history-empty">이력을 불러오지 못했습니다. ${escapeHtml(error.message || "")}</div>`;
+      } finally { refresh.disabled = false; searchInput.disabled = false; }
+    };
+    refresh.addEventListener("click", () => load(currentSearch));
+    searchForm.addEventListener("submit", (event) => { event.preventDefault(); load(searchInput.value); });
+    await load();
   };
 })();

@@ -1,6 +1,7 @@
 """작성자: 도상훈
 파일 용도: ASTA ORDS/ADB 마이그레이션 계약과 회귀 조건을 정적/단위 테스트로 검증한다."""
 
+import re
 from pathlib import Path
 
 
@@ -10,6 +11,16 @@ ROOT = Path(__file__).resolve().parents[1]
 def _read(rel_path: str) -> str:
     """ASTA 내부 처리 보조 함수: read."""
     return (ROOT / rel_path).read_text(encoding="utf-8")
+
+
+def _plsql_handler_bodies(ords_src: str) -> list:
+    """ORDS 모듈을 PL/SQL 핸들러 본문 단위로 분리한다(다음 DEFINE_ 호출 직전까지)."""
+    bodies = []
+    for block in ords_src.split("ORDS.DEFINE_HANDLER(")[1:]:
+        if "ORDS.source_type_plsql" not in block:
+            continue
+        bodies.append(re.split(r"ORDS\.DEFINE_(?:TEMPLATE|PARAMETER)\(", block)[0])
+    return bodies
 
 
 def test_source_helper_emits_evidence_method_and_metric_source_contracts():
@@ -126,9 +137,12 @@ def test_operational_prompts_treat_ui_user_notes_as_hard_scope():
 
 
 def test_ords_handlers_emit_runtime_ownership_headers_for_all_json_routes():
-    """ASTA 계약/회귀 조건을 검증한다: ords handlers emit runtime ownership headers for all json routes."""
+    """모든 PL/SQL JSON 핸들러가 실행 소유권 헤더 7종을 핸들러 단위로 빠짐없이 방출하는지 검증한다.
+
+    analyze/profiles/run/report/progress/llm-calls에 더해 신규 history·input-sql 핸들러까지
+    포함되어야 하며, 헤더 개수는 하드코딩이 아니라 실제 핸들러 수에서 유도한다."""
     src = _read("db/ords/asta_ords_module.sql")
-    for header in [
+    headers = [
         "X-ASTA-Execution-Boundary: ADB_ORDS_PLSQL",
         "X-ASTA-FastAPI-Role: ORDS_PROXY_ONLY",
         "X-ASTA-Source-Runtime: SOURCE_BASEDB_DBLINK_ONLY",
@@ -136,8 +150,19 @@ def test_ords_handlers_emit_runtime_ownership_headers_for_all_json_routes():
         "X-ASTA-Api-Version: asta.v1",
         "X-ASTA-Contract-Version: asta.v1",
         "X-ASTA-Response-Mode: CLOB_CHUNKED_JSON",
-    ]:
-        assert src.count(header) == 6, f"{header!r} must be emitted by every ORDS JSON handler"
+    ]
+    bodies = _plsql_handler_bodies(src)
+    assert len(bodies) == 8, f"expected 8 PL/SQL JSON handlers, got {len(bodies)}"
+    # 신규 lazy-load / history 핸들러가 계약에 포함되어야 한다.
+    assert any("ASTA_PKG.GET_INPUT_SQL(" in b for b in bodies), "input-sql handler missing"
+    assert any("ASTA_PKG.LIST_HISTORY(" in b for b in bodies), "history handler missing"
+    for index, body in enumerate(bodies):
+        for header in headers:
+            assert header in body, f"handler #{index} missing {header!r}"
+    for header in headers:
+        assert src.count(header) == len(bodies), (
+            f"{header!r} must be emitted by every ORDS JSON handler exactly once"
+        )
 
 
 def test_fastapi_and_ui_surfaces_still_forbid_python_local_asta_runtime_terms():
@@ -196,7 +221,8 @@ def test_guard_and_response_contract_markers_cross_plsql_and_ords_boundaries():
     assert '"response_contract":"CLOB_CHUNKED_JSON"' in report
     assert '"guard_policy":"SELECT_WITH_SINGLE_STATEMENT"' in main
     assert '"response_contract":"CLOB_CHUNKED_JSON"' in main
-    assert ords.count("X-ASTA-Guard-Policy: SELECT_WITH_SINGLE_STATEMENT") == 6
+    # Guard 정책 헤더는 모든 PL/SQL 핸들러가 방출한다(신규 history·input-sql 포함).
+    assert ords.count("X-ASTA-Guard-Policy: SELECT_WITH_SINGLE_STATEMENT") == len(_plsql_handler_bodies(ords))
 
 
 def test_vector_kb_saves_searchable_chunks_and_searches_fingerprint_first():

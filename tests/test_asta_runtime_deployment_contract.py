@@ -155,4 +155,4 @@ def test_proxy_runtime_adapter_is_deterministic_and_masks_original_error():
 def test_ui_cache_buster_marks_report_tabs_runtime_asset():
     index = (ROOT / "static/index.html").read_text(encoding="utf-8")
     assert "asta_report_tabs.js?v=20260709_estimated_plan_tabs1" in index
-    assert "tuning_assistant.js?v=20260709_no_3s_latency1" in index
+    assert "tuning_assistant.js?v=20260711_progress_contiguous7" in index

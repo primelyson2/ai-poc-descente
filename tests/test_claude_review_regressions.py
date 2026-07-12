@@ -16,15 +16,17 @@ def body(source: str, start: str, end: str) -> str:
 def test_c1_report_stage_table_matches_canonical_order():
     section = body(REPORT, "PROCEDURE append_stage_check(", "END append_stage_check;")
     sequences = re.findall(r"append_stage_row\(p_out,\s*(\d+),", section)
-    assert sequences == [str(value) for value in range(1, 12)]
+    assert sequences == [str(value) for value in range(1, 10)]
     for label in [
-        "요청 접수", "ORDS 호출", "SQL Guard", "SQL Tuning Advisor",
-        "LLM SQL-only 구조 재작성", "Vector KB 조회", "Final report", "Vector KB 저장",
+        "요청 접수", "ORDS 호출", "SQL Guard", "개선 SQL 만들기",
+        "개선 SQL 안전성·성능 확인", "원본과 개선 결과 비교", "결과서 만들기", "검증 결과 저장",
     ]:
         assert label in section
+    assert "SQL Tuning Advisor" not in section
+    assert "Vector KB 조회" not in section
     assert "CASE WHEN l_estimated_plan_only THEN '원본 SQL/예상 Plan' ELSE '원본 SQL/XPLAN/metrics' END" in section
-    assert "CASE WHEN l_estimated_plan_only THEN '후보 SQL/예상 Plan' ELSE '후보 SQL evidence' END" in section
-    assert "CASE WHEN l_estimated_plan_only THEN '예상 Plan 범위 비교' ELSE 'Before/After deterministic 비교' END" in section
+    assert "CASE WHEN l_estimated_plan_only THEN '개선 SQL/예상 Plan' ELSE '개선 SQL 안전성·성능 확인' END" in section
+    assert "CASE WHEN l_estimated_plan_only THEN '예상 Plan 범위 비교' ELSE '원본과 개선 결과 비교' END" in section
     assert "p_comparison_json" in section
 
 

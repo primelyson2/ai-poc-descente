@@ -1,14 +1,16 @@
 # OADT2 문서 안내
 
-최종 업데이트: 2026-07-08
+최종 업데이트: 2026-07-10
 
 ## ASTA canonical 요약
 
 OADT2 ASTA는 `Browser → FastAPI thin proxy → ADB ORDS/ASTA_PKG → allowlisted DB Link → Source ASTA_SOURCE_PKG` 경로만 사용한다. Source direct와 Python runtime fallback은 금지한다.
 
-11단계 번호는 기존 API 계약을 유지한다. 실제 evidence 수집/호출 순서는 `REQUEST_RECEIVED → ORDS_DISPATCH → SQL_GUARD → BEFORE_EVIDENCE → SQL_TUNING_ADVISOR → VECTOR_KB → LLM_REWRITE → AFTER_EVIDENCE → BEFORE_AFTER_COMPARE → VECTOR_SAVE → FINAL_REPORT`다. 제출은 `ASTA_PKG.SUBMIT_RUN → DBMS_SCHEDULER → ASTA_PKG.EXECUTE_RUN`으로 비동기 실행된다. `LLM_REWRITE`는 full SQL과 compact XPLAN, 실행 통계, 객체정보, Advisor 상태, 유사사례 및 사용자 목표를 함께 받는다.
+내부 API는 `REQUEST_RECEIVED → ORDS_DISPATCH → SQL_GUARD → BEFORE_EVIDENCE → LLM_REWRITE → AFTER_EVIDENCE → BEFORE_AFTER_COMPARE → FINAL_REPORT → VECTOR_SAVE`의 9개 progress code를 유지한다. 사용자 진행 Drawer와 화면 매뉴얼은 앞의 접수·연결·Guard를 1번 `요청 및 분석 준비`로 묶고 나머지를 연속 재번호화해 `1~7`로 표시한다. 사용자 3단계에서 후보 SQL이 생성되면 이후 검증이 끝나기 전에도 전체 SQL을 보여 주며, 이는 검증 중 후보이지 적용 권고가 아니다. 제출은 `ASTA_PKG.SUBMIT_RUN → DBMS_SCHEDULER → ASTA_PKG.EXECUTE_RUN`으로 비동기 실행된다. raw Vector 검색 결과는 prompt에 넣지 않고 artifact에 `vector_evidence_included=false`로 기록한다. Source SQL을 실제 실행한 경우에만 같은 workload의 `POSITIVE_VERIFIED` 사례를 SQL 원문 없이 change summary·전후 지표·fingerprint 상태로 축약해 two-stage prompt의 참고 패턴으로 제공하고 `verified_history_references_included` 및 `verified_history_reference_summary`를 남긴다. 결과서는 실제로 추가한 안전 지시와 사례 요약을 표시한다. 현재 SQL/XPLAN이 독립적으로 구조·key·consumer를 증명해야 하며 과거 SQL의 identifier/literal/predicate 복사나 과거 사례만의 채택은 금지한다. 후보 생성은 SQL·XPLAN·실제 컬럼 dictionary·workload·사용자 목표를 사용하고, 검증된 동일 SQL history가 있으면 `VERIFIED_HISTORY_REUSE`로 먼저 재검증할 수 있다.
 
-판정은 `IMPROVED`, `ANALYSIS_ONLY`, `NOT_IMPROVED`, `CANDIDATE_FAILED`, `NON_EQUIVALENT`, `NO_REWRITE`, `INSUFFICIENT_EVIDENCE`다. `ANALYSIS_ONLY`는 `execute_source_sql=false`의 정상 미실행 분석 완료이며 성능 개선 성공/실패가 아니다. 후보 없음/악화/비동등/실패는 원본 SQL을 유지한다. 후보가 있을 때만 After evidence를 표시하고 raw artifact와 visible report를 분리한다. 유사 결과서 링크는 `/api/asta/runs/{run_id}/report`다. UI 결과서는 `요약 → 튜닝 전 → SQL 변경 → 튜닝 후 → 상세 분석 → 객체 정보` 6개 탭이며 진행 상세는 11단계 Drawer로 표시한다. **매뉴얼 및 사용설명** dialog에서는 PoC 샘플 화면, `OCI Load Balancer → VM`, DEV/PRO/shared 리소스와 단계별 package/procedure를 바로 확인할 수 있다.
+comparison verdict는 `IMPROVED`, `ANALYSIS_ONLY`, `NOT_IMPROVED`, `CANDIDATE_FAILED`, `NON_EQUIVALENT`, `NO_REWRITE`, `INSUFFICIENT_EVIDENCE`다. `ANALYSIS_ONLY / ESTIMATED_PLAN_ONLY / SOURCE_SQL_NOT_EXECUTED`는 `execute_source_sql=false`의 정상 미실행 분석 완료이며 `source_runtime_metrics_status=NOT_MEASURED`, `runtime_verification_status=NOT_EXECUTED`, `equivalence_status=NOT_EVALUATED`, `repeat_performance_status=NOT_MEASURED`다. `PLAN_SCREEN_*`는 사용자 4단계 후보 선별 reason이고 `CANDIDATE_RUNTIME_LIMIT`은 Run `error_code`다. 후보 없음/악화/비동등/실패는 원본 SQL을 유지한다. Vector는 `IMPROVED → POSITIVE_VERIFIED`, `ANALYSIS_ONLY → ANALYSIS_OBSERVATION`, 나머지 → `REJECTED_OBSERVATION`으로 분리한다. UI 결과서는 6개 탭이며 진행 상세는 연속 7단계 Drawer로 표시한다. **매뉴얼 및 사용설명**에는 아키텍처, 분석 Workflow, 개발자 실행 추적 세 탭이 있다.
+
+결과서의 병목 진단은 원본 evidence와 지배 operation의 위치·key·consumer·실측값, 변경 전략과 semantic risk를 상세히 표시한다. 유사 개선 사례 섹션은 프롬프트 반영 여부와 관계없이 항상 검토 결과를 작성한다. 단계 상태와 timing은 진행 Drawer에서 제공하므로 결과서에는 작업 수행 이력과 단계별 수행 체크를 중복 표시하지 않는다.
 
 ## 문서
 
@@ -35,7 +37,7 @@ UI 팝업의 **03 개발자 실행 추적**에서 브라우저, FastAPI, ORDS, T
 
 ### 버튼 클릭부터 보고서 다운로드까지
 
-`POST /api/asta/analyze → ASTA_PKG.SUBMIT_RUN/EXECUTE_RUN/RUN_PIPELINE → Source 원본·후보 evidence → LLM 후보 → BUILD_COMPARISON_JSON → ASTA_REPORT_PKG.BUILD_REPORT → UI poll/render/download` 순서다. 기본은 `ESTIMATED_PLAN_ONLY` 미실행 evidence이고, 체크박스 opt-in에서만 Source runtime 실측으로 진행한다.
+`POST /api/asta/analyze → ASTA_PKG.SUBMIT_RUN/EXECUTE_RUN/RUN_PIPELINE → Source 원본 evidence → Vector artifact → verified history 또는 LLM 후보 → Source 후보 evidence → BUILD_COMPARISON_JSON → ASTA_VECTOR_PKG.SAVE_CASE → ASTA_REPORT_PKG.BUILD_REPORT → UI poll/render/download` 순서다. 기본은 `ESTIMATED_PLAN_ONLY` 미실행 evidence이고, **소스 DB에서 SQL을 실제 실행하여 검증** 체크박스 opt-in에서만 Source runtime 실측으로 진행한다.
 
 ### 실패·차단·원본 유지 분기
 
@@ -43,4 +45,4 @@ UI 팝업의 **03 개발자 실행 추적**에서 브라우저, FastAPI, ORDS, T
 
 ### Run ID로 추적하는 방법
 
-먼저 `/progress`와 report를 조회하고 sanitized API audit, `ASTA_RUNS`/`ASTA_RUN_PROGRESS`/`ASTA_LLM_CALL_LOG`, 해당 Scheduler job과 Source marker 순서로 확인한다. credential과 SQL/bind 원문은 진단 기록에 넣지 않는다.
+먼저 `/api/asta/runs/{run_id}/progress`의 단계와 `llm_calls` 요약을 확인한다. 필요한 한 호출만 `/api/asta/runs/{run_id}/llm-calls/{call_id}`로 보고, terminal이면 `/api/asta/runs/{run_id}/report`를 조회한다. 이후 sanitized API audit, `ASTA_RUNS`/`ASTA_RUN_PROGRESS`/`ASTA_LLM_CALL_LOG`, 해당 Scheduler job과 Source marker 순서로 확인한다. **보고서 다운로드** 버튼은 브라우저 `downloadText`이며 서버에는 `/report/view`, `/report/download`도 있다. credential과 SQL/bind 원문은 진단 기록에 넣지 않는다.

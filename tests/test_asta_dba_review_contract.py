@@ -49,7 +49,7 @@ def test_dba_review_is_built_from_current_run_evidence_not_fixed_boilerplate():
 
     assert "DBMS_LOB.SUBSTR(l_advisor_report, 8000, 1)" in helper
     assert "clob_app_clob(p_out, l_advisor_report)" not in helper
-    assert "append_dba_review(l_report, p_source_evidence_json, p_comparison_json);" in report
+    assert "append_dba_review(l_report, p_source_evidence_json, p_comparison_json);" not in report
     assert "튜닝 SQL 적용 전 결과 동일성(row_count/output_rows)" not in report
     assert "elapsed_time이 악화되었지만 buffer_gets가 개선된 경우" not in report
 

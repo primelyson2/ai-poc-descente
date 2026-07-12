@@ -93,7 +93,9 @@ def test_tuning_assistant_calls_astA_api_with_detailed_report_fallbacks():
     assert "!isOverallComplete &&" in view
     assert "tuning-current-progress" in view
     assert 'class="tuning-progress-drawer" hidden' in view
-    assert "steps.map((step) => renderProgressDetailStep(step, isComplete, llmCalls, runId))" in view
+    # progressDrawerSteps(steps)는 drawerSteps로 1회 호이스팅되어 재사용된다(중복 재계산 방지).
+    assert "const drawerSteps = progressDrawerSteps(steps)" in view
+    assert "drawerSteps.map((step) => renderProgressDetailStep(step, isComplete, llmCalls, runId, candidateSql))" in view
     assert "완료 단계" not in view
     assert '["READY", "IDLE", "PENDING"].includes(overall)' in view
 
@@ -329,13 +331,14 @@ def test_tuning_assistant_logs_when_final_ords_progress_would_override_inline_fa
     assert "asta-progress-stale-ords-suppressed" in view
 
 
-def test_tuning_assistant_maps_new_11_stage_order_and_legacy_final_review():
+def test_tuning_assistant_maps_user_facing_nine_stage_order_and_hides_internal_stages():
     view = (ROOT / "static/js/extensions/tuning_assistant.js").read_text(encoding="utf-8")
     expected = ["REQUEST_RECEIVED", "ORDS_DISPATCH", "SQL_GUARD", "BEFORE_EVIDENCE",
-                "SQL_TUNING_ADVISOR", "LLM_REWRITE", "AFTER_EVIDENCE",
-                "BEFORE_AFTER_COMPARE", "VECTOR_KB", "FINAL_REPORT", "VECTOR_SAVE"]
+                "LLM_REWRITE", "AFTER_EVIDENCE", "BEFORE_AFTER_COMPARE", "FINAL_REPORT", "VECTOR_SAVE"]
     positions = [view.index(f'code: "{code}"') for code in expected]
     assert positions == sorted(positions)
-    assert 'LLM_FINAL_REVIEW: 7' in view
-    assert 'BEFORE_AFTER_COMPARE: 7' in view
+    assert "SQL_TUNING_ADVISOR: -1" in view
+    assert "VECTOR_KB: -1" in view
+    assert 'LLM_FINAL_REVIEW: 6' in view
+    assert 'BEFORE_AFTER_COMPARE: 6' in view
     assert 'code: "LLM_FINAL_REVIEW"' not in view

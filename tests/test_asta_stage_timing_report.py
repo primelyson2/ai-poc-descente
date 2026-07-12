@@ -1,4 +1,4 @@
-"""ASTA 최종 결과서의 persisted 11-stage timing 계약."""
+"""ASTA 최종 결과서의 사용자 9단계 timing 계약."""
 
 from pathlib import Path
 
@@ -20,12 +20,21 @@ def test_report_build_accepts_persisted_progress_and_pipeline_elapsed_snapshot()
     assert main.count("p_pipeline_elapsed_ms  => l_pipeline_elapsed_ms") == 2
 
 
-def test_report_renders_all_eleven_stages_from_progress_without_inventing_zero():
+def test_report_maps_internal_progress_codes_to_nine_user_stages_without_inventing_zero():
     report = read("db/adb/asta_report_pkg.sql")
 
     assert "PROCEDURE append_stage_timing" in report
     assert "## 단계별 소요시간" in report
-    assert "FOR l_seq IN 1..11 LOOP" in report
+    assert "FUNCTION canonical_stage_code" in report
+    assert "FOR l_seq IN 1..9 LOOP" in report
+    assert "WHERE stage_code = l_expected_code" in report
+    for code in (
+        "REQUEST_RECEIVED", "ORDS_DISPATCH", "SQL_GUARD", "BEFORE_EVIDENCE",
+        "LLM_REWRITE", "AFTER_EVIDENCE", "BEFORE_AFTER_COMPARE", "FINAL_REPORT", "VECTOR_SAVE",
+    ):
+        assert f"THEN '{code}'" in report
+    assert "WHEN 5 THEN 'SQL_TUNING_ADVISOR'" not in report
+    assert "WHEN 9 THEN 'VECTOR_KB'" not in report
     assert "ASTA_RUN_PROGRESS" in report
     assert "WHEN 'DONE' THEN 'COMPLETED'" in report
     for status in ("QUEUED", "RUNNING", "SKIPPED", "FAILED", "COMPLETED"):

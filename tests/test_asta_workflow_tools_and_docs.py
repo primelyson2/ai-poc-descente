@@ -124,7 +124,7 @@ def test_10sql_summary_and_verdict_aggregation_are_deterministic():
 def test_current_docs_describe_evidence_aware_workflow_and_links():
     docs = ["OADT2_ASTA_ARCHITECTURE.md", "AI_SQL_TUNING_ASSISTANT_MANUAL.md", "README.md"]
     texts = [(ROOT / "docs" / name).read_text(encoding="utf-8") for name in docs]
-    expected_dates = ["2026-07-06", "2026-07-06", "2026-07-06"]
+    expected_dates = ["2026-07-10", "2026-07-10", "2026-07-10"]
     for text, expected_date in zip(texts, expected_dates, strict=True):
         assert expected_date in text
         assert "Vector" in text or "VECTOR_KB" in text

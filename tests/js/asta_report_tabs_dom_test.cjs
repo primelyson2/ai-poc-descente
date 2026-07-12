@@ -103,10 +103,6 @@ const report = [
   "### DBA 검토 사항",
   "검토 내용입니다.",
   "- 비교 판정: verdict=`IMPROVED`, equivalence=`VERIFIED`, reason=`OLTP_BUFFER_READS_IMPROVED`.",
-  "## 작업 수행 이력",
-  "- 진단",
-  "## 단계별 수행 체크",
-  "- 완료",
   "## 테이블 통계 및 인덱스 정보",
   "통계 정보",
   "### 테이블 통계",
@@ -182,6 +178,21 @@ assert.equal(tabsApi.extractReportVerdict("- 비교 판정: verdict=`NON_EQUIVAL
 assert.equal(tabsApi.extractReportVerdict("- 비교 판정: verdict=`ANALYSIS_ONLY`, equivalence=`NOT_EVALUATED`"), "ANALYSIS_ONLY");
 assert.equal(tabsApi.extractReportVerdict("- 최종 판정: `NO_REWRITE`"), "NO_REWRITE");
 assert.equal(tabsApi.extractReportVerdict("## 결론\n판정 정보 없음"), null);
+
+const noAdvisorRoot = new FakeElement("div");
+tabsApi.renderReportTabs(noAdvisorRoot, [
+  "# SQL 튜닝 결과서",
+  "## 결론",
+  "- Run ID: `OADT2-ASTA-modern`",
+  "- 최종 판정: `IMPROVED`",
+  "- 권장 행동: 코드 리뷰 후 적용 검토",
+].join("\n\n"));
+const noAdvisorOverview = noAdvisorRoot.querySelectorAll('[role="tabpanel"]')[0];
+assert.ok(noAdvisorOverview.querySelector(".tuning-verdict-summary"), "modern report without Advisor must render verdict summary");
+assert.equal(noAdvisorOverview.querySelector(".tuning-verdict-help-toggle").textContent, "?");
+assert.match(allText(noAdvisorOverview.querySelector(".tuning-verdict-summary")), /IMPROVED/);
+assert.doesNotMatch(allText(noAdvisorOverview), /Oracle SQL Tuning Advisor/);
+
 assert.deepEqual(tabsApi.VERDICT_GUIDE.map(({ code, meaning, action }) => [code, meaning, action]), [
   ["IMPROVED", "결과가 일치하고 성능 기준 통과", "코드 리뷰와 별도 테스트 후 적용 검토"],
   ["ANALYSIS_ONLY", "튜닝 후보 제안/분석 완료, 성능 개선 여부 미검증", "운영 적용 전 Source 실측·동등성 검증"],

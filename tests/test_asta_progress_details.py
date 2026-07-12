@@ -1,4 +1,4 @@
-"""ASTA 현재 단계 요약과 11단계 상세 진행 로그 UI 계약."""
+"""ASTA 현재 단계 요약과 사용자 화면 연속 7단계 상세 진행 로그 UI 계약."""
 
 from pathlib import Path
 import subprocess
@@ -12,7 +12,7 @@ def source() -> str:
     return SOURCE.read_text(encoding="utf-8")
 
 
-def test_default_progress_is_current_stage_only_and_drawer_contains_all_steps():
+def test_default_progress_is_current_stage_only_and_drawer_groups_internal_first_three_steps():
     text = source()
     assert 'id="asta-current-progress" class="tuning-progress-anchor" aria-live="polite" hidden' in text
     assert 'class="tuning-current-progress' in text
@@ -20,8 +20,13 @@ def test_default_progress_is_current_stage_only_and_drawer_contains_all_steps():
     assert '>상세</button>' in text
     assert 'class="tuning-progress-drawer" hidden' in text
     assert 'role="dialog" aria-modal="true"' in text
-    assert "steps.map((step) => renderProgressDetailStep(step, isComplete, llmCalls, runId)).join(\"\")" in text
-    assert 'aria-label="ASTA 11단계 전체 진행상태와 로그"' in text
+    assert "function progressDrawerSteps(steps)" in text
+    assert 'seq: "1", code: "REQUEST_PREPARATION", label: "요청 및 분석 준비"' in text
+    assert "seq: index + 2" in text
+    assert "const drawerSteps = progressDrawerSteps(steps);" in text
+    assert "drawerSteps.map((step) => renderProgressDetailStep(step, isComplete, llmCalls, runId, candidateSql)).join(\"\")" in text
+    assert 'aria-label="ASTA 사용자 7단계 전체 진행상태와 로그"' in text
+    assert "const compactLabel = `${currentPosition}/${drawerSteps.length}`;" in text
 
 
 def test_ready_state_hides_progress_until_analysis_really_starts():
@@ -38,7 +43,7 @@ def test_polling_never_replaces_the_drawer_dom_during_the_same_run():
     assert "const PROGRESS_RENDER_STATE = new WeakMap();" in text
     assert "function refreshProgressView" in text
     assert "previousRender?.runId === runId" in text
-    assert "refreshProgressView(target, steps, {" in text
+    assert "refreshProgressView(target, drawerSteps, {" in text
     assert "PROGRESS_RENDER_STATE.set(target, { runId });" in text
     assert 'class="tuning-progress-step-elapsed"' in text
     assert 'data-progress-step-card="${escapeHtml(step.seq)}"' in text
@@ -47,7 +52,7 @@ def test_polling_never_replaces_the_drawer_dom_during_the_same_run():
 
 def test_each_detail_step_renders_status_timing_and_logs():
     text = source()
-    assert 'function renderProgressDetailStep(step, isComplete, llmCalls = [], runId = "")' in text
+    assert 'function renderProgressDetailStep(step, isComplete, llmCalls = [], runId = "", candidateSql = "")' in text
     assert "progressStatusLabel(status)" in text
     assert "formatProgressTimestamp(step.started_at || step.at)" in text
     assert "formatProgressTimestamp(step.completed_at)" in text
@@ -138,7 +143,7 @@ def test_timestamp_normalization_in_asia_seoul_runtime():
 
 def test_progress_details_asset_has_a_fresh_cache_buster():
     index = (ROOT / "static/index.html").read_text(encoding="utf-8")
-    assert "tuning_assistant.js?v=20260709_no_3s_latency1" in index
+    assert "tuning_assistant.js?v=20260711_progress_contiguous7" in index
 
 
 def test_before_evidence_shows_concrete_internal_work_without_fake_substage_progress():
@@ -167,6 +172,28 @@ def test_llm_calls_are_rendered_inside_stage_six_with_live_summary():
         assert field in text
     assert 'data-llm-call-elapsed=' in text
     assert 'elapsed.textContent = call.elapsed_ms == null ? "미측정" : formatDuration(call.elapsed_ms)' in text
+
+
+def test_llm_step_shows_waiting_state_then_the_candidate_sql_before_validation_finishes():
+    text = source()
+    assert "function renderCandidateSqlPreview(candidateSql, status)" in text
+    assert "LLM 응답을 기다리는 중입니다" in text
+    assert "생성된 개선 SQL" in text
+    assert "이후 안전성·성능 검증이 계속됩니다" in text
+    assert 'class="tuning-candidate-sql-host"' in text
+    assert "candidateHost.innerHTML = renderCandidateSqlPreview(candidateSql, llmStep.status)" in text
+
+
+def test_progress_api_persists_candidate_after_llm_and_returns_it_to_authenticated_ui():
+    adb = (ROOT / "db/adb/asta_pkg.sql").read_text(encoding="utf-8")
+    pipeline = adb.split("FUNCTION run_pipeline(", 1)[1].split("END run_pipeline;", 1)[0]
+    progress = adb.split("FUNCTION get_progress(", 1)[1].split("END get_progress;", 1)[0]
+    candidate_pos = pipeline.index("SELECT JSON_VALUE(l_llm_json, '$.candidate_sql'")
+    early_save_pos = pipeline.index("UPDATE asta_runs\n    SET    tuned_sql = l_tuned_sql", candidate_pos)
+    after_evidence_pos = pipeline.index("record_progress(l_run_id, 7, 'AFTER_EVIDENCE'", candidate_pos)
+    assert candidate_pos < early_save_pos < after_evidence_pos
+    assert '"candidate_sql":' in progress
+    assert "clob_app_json_str(l_out, l_tuned_sql);" in progress
 
 
 def test_llm_prompt_and_response_are_lazy_loaded_and_collapsed_by_default():

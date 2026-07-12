@@ -115,7 +115,7 @@ def _report_document(run_id: str, markdown: str) -> str:
     base = f"/api/asta/runs/{quote(run_id, safe='')}/report"
     content = _markdown_to_safe_html(markdown)
     return f'''<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ASTA 결과서 · {safe_id}</title><style>
-body{{margin:0;background:#f4f7fb;color:#172033;font:16px/1.65 system-ui,sans-serif}}main{{max-width:1080px;margin:auto;padding:32px}}article{{background:white;border:1px solid #dfe5ef;border-radius:16px;padding:clamp(20px,4vw,48px);box-shadow:0 12px 40px #0f172a14}}nav{{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:20px}}nav a{{padding:9px 13px;border-radius:9px;background:#2563eb;color:white;text-decoration:none}}nav a+a{{background:#475569}}h1,h2,h3,h4{{line-height:1.25;margin-top:1.5em}}pre{{overflow:auto;background:#0f172a;color:#e2e8f0;padding:16px;border-radius:10px}}table{{border-collapse:collapse;width:100%;display:block;overflow:auto}}th,td{{border:1px solid #cbd5e1;padding:8px 12px;text-align:left}}th{{background:#eef2ff}}blockquote{{border-left:4px solid #93c5fd;margin-left:0;padding-left:16px;color:#475569}}.run{{color:#64748b}}
+body{{margin:0;background:#f4f7fb;color:#172033;font:16px/1.65 system-ui,sans-serif}}main{{max-width:1800px;margin:auto;padding:clamp(12px,2vw,32px)}}article{{background:white;border:1px solid #dfe5ef;border-radius:16px;padding:clamp(16px,2.5vw,40px);box-shadow:0 12px 40px #0f172a14}}nav{{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:20px}}nav a{{padding:9px 13px;border-radius:9px;background:#2563eb;color:white;text-decoration:none}}nav a+a{{background:#475569}}h1,h2,h3,h4{{line-height:1.25;margin-top:1.5em}}pre{{overflow-x:auto;overflow-y:auto;max-height:70vh;background:#0f172a;color:#e2e8f0;padding:16px;border-radius:10px;white-space:pre;font-size:14px;line-height:1.45}}table{{border-collapse:collapse;width:100%;display:block;overflow:auto}}th,td{{border:1px solid #cbd5e1;padding:8px 12px;text-align:left}}th{{background:#eef2ff}}blockquote{{border-left:4px solid #93c5fd;margin-left:0;padding-left:16px;color:#475569}}.run{{color:#64748b}}@media (max-width:700px){{main{{padding:8px}}article{{border-radius:10px;padding:14px}}pre{{max-height:64vh;font-size:12px;padding:12px}}}}
 </style></head><body><main><nav><a href="{base}/download">원본 Markdown 다운로드</a><a href="{base}">JSON API 보기</a></nav><article><div class="run">Run ID: {safe_id}</div>{content}</article></main></body></html>'''
 
 DEFAULT_LLM_PROFILE = "ASTA_GROK_REASONING_PROFILE"
@@ -506,9 +506,9 @@ def _post_json_sync(url: str, payload: dict[str, Any], timeout: int) -> dict[str
     return _request_json_sync(req, timeout)
 
 
-def _get_json_sync(url: str, timeout: int) -> dict[str, Any]:
+def _get_json_sync(url: str, timeout: int, headers: dict[str, str] | None = None) -> dict[str, Any]:
     """ASTA 내부 처리 보조 함수: get json sync."""
-    req = urllib_request.Request(url, headers={"Accept": "application/json"}, method="GET")
+    req = urllib_request.Request(url, headers={"Accept": "application/json", **(headers or {})}, method="GET")
     return _request_json_sync(req, timeout)
 
 
@@ -517,9 +517,9 @@ async def _post_json_to_ords(url: str, payload: dict[str, Any], timeout: int) ->
     return await asyncio.to_thread(_post_json_sync, url, payload, timeout)
 
 
-async def _get_json_from_ords(url: str, timeout: int) -> dict[str, Any]:
+async def _get_json_from_ords(url: str, timeout: int, headers: dict[str, str] | None = None) -> dict[str, Any]:
     """ASTA 내부 처리 보조 함수: get json from ords."""
-    return await asyncio.to_thread(_get_json_sync, url, timeout)
+    return await asyncio.to_thread(_get_json_sync, url, timeout, headers)
 
 
 def _response_error_code(data: dict[str, Any]) -> str:
@@ -623,6 +623,19 @@ async def _audited_run_lookup(run_id: str, database: str, endpoint_kind: str, su
     artifacts = annotated.get("artifacts") if isinstance(annotated.get("artifacts"), dict) else {}
     gate_comparison = annotated.get("comparison") or artifacts.get("comparison")
     return apply_runtime_gates(annotated) if isinstance(gate_comparison, dict) and gate_comparison else annotated
+
+
+@router.get("/history")
+async def get_history(q: str | None = None, database: str = Depends(current_db)) -> dict[str, Any]:
+    """Search persisted ASTA runs by run ID or input SQL text."""
+    # This value crosses the FastAPI→ORDS boundary in a request header. Fold
+    # control characters before truncation so browser input cannot create an
+    # invalid or injected HTTP header while ordinary whitespace remains searchable.
+    search = re.sub(r"[\x00-\x1f\x7f]+", " ", str(q or "")).strip()[:200]
+    url = _resolve_ords_url(database, "history_path", "/history")
+    headers = {"X-ASTA-History-Search": search} if search else None
+    data = await _get_json_from_ords(url, _ords_timeout(database), headers)
+    return _annotate_proxy(data)
 
 
 @router.get("/profiles")
@@ -794,6 +807,12 @@ async def analyze(request: Request, background_tasks: BackgroundTasks, database:
 async def get_run(run_id: str, database: str = Depends(current_db)) -> dict[str, Any]:
     """ASTA 처리 흐름에서 get run 작업을 수행한다."""
     return await _audited_run_lookup(run_id, database, "run")
+
+
+@router.get("/runs/{run_id}/input-sql")
+async def get_run_input_sql(run_id: str, database: str = Depends(current_db)) -> dict[str, Any]:
+    """Lazily return full submitted SQL only for the selected authenticated run."""
+    return await _audited_run_lookup(run_id, database, "input_sql", "input-sql")
 
 
 @router.get("/runs/{run_id}/progress")

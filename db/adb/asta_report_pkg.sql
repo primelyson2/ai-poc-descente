@@ -491,6 +491,30 @@ CREATE OR REPLACE PACKAGE BODY asta_report_pkg AS
       AND DBMS_LOB.INSTR(p_llm_json, '"candidate_sql":null', 1, 1) = 0;
   END llm_candidate_sql_present;
 
+  FUNCTION effective_candidate_sql(
+    p_run_id          IN VARCHAR2,
+    p_llm_json        IN CLOB,
+    p_comparison_json IN CLOB
+  ) RETURN VARCHAR2 IS
+    l_candidate VARCHAR2(32767);
+  BEGIN
+    l_candidate := llm_field(p_llm_json, 'candidate_sql', NULL);
+    IF l_candidate IS NULL
+       AND json_vc(p_comparison_json, '$.verdict', '') = 'IMPROVED'
+       AND p_run_id IS NOT NULL THEN
+      BEGIN
+        SELECT DBMS_LOB.SUBSTR(tuned_sql, 32767, 1)
+        INTO l_candidate
+        FROM asta_runs
+        WHERE run_id = p_run_id
+          AND tuned_sql IS NOT NULL;
+      EXCEPTION
+        WHEN NO_DATA_FOUND THEN NULL;
+      END;
+    END IF;
+    RETURN l_candidate;
+  END effective_candidate_sql;
+
   FUNCTION llm_has_improved_sql(p_llm_json IN CLOB) RETURN BOOLEAN IS
     l_candidate_error VARCHAR2(4000);
     l_change_summary  VARCHAR2(32767);
@@ -522,26 +546,11 @@ CREATE OR REPLACE PACKAGE BODY asta_report_pkg AS
     p_after_evidence_json IN CLOB,
     p_comparison_json     IN CLOB
   ) IS
-    l_advisor_status VARCHAR2(4000);
-    l_advisor_report CLOB;
-    l_advisor_reason VARCHAR2(4000);
     l_tuned_applied  VARCHAR2(120);
     l_row_match      VARCHAR2(4000);
     l_out_match      VARCHAR2(4000);
     l_conclusion     VARCHAR2(4000);
   BEGIN
-    l_advisor_status := json_vc(p_source_evidence_json, '$.advisor.status', 'SKIPPED');
-    BEGIN
-      SELECT JSON_VALUE(p_source_evidence_json, '$.advisor.report' RETURNING CLOB NULL ON ERROR)
-      INTO   l_advisor_report
-      FROM   dual;
-    EXCEPTION WHEN OTHERS THEN l_advisor_report := NULL;
-    END;
-    l_advisor_reason := first_line(l_advisor_report, '-');
-    IF UPPER(l_advisor_status) = 'FAILED' AND l_advisor_reason <> '-' THEN
-      l_advisor_status := l_advisor_status || ' — ' || l_advisor_reason;
-    END IF;
-
     IF llm_has_improved_sql(p_llm_json)
        AND p_after_evidence_json IS NOT NULL
        AND NVL(DBMS_LOB.GETLENGTH(p_after_evidence_json), 0) > 0 THEN
@@ -561,8 +570,6 @@ CREATE OR REPLACE PACKAGE BODY asta_report_pkg AS
        AND LOWER(l_row_match) = 'true'
        AND LOWER(l_out_match) = 'true' THEN
       l_conclusion := '튜닝 SQL은 결과 동일성이 확인되었고 Buffer Gets가 ' || pct_text(json_vc(p_comparison_json, '$.buffer_gets_reduction_pct')) || ' 감소했습니다.';
-    ELSIF UPPER(l_advisor_status) LIKE 'FAILED%' THEN
-      l_conclusion := 'SQL Tuning Advisor는 실패했지만 LLM/비교 근거는 별도 섹션에서 확인해야 합니다.';
     ELSE
       l_conclusion := '세부 Evidence와 DBA 검토 체크 후 적용 여부를 결정하세요.';
     END IF;
@@ -572,7 +579,6 @@ CREATE OR REPLACE PACKAGE BODY asta_report_pkg AS
     metric_line(p_out, '전체 상태', NVL(p_status, 'UNKNOWN'));
     metric_line(p_out, '튜닝 적용 여부', l_tuned_applied);
     metric_line(p_out, '결과 동일성', 'row_count=' || l_row_match || ', output_rows=' || l_out_match);
-    metric_line(p_out, 'SQL Tuning Advisor', l_advisor_status);
     metric_line(p_out, '한줄 결론', l_conclusion);
     clob_app(p_out, CHR(10));
 
@@ -625,6 +631,170 @@ CREATE OR REPLACE PACKAGE BODY asta_report_pkg AS
       clob_app(p_out, CHR(10) || '```' || CHR(10) || CHR(10));
     END IF;
   END append_evidence_summary;
+
+  FUNCTION safe_vector_text(p_val IN VARCHAR2) RETURN VARCHAR2;
+
+  PROCEDURE append_bottleneck_diagnosis(
+    p_out                  IN OUT NOCOPY CLOB,
+    p_llm_json             IN CLOB,
+    p_source_evidence_json IN CLOB,
+    p_comparison_json      IN CLOB,
+    p_estimated_plan_only  IN BOOLEAN
+  ) IS
+    l_target_count   PLS_INTEGER := 0;
+    l_strategy_count PLS_INTEGER := 0;
+    l_risk_count     PLS_INTEGER := 0;
+    l_summary_count  PLS_INTEGER := 0;
+  BEGIN
+    clob_app(p_out, '## 병목 진단' || CHR(10) || CHR(10));
+    clob_app(p_out, '### 진단 기준' || CHR(10) || CHR(10));
+    IF p_estimated_plan_only THEN
+      clob_app(p_out, '- 분석 범위: Source SQL을 실행하지 않은 예상 Plan 기반 진단입니다. Cost·Cardinality와 SQL 구조는 참고할 수 있지만 Buffer Gets, Disk Reads, A-Time, Starts는 실측값이 아닙니다.' || CHR(10));
+    ELSE
+      clob_app(p_out, '- 분석 범위: Source SQL의 실제 실행 XPLAN과 runtime metrics를 기준으로 반복 작업과 지배 비용을 판별했습니다.' || CHR(10));
+    END IF;
+    clob_app(p_out, '- 원본 evidence: status=`' || safe_vector_text(json_vc(p_source_evidence_json, '$.status', '-'))
+      || '`, plan_kind=`' || safe_vector_text(json_vc(p_source_evidence_json, '$.plan_kind', '-'))
+      || '`, SQL ID=`' || safe_vector_text(json_vc(p_source_evidence_json, '$.sql_id', '-'))
+      || '`, Plan Hash=`' || safe_vector_text(json_vc(p_source_evidence_json, '$.plan_hash_value', '-')) || '`.' || CHR(10));
+    IF NOT p_estimated_plan_only THEN
+      clob_app(p_out, '- 원본 실측: Starts/반복 실행=`' || safe_vector_text(json_vc(p_source_evidence_json, '$.repeat_count', '-'))
+        || '`, Buffer Gets=`' || safe_vector_text(json_vc(p_comparison_json, '$.before_buffer_gets', json_vc(p_source_evidence_json, '$.last_cr_buffer_gets', '-')))
+        || '`, Disk Reads=`' || safe_vector_text(json_vc(p_comparison_json, '$.before_disk_reads', json_vc(p_source_evidence_json, '$.last_disk_reads', '-')))
+        || '`, Elapsed=`' || us_to_sec_text(json_vc(p_comparison_json, '$.before_elapsed_time_us', json_vc(p_source_evidence_json, '$.last_elapsed_time_us', '-'))) || '`.' || CHR(10));
+    END IF;
+    clob_app(p_out, CHR(10) || '### 지배 병목 대상' || CHR(10) || CHR(10));
+    clob_app(p_out, '| Operation ID | Query Block | Object | Correlation/Join Key | Immediate Consumer | 국소 변경 경계 | Buffers | A-Time | Starts |' || CHR(10));
+    clob_app(p_out, '|---:|---|---|---|---|---|---:|---:|---:|' || CHR(10));
+    FOR r IN (
+      SELECT operation_id, query_block, object_name, correlation_keys,
+             immediate_consumer, rewrite_boundary, measured_buffers,
+             measured_a_time, starts
+      FROM JSON_TABLE(p_llm_json, '$.diagnosis.target_operations[*]'
+        COLUMNS (
+          operation_id VARCHAR2(80) PATH '$.operation_id' NULL ON ERROR,
+          query_block VARCHAR2(256) PATH '$.query_block' NULL ON ERROR,
+          object_name VARCHAR2(512) PATH '$.object' NULL ON ERROR,
+          correlation_keys VARCHAR2(4000) FORMAT JSON PATH '$.original_correlation_or_join_keys' NULL ON ERROR,
+          immediate_consumer VARCHAR2(4000) FORMAT JSON PATH '$.immediate_consumer' NULL ON ERROR,
+          rewrite_boundary VARCHAR2(4000) PATH '$.localized_rewrite_boundary' NULL ON ERROR,
+          measured_buffers VARCHAR2(80) PATH '$.measured_buffers' NULL ON ERROR,
+          measured_a_time VARCHAR2(80) PATH '$.measured_a_time' NULL ON ERROR,
+          starts VARCHAR2(80) PATH '$.starts' NULL ON ERROR
+        ))
+    ) LOOP
+      l_target_count := l_target_count + 1;
+      clob_app(p_out, '| `' || safe_vector_text(r.operation_id) || '` | ' || safe_vector_text(r.query_block)
+        || ' | ' || safe_vector_text(r.object_name) || ' | ' || safe_vector_text(r.correlation_keys)
+        || ' | ' || safe_vector_text(r.immediate_consumer) || ' | ' || safe_vector_text(r.rewrite_boundary)
+        || ' | ' || safe_vector_text(r.measured_buffers) || ' | ' || safe_vector_text(r.measured_a_time)
+        || ' | ' || safe_vector_text(r.starts) || ' |' || CHR(10));
+    END LOOP;
+    IF l_target_count = 0 THEN
+      clob_app(p_out, '| - | - | - | - | - | 현재 evidence에서 계약 필드를 모두 갖춘 단일 지배 병목을 확정하지 못했습니다. | - | - | - |' || CHR(10));
+    END IF;
+
+    clob_app(p_out, CHR(10) || '### 진단 요약과 변경 전략' || CHR(10) || CHR(10));
+    FOR r IN (
+      SELECT ord, value
+      FROM JSON_TABLE(p_llm_json, '$.diagnosis.change_summary[*]'
+        COLUMNS (ord FOR ORDINALITY, value VARCHAR2(4000) PATH '$' NULL ON ERROR))
+      ORDER BY ord
+    ) LOOP
+      l_summary_count := l_summary_count + 1;
+      clob_app(p_out, '- 진단 ' || TO_CHAR(r.ord) || ': ' || safe_vector_text(r.value) || CHR(10));
+    END LOOP;
+    IF l_summary_count = 0 THEN
+      clob_app(p_out, '- 진단 요약: ' || safe_vector_text(llm_field(p_llm_json, 'rationale', '원본 SQL과 XPLAN에서 반복 스캔·조인·집계 패턴을 검토했습니다.')) || CHR(10));
+    END IF;
+    FOR r IN (
+      SELECT ord, value
+      FROM JSON_TABLE(p_llm_json, '$.diagnosis.rewrite_strategy[*]'
+        COLUMNS (ord FOR ORDINALITY, value VARCHAR2(4000) PATH '$' NULL ON ERROR))
+      ORDER BY ord
+    ) LOOP
+      l_strategy_count := l_strategy_count + 1;
+      clob_app(p_out, '- 변경 전략 ' || TO_CHAR(r.ord) || ': ' || safe_vector_text(r.value) || CHR(10));
+    END LOOP;
+    IF l_strategy_count = 0 THEN
+      clob_app(p_out, '- 변경 전략: ' || safe_vector_text(NVL(useful_change_text(llm_field(p_llm_json, 'change_summary', NULL)), '안전하게 확정된 구조 변경 전략이 없습니다.')) || CHR(10));
+    END IF;
+    clob_app(p_out, '- 실제 SQL 변경 내용: ' || safe_vector_text(NVL(useful_change_text(llm_field(p_llm_json, 'change_summary', NULL)), NVL(inline_change_summary(llm_field(p_llm_json, 'candidate_sql', NULL)), '구체적인 SQL 변경 설명 없음'))) || CHR(10));
+    clob_app(p_out, '- 변경 위치: ' || safe_vector_text(NVL(useful_change_text(llm_field(p_llm_json, 'change_location', NULL)), '-')) || CHR(10));
+
+    clob_app(p_out, CHR(10) || '### 의미 보존 위험과 확인 사항' || CHR(10) || CHR(10));
+    FOR r IN (
+      SELECT ord, value
+      FROM JSON_TABLE(p_llm_json, '$.diagnosis.semantic_risks[*]'
+        COLUMNS (ord FOR ORDINALITY, value VARCHAR2(4000) PATH '$' NULL ON ERROR))
+      ORDER BY ord
+    ) LOOP
+      l_risk_count := l_risk_count + 1;
+      clob_app(p_out, '- 위험 ' || TO_CHAR(r.ord) || ': ' || safe_vector_text(r.value) || CHR(10));
+    END LOOP;
+    IF l_risk_count = 0 THEN
+      clob_app(p_out, '- 별도 semantic risk가 기록되지 않았습니다. NULL, 중복, 집계 grain, COUNT(DISTINCT), 조인 카디널리티는 Before/After 결과 동등성 검증으로 확인해야 합니다.' || CHR(10));
+    END IF;
+    clob_app(p_out, CHR(10));
+  EXCEPTION
+    WHEN OTHERS THEN
+      clob_app(p_out, '- 병목 상세 artifact를 해석하지 못했습니다. 값을 추정하지 않고 원본 SQL/XPLAN과 LLM artifact를 확인하세요.' || CHR(10) || CHR(10));
+  END append_bottleneck_diagnosis;
+
+  PROCEDURE append_verified_history_prompt_summary(
+    p_out      IN OUT NOCOPY CLOB,
+    p_llm_json IN CLOB
+  ) IS
+    l_included VARCHAR2(10) := LOWER(json_vc(p_llm_json, '$.verified_history_references_included', 'false'));
+    l_status   VARCHAR2(40) := json_vc(p_llm_json, '$.verified_history_reference_summary.status', 'SKIPPED');
+    l_reason   VARCHAR2(200) := json_vc(p_llm_json, '$.verified_history_reference_summary.reason', NULL);
+    l_count    PLS_INTEGER := 0;
+    l_reason_text VARCHAR2(1000);
+  BEGIN
+    clob_app(p_out, '### 유사 개선 사례를 LLM 프롬프트에 반영한 내용' || CHR(10) || CHR(10));
+    IF l_included <> 'true' THEN
+      l_reason_text := CASE UPPER(NVL(l_reason, l_status))
+        WHEN 'NO_VERIFIED_HISTORY_REFERENCES' THEN '같은 workload에서 현재 요청에 안전하게 참고할 수 있는 IMPROVED / POSITIVE_VERIFIED 사례가 없었습니다.'
+        WHEN 'SOURCE_SQL_NOT_EXECUTED' THEN 'Source SQL 미실행 분석이므로 과거 실측 사례를 현재 실행 근거처럼 사용할 수 없습니다.'
+        WHEN 'ESTIMATED_PLAN_ONLY' THEN '예상 Plan만 수집되어 현재 SQL과 과거 사례의 지배 병목 구조를 실측으로 대조할 수 없습니다.'
+        WHEN 'WORKLOAD_MISMATCH' THEN '같은 workload 조건을 만족하는 검증 사례가 없었습니다.'
+        ELSE '현재 SQL/XPLAN이 과거 사례와 같은 지배 반복 작업·key·immediate consumer를 독립적으로 입증하지 못해 참고 패턴을 넣지 않았습니다.'
+      END;
+      clob_app(p_out, '- 검토 수행: 같은 workload의 검증 완료 사례 중 현재 요청에 안전하게 참고할 수 있는 패턴이 있는지 확인했습니다.' || CHR(10));
+      clob_app(p_out, '- 프롬프트 반영 결과: 반영하지 않음.' || CHR(10));
+      clob_app(p_out, '- 판단 사유: ' || l_reason_text || CHR(10));
+      clob_app(p_out, '- 후보 생성 기준: 과거 사례 대신 현재 SQL, 현재 XPLAN, 객체 정보와 사용자 목표만 사용했습니다. 과거 SQL 원문·identifier·literal·predicate·join은 전달하지 않았습니다.' || CHR(10) || CHR(10));
+      RETURN;
+    END IF;
+
+    clob_app(p_out, '- 동일 workload의 `IMPROVED / POSITIVE_VERIFIED` 사례를 SQL 원문 없이 change summary, 전후 Buffer Gets·elapsed, fingerprint 일치 여부로 축약해 DIAGNOSIS와 CANDIDATE_SQL 프롬프트에 함께 보냈습니다. 이는 현재 실행의 증거가 아닌 참고 자료입니다.' || CHR(10));
+    clob_app(p_out, '- 추가 지시: 과거 SQL의 identifier/literal/predicate/join/SQL text를 복사하지 말고, 현재 SQL과 XPLAN이 동일한 반복 작업 구조·key·immediate consumer를 독립적으로 증명할 때만 구조적 아이디어로 참고합니다. 현재 근거가 항상 우선이며 사례만으로 target·candidate·최종 verdict를 정할 수 없습니다.' || CHR(10));
+    clob_app(p_out, '- 후보 지시: 현재 DIAGNOSIS와 XPLAN으로 안전 키를 확인한 뒤에만 사용하고, `CANDIDATE_ACCEPTANCE_CHECKLIST`와 결정적 Before/After 검증을 독립적으로 통과해야 합니다.' || CHR(10) || CHR(10));
+    clob_app(p_out, '| 검증 사례 | Fingerprint | 변경 요약 | Buffer Gets | Elapsed (s) |' || CHR(10));
+    clob_app(p_out, '|---|---|---|---:|---:|' || CHR(10));
+    FOR r IN (
+      SELECT case_id, matched_fingerprint, change_summary,
+             before_buffer_gets, after_buffer_gets,
+             before_elapsed_time_us, after_elapsed_time_us
+      FROM JSON_TABLE(p_llm_json, '$.verified_history_reference_summary.cases[*]'
+        COLUMNS (
+          case_id VARCHAR2(64) PATH '$.case_id',
+          matched_fingerprint VARCHAR2(10) PATH '$.matched_fingerprint',
+          change_summary VARCHAR2(2000) PATH '$.change_summary',
+          before_buffer_gets NUMBER PATH '$.before_buffer_gets',
+          after_buffer_gets NUMBER PATH '$.after_buffer_gets',
+          before_elapsed_time_us NUMBER PATH '$.before_elapsed_time_us',
+          after_elapsed_time_us NUMBER PATH '$.after_elapsed_time_us'
+        ))
+    ) LOOP
+      l_count := l_count + 1;
+      clob_app(p_out, '| `' || safe_vector_text(r.case_id) || '` | ' || CASE WHEN UPPER(r.matched_fingerprint) = 'Y' THEN '일치' ELSE '유사' END || ' | ' || safe_vector_text(r.change_summary) || ' | ' || NVL(TO_CHAR(r.before_buffer_gets), '-') || ' → ' || NVL(TO_CHAR(r.after_buffer_gets), '-') || ' | ' || us_to_sec_text(TO_CHAR(r.before_elapsed_time_us)) || ' → ' || us_to_sec_text(TO_CHAR(r.after_elapsed_time_us)) || ' |' || CHR(10));
+    END LOOP;
+    IF l_count = 0 THEN
+      clob_app(p_out, '| - | - | 안전한 사례 요약이 저장되지 않았습니다. 과거 SQL 원문은 결과서에 표시하지 않습니다. | - | - |' || CHR(10));
+    END IF;
+    clob_app(p_out, CHR(10));
+  END append_verified_history_prompt_summary;
 
   PROCEDURE append_advisor_summary(p_out IN OUT NOCOPY CLOB, p_json IN CLOB) IS
     l_requested VARCHAR2(10);
@@ -962,8 +1132,6 @@ CREATE OR REPLACE PACKAGE BODY asta_report_pkg AS
     l_source_status VARCHAR2(30) := stage_status_from_json(p_source_evidence_json);
     l_after_status VARCHAR2(30) := stage_status_from_json(p_after_evidence_json);
     l_comparison_status VARCHAR2(30) := stage_status_from_json(p_comparison_json);
-    l_advisor_status VARCHAR2(30) := advisor_status_from_source(p_source_evidence_json);
-    l_advisor_detail VARCHAR2(1000) := first_line(TO_CLOB(json_vc(p_source_evidence_json, '$.advisor.report', '-')));
     l_screen_mode VARCHAR2(30) := UPPER(json_vc(p_comparison_json, '$.screen_mode', '-'));
     l_verdict_reason VARCHAR2(4000) := json_vc(p_comparison_json, '$.verdict_reason', '-');
     l_estimated_plan_only BOOLEAN := FALSE;
@@ -996,15 +1164,28 @@ CREATE OR REPLACE PACKAGE BODY asta_report_pkg AS
     append_stage_row(p_out, 2, 'ORDS 호출', 'DONE', 'ADB ORDS/PLSQL 경로 수행');
     append_stage_row(p_out, 3, 'SQL Guard', 'DONE', 'SELECT/WITH 단일문 검증');
     append_stage_row(p_out, 4, CASE WHEN l_estimated_plan_only THEN '원본 SQL/예상 Plan' ELSE '원본 SQL/XPLAN/metrics' END, l_source_status, l_source_detail);
-    append_stage_row(p_out, 5, 'SQL Tuning Advisor', l_advisor_status, l_advisor_detail);
-    append_stage_row(p_out, 6, 'LLM SQL-only 구조 재작성', stage_status_from_json(p_llm_json), json_vc(p_llm_json, '$.message', 'DBMS_CLOUD_AI 구조 재작성'));
-    append_stage_row(p_out, 7, CASE WHEN l_estimated_plan_only THEN '후보 SQL/예상 Plan' ELSE '후보 SQL evidence' END, l_after_status, l_after_detail);
-    append_stage_row(p_out, 8, CASE WHEN l_estimated_plan_only THEN '예상 Plan 범위 비교' ELSE 'Before/After deterministic 비교' END, l_comparison_status, l_comparison_detail);
-    append_stage_row(p_out, 9, 'Vector KB 조회', stage_status_from_json(p_vector_json), json_vc(p_vector_json, '$.message', '검증 후 유사 튜닝 사례 조회'));
-    append_stage_row(p_out, 10, 'Final report', 'DONE', '결과서 생성');
-    append_stage_row(p_out, 11, 'Vector KB 저장', stage_status_from_json(p_vector_save_json), json_vc(p_vector_save_json, '$.message', '검증 결과 저장'));
+    append_stage_row(p_out, 5, '개선 SQL 만들기', stage_status_from_json(p_llm_json), '현재 SQL/XPLAN 근거로 구조 재작성; 검증된 유사 사례는 내부 참고만 허용');
+    append_stage_row(p_out, 6, CASE WHEN l_estimated_plan_only THEN '개선 SQL/예상 Plan' ELSE '개선 SQL 안전성·성능 확인' END, l_after_status, l_after_detail);
+    append_stage_row(p_out, 7, CASE WHEN l_estimated_plan_only THEN '예상 Plan 범위 비교' ELSE '원본과 개선 결과 비교' END, l_comparison_status, l_comparison_detail);
+    append_stage_row(p_out, 8, '결과서 만들기', 'DONE', '결과서 생성');
+    append_stage_row(p_out, 9, '검증 결과 저장', stage_status_from_json(p_vector_save_json), json_vc(p_vector_save_json, '$.message', '검증 결과 저장'));
     clob_app(p_out, CHR(10));
   END append_stage_check;
+
+  FUNCTION canonical_stage_code(p_seq IN PLS_INTEGER) RETURN VARCHAR2 IS
+  BEGIN
+    RETURN CASE p_seq
+      WHEN 1 THEN 'REQUEST_RECEIVED'
+      WHEN 2 THEN 'ORDS_DISPATCH'
+      WHEN 3 THEN 'SQL_GUARD'
+      WHEN 4 THEN 'BEFORE_EVIDENCE'
+      WHEN 5 THEN 'LLM_REWRITE'
+      WHEN 6 THEN 'AFTER_EVIDENCE'
+      WHEN 7 THEN 'BEFORE_AFTER_COMPARE'
+      WHEN 8 THEN 'FINAL_REPORT'
+      WHEN 9 THEN 'VECTOR_SAVE'
+    END;
+  END canonical_stage_code;
 
   FUNCTION canonical_stage_label(p_seq IN PLS_INTEGER) RETURN VARCHAR2 IS
   BEGIN
@@ -1013,13 +1194,11 @@ CREATE OR REPLACE PACKAGE BODY asta_report_pkg AS
       WHEN 2 THEN 'ORDS 호출'
       WHEN 3 THEN 'SQL Guard'
       WHEN 4 THEN '원본 SQL/XPLAN/metrics'
-      WHEN 5 THEN 'SQL Tuning Advisor'
-      WHEN 6 THEN 'LLM SQL-only 구조 재작성'
-      WHEN 7 THEN '후보 SQL evidence'
-      WHEN 8 THEN 'Before/After deterministic 비교'
-      WHEN 9 THEN 'Vector KB 조회'
-      WHEN 10 THEN 'Final report'
-      WHEN 11 THEN 'Vector KB 저장'
+      WHEN 5 THEN '개선 SQL 만들기'
+      WHEN 6 THEN '개선 SQL 안전성·성능 확인'
+      WHEN 7 THEN '원본과 개선 결과 비교'
+      WHEN 8 THEN '결과서 만들기'
+      WHEN 9 THEN '검증 결과 저장'
     END;
   END canonical_stage_label;
 
@@ -1029,6 +1208,7 @@ CREATE OR REPLACE PACKAGE BODY asta_report_pkg AS
     p_pipeline_elapsed_ms IN NUMBER
   ) IS
     l_code          VARCHAR2(64);
+    l_expected_code VARCHAR2(64);
     l_label         VARCHAR2(256);
     l_status        VARCHAR2(30);
     l_started_at    VARCHAR2(64);
@@ -1042,8 +1222,9 @@ CREATE OR REPLACE PACKAGE BODY asta_report_pkg AS
     clob_app(p_out, '| # | 단계 | 상태 | 시작 | 완료 | 소요시간 (s) |' || CHR(10));
     clob_app(p_out, '|---:|---|---|---|---|---:|' || CHR(10));
 
-    FOR l_seq IN 1..11 LOOP
+    FOR l_seq IN 1..9 LOOP
       l_code := NULL;
+      l_expected_code := canonical_stage_code(l_seq);
       l_label := NULL;
       l_status := NULL;
       l_started_at := NULL;
@@ -1067,7 +1248,7 @@ CREATE OR REPLACE PACKAGE BODY asta_report_pkg AS
                    elapsed_ms    NUMBER        PATH '$.elapsed_ms' NULL ON ERROR
                  )
                )
-        WHERE seq_no = l_seq;
+        WHERE stage_code = l_expected_code;
       END IF;
 
       l_status := CASE UPPER(l_status)
@@ -1375,6 +1556,7 @@ CREATE OR REPLACE PACKAGE BODY asta_report_pkg AS
   ) RETURN CLOB IS
     l_report              CLOB;
     l_candidate_sql_vc    VARCHAR2(32767);
+    l_change_loc          VARCHAR2(4000);
     l_rec                 VARCHAR2(4000);
     l_elapsed_delta       NUMBER;
     l_buffer_reduction    VARCHAR2(100);
@@ -1395,11 +1577,10 @@ CREATE OR REPLACE PACKAGE BODY asta_report_pkg AS
     l_before_elapsed      NUMBER;
     l_after_elapsed       NUMBER;
     l_latency_target      NUMBER;
-    l_vector_count        PLS_INTEGER := 0;
   BEGIN
     -- 생성됨/실행됨/채택됨은 서로 다른 상태다. 정책 선별 탈락이
     -- candidate_error에 기록되어도 실제로 생성·실행된 후보를 결과서에서 숨기지 않는다.
-    l_candidate_sql_vc := llm_field(p_llm_json, 'candidate_sql', NULL);
+    l_candidate_sql_vc := effective_candidate_sql(p_run_id, p_llm_json, p_comparison_json);
 
     l_verdict := UPPER(json_vc(p_comparison_json, '$.verdict', 'INSUFFICIENT_EVIDENCE'));
     l_verdict_reason := json_vc(p_comparison_json, '$.verdict_reason', '-');
@@ -1409,8 +1590,9 @@ CREATE OR REPLACE PACKAGE BODY asta_report_pkg AS
     l_estimated_plan_only := l_screen_mode = 'ESTIMATED_PLAN'
       OR l_verdict_reason = 'ESTIMATED_PLAN_ONLY_RUNTIME_NOT_EXECUTED';
     l_estimated_candidate := l_estimated_plan_only AND l_candidate_sql_vc IS NOT NULL;
+    -- A completed IMPROVED run may predate the rich LLM candidate field while
+    -- still retaining the exact verified candidate in ASTA_RUNS.TUNED_SQL.
     l_candidate_adopted := l_verdict = 'IMPROVED'
-      AND llm_has_improved_sql(p_llm_json)
       AND l_candidate_sql_vc IS NOT NULL;
     l_after_plan := plan_text_clob(p_after_evidence_json);
     l_candidate_executed := l_candidate_sql_vc IS NOT NULL
@@ -1478,6 +1660,11 @@ CREATE OR REPLACE PACKAGE BODY asta_report_pkg AS
       l_rec := '의미 있는 개선 - Buffer Gets 대폭 감소, 튜닝 SQL 적용 검토';
     ELSIF l_verdict = 'IMPROVED' AND l_candidate_sql_vc IS NOT NULL THEN
       l_rec := 'SQL 변경 + ' || NVL(useful_change_text(llm_field(p_llm_json, 'change_summary', NULL)), NVL(inline_change_summary(l_candidate_sql_vc), '실행 계획/Buffer Gets 개선 후보 적용'));
+      -- LLM change_location이 비면 후보 SQL 상단 주석 마커에서 변경 위치를 유도한다.
+      l_change_loc := NVL(useful_change_text(llm_field(p_llm_json, 'change_location', NULL)), inline_change_locations(l_candidate_sql_vc));
+      IF l_change_loc IS NOT NULL THEN
+        l_rec := l_rec || ' — 변경 위치: ' || l_change_loc;
+      END IF;
     ELSE
       l_rec := '원본 SQL 유지 + 실행 가능한 개선 SQL 없음';
     END IF;
@@ -1487,12 +1674,14 @@ CREATE OR REPLACE PACKAGE BODY asta_report_pkg AS
 
     clob_app(l_report, '## 결론' || CHR(10) || CHR(10));
     clob_app(l_report, '- Run ID: `' || p_run_id || '`' || CHR(10) || CHR(10));
+    clob_app(l_report, '- 최종 판정: `' || l_verdict || '`' || CHR(10) || CHR(10));
     clob_app(l_report, '- 실행 유형: ' || json_vc(p_comparison_json, '$.workload_type', 'OLTP') || CHR(10) || CHR(10));
     IF l_estimated_plan_only THEN
       clob_app(l_report, '- 분석 판정: `ANALYSIS_ONLY` — 튜닝 후보 제안/분석 완료, 성능 개선 여부 미검증' || CHR(10) || CHR(10));
       clob_app(l_report, '- 우선 확인 지표: 실제 성능 지표 미측정 — 예상 Plan의 Cost/Cardinality만 참고' || CHR(10) || CHR(10));
       clob_app(l_report, '- 확보된 근거: 정적 SQL 분석, EXPLAIN PLAN 예상계획, 객체 통계·인덱스 정보, Vector/LLM 분석 결과' || CHR(10) || CHR(10));
       clob_app(l_report, '- 미확보 근거: Source runtime metrics, Before/After 실제 XPLAN, result equivalence, 반복 성능 측정' || CHR(10) || CHR(10));
+      clob_app(l_report, '- 실제 개선 판정을 수행하지 않았습니다.' || CHR(10) || CHR(10));
     ELSE
       clob_app(l_report, '- 우선 확인 지표: ' || CASE WHEN json_vc(p_comparison_json, '$.primary_metric', 'BUFFER_READS') = 'ELAPSED_TIME' THEN '전체 실행시간' ELSE 'DB가 메모리에서 읽은 데이터 블록 수(Buffer Gets)' END || CHR(10) || CHR(10));
     END IF;
@@ -1520,18 +1709,16 @@ CREATE OR REPLACE PACKAGE BODY asta_report_pkg AS
       clob_app(l_report, '- 종합 판정: OLTP 개선 성공 — Buffer Gets 대폭 절감은 고빈도·동시 실행에서 의미 있습니다.' || CHR(10) || CHR(10));
     END IF;
 
-    clob_app(l_report, '## 병목 진단' || CHR(10) || CHR(10));
-    IF l_estimated_plan_only THEN
-      clob_app(l_report, '- 예상 병목(EXPLAIN PLAN 기반): ' || llm_field(p_llm_json, 'rationale', '예상계획에서 반복 스캔/조인/집계 가능성이 관찰되었습니다.') || CHR(10) || CHR(10));
-      clob_app(l_report, '- 측정 주의: 원본·후보 SQL을 실행하지 않아 Buffer Gets, Disk Reads, A-Time, Starts는 실측되지 않았습니다.' || CHR(10) || CHR(10));
-    ELSE
-      clob_app(l_report, '- 주요 병목: ' || llm_field(p_llm_json, 'rationale', '원본 SQL의 반복 스캔/조인/집계 패턴으로 Buffer Gets가 증가했습니다.') || CHR(10) || CHR(10));
-    END IF;
-    clob_app(l_report, '- SQL 변경 내용: ' || NVL(useful_change_text(llm_field(p_llm_json, 'change_summary', NULL)), NVL(inline_change_summary(l_candidate_sql_vc), NVL(useful_change_text(llm_field(p_llm_json, 'change_reason', NULL)), '구체적인 SQL 변경 설명 없음'))) || CHR(10) || CHR(10));
-    clob_app(l_report, '- 변경 위치: ' || NVL(useful_change_text(llm_field(p_llm_json, 'change_location', NULL)), NVL(inline_change_locations(l_candidate_sql_vc), '-')) || CHR(10) || CHR(10));
+    append_bottleneck_diagnosis(
+      l_report,
+      p_llm_json,
+      p_source_evidence_json,
+      p_comparison_json,
+      l_estimated_plan_only
+    );
 
     clob_app(l_report, '## 튜닝 전/후 수치 비교' || CHR(10) || CHR(10));
-    clob_app(l_report, '- 실행 유형 / 우선 지표: ' || json_vc(p_comparison_json, '$.workload_type', 'OLTP') || ' / ' || CASE WHEN json_vc(p_comparison_json, '$.primary_metric', 'BUFFER_READS') = 'ELAPSED_TIME' THEN '전체 실행시간' ELSE '메모리 읽기 블록 수' END || CHR(10) || CHR(10));
+    clob_app(l_report, '- 실행 유형 / 우선 지표 (Workload / Primary metric): ' || json_vc(p_comparison_json, '$.workload_type', 'OLTP') || ' / ' || CASE WHEN json_vc(p_comparison_json, '$.primary_metric', 'BUFFER_READS') = 'ELAPSED_TIME' THEN '전체 실행시간' ELSE '메모리 읽기 블록 수' END || CHR(10) || CHR(10));
     IF l_estimated_plan_only THEN
       clob_app(l_report, '- 메모리 읽기 블록 수(Buffer Gets): 미측정' || CHR(10) || CHR(10));
       clob_app(l_report, '- 디스크 읽기 횟수(Disk Reads): 미측정' || CHR(10) || CHR(10));
@@ -1613,62 +1800,7 @@ CREATE OR REPLACE PACKAGE BODY asta_report_pkg AS
       END IF;
     END IF;
 
-    clob_app(l_report, '### 과거 유사 튜닝 사례 — 참고 정보' || CHR(10) || CHR(10));
-    IF l_estimated_plan_only THEN
-      clob_app(l_report, '> 이번 실행은 원본·후보 SQL의 예상 Plan만 확인했으며 실제 개선 판정을 수행하지 않았습니다. 과거 유사 사례는 현재 후보의 성능·동등성 증거가 아닌 참고 자료입니다.' || CHR(10) || CHR(10));
-    ELSE
-      clob_app(l_report, '> 유사 사례는 과거 실행의 참고 정보이며, 현재 SQL의 개선 판정은 이번 Before/After 실제 실행 결과를 기준으로 합니다. 과거 사례는 현재 실행의 증거가 아닌 참고 자료입니다.' || CHR(10) || CHR(10));
-    END IF;
-    clob_app(l_report, '- 검색 방식: fingerprint 일치 우선 참고 (`' || safe_vector_text(json_vc(p_vector_json, '$.search_strategy')) || '`)' || CHR(10) || CHR(10));
-    FOR v IN (
-      SELECT case_id, verdict, workload_type, primary_metric, change_summary,
-             before_buffer_gets, after_buffer_gets, before_elapsed_time_us,
-             after_elapsed_time_us, sql_preview, report_ref, matched_fingerprint
-      FROM JSON_TABLE(p_vector_json, '$.cases[*]' COLUMNS(
-        case_id VARCHAR2(64) PATH '$.case_id', verdict VARCHAR2(30) PATH '$.verdict',
-        workload_type VARCHAR2(30) PATH '$.workload_type', primary_metric VARCHAR2(30) PATH '$.primary_metric',
-        change_summary VARCHAR2(1000) PATH '$.change_summary',
-        before_buffer_gets NUMBER PATH '$.before_buffer_gets', after_buffer_gets NUMBER PATH '$.after_buffer_gets',
-        before_elapsed_time_us NUMBER PATH '$.before_elapsed_time_us', after_elapsed_time_us NUMBER PATH '$.after_elapsed_time_us',
-        sql_preview VARCHAR2(500) PATH '$.sql_preview', report_ref VARCHAR2(1000) PATH '$.report_ref',
-        matched_fingerprint VARCHAR2(1) PATH '$.matched_fingerprint'))
-    ) LOOP
-      l_vector_count := l_vector_count + 1;
-      clob_app(l_report, '#### 사례 `' || safe_vector_text(v.case_id) || '` — ' || safe_vector_text(v.verdict) || CHR(10) || CHR(10));
-      clob_app(l_report, '- Workload / Primary metric: ' || safe_vector_text(v.workload_type) || ' / ' || safe_vector_text(v.primary_metric) || CHR(10));
-      clob_app(l_report, '- 변경 요약: ' || safe_vector_text(v.change_summary) || CHR(10));
-      clob_app(l_report, '- Buffer Gets: ' || NVL(TO_CHAR(v.before_buffer_gets), '-') || ' → ' || NVL(TO_CHAR(v.after_buffer_gets), '-') || CHR(10));
-      clob_app(l_report, '- Elapsed (s): ' || us_to_sec_text(TO_CHAR(v.before_elapsed_time_us)) || ' → ' || us_to_sec_text(TO_CHAR(v.after_elapsed_time_us)) || CHR(10));
-      clob_app(l_report, '- 적용 가능성: ' || CASE WHEN v.matched_fingerprint = 'Y' THEN '동일 fingerprint 참고' ELSE 'fingerprint 우선순위 기반 과거 참고' END || CHR(10) || CHR(10));
-      IF v.sql_preview IS NOT NULL THEN
-        clob_app(l_report, '<details><summary>축약 SQL 보기</summary>' || CHR(10) || CHR(10) || '<pre><code>');
-        clob_app(l_report, safe_vector_text(v.sql_preview));
-        clob_app(l_report, '</code></pre>' || CHR(10) || CHR(10) || '</details>' || CHR(10) || CHR(10));
-      END IF;
-      IF REGEXP_LIKE(v.report_ref, '^/api/asta/runs/[A-Za-z0-9][A-Za-z0-9_.:-]*/report$') THEN
-        clob_app(l_report, '[전체 결과서 보기](' || v.report_ref || ')' || CHR(10) || CHR(10));
-      END IF;
-    END LOOP;
-    IF l_vector_count = 0 THEN
-      clob_app(l_report, '- 유사 사례 없음' || CHR(10) || CHR(10));
-    END IF;
-
-    clob_app(l_report, '### Oracle SQL Tuning Advisor 요약' || CHR(10) || CHR(10));
-    clob_app(l_report, '- 요청 여부: `' || json_vc(p_source_evidence_json, '$.advisor_requested', 'false') || '`' || CHR(10) || CHR(10));
-    clob_app(l_report, '- 상태: `' || json_vc(p_source_evidence_json, '$.advisor.status', 'SKIPPED') || '`' || CHR(10) || CHR(10));
-    clob_app(l_report, '- Time Limit (s): `' || json_vc(p_source_evidence_json, '$.sqltune_time_limit_sec', '-') || '`' || CHR(10) || CHR(10));
-    clob_app(l_report, '- 상세: Oracle SQL Tuning Advisor 원문은 runtime_evidence.advisor.report artifact에 보존됩니다. 권고는 자동 적용하지 않으며 DBA 검토 대상입니다.' || CHR(10) || CHR(10));
-
-    append_dba_review(l_report, p_source_evidence_json, p_comparison_json);
-
-    clob_app(l_report, '## 작업 수행 이력' || CHR(10) || CHR(10));
-    IF l_estimated_plan_only THEN
-      clob_app(l_report, '- 원본·후보 SQL을 실행하지 않고 각각 EXPLAIN PLAN 예상계획을 수집한 뒤 튜닝 후보를 생성한 단계 상태입니다. 표의 DONE은 해당 단계 완료를 뜻하며 업무 SQL 실행 완료를 뜻하지 않습니다.' || CHR(10) || CHR(10));
-    ELSE
-      clob_app(l_report, '- 요청 접수부터 원본 SQL evidence, Advisor, Vector, LLM 튜닝, 튜닝 SQL 재수행, 최종 비교, Vector 저장까지의 실제 단계 상태는 아래 표와 같습니다.' || CHR(10) || CHR(10));
-    END IF;
-    append_stage_check(l_report, p_source_evidence_json, p_vector_json, p_llm_json, p_final_review_json, p_after_evidence_json, p_comparison_json, p_vector_save_json);
-    append_stage_timing(l_report, p_progress_json, p_pipeline_elapsed_ms);
+    append_verified_history_prompt_summary(l_report, p_llm_json);
 
     append_object_metadata_section(l_report, p_source_evidence_json);
 
@@ -1726,8 +1858,8 @@ CREATE OR REPLACE PACKAGE BODY asta_report_pkg AS
       l_runtime_status := 'MEASURED';
     END IF;
     -- Keep rejected SQL only in the raw LLM audit artifact.
-    IF l_verdict = 'IMPROVED' AND llm_has_improved_sql(p_llm_json) THEN
-      l_candidate_sql_vc := llm_field(p_llm_json, 'candidate_sql', NULL);
+    IF l_verdict = 'IMPROVED' THEN
+      l_candidate_sql_vc := effective_candidate_sql(p_run_id, p_llm_json, p_comparison_json);
     ELSE
       l_candidate_sql_vc := NULL;
     END IF;
@@ -1762,13 +1894,11 @@ CREATE OR REPLACE PACKAGE BODY asta_report_pkg AS
       clob_app(l_out, '{"seq":2,"code":"ORDS_DISPATCH","label":"ADB ORDS analyze call","status":"DONE"},');
       clob_app(l_out, '{"seq":3,"code":"SQL_GUARD","label":"ADB SQL guard","status":"DONE"},');
       clob_app(l_out, '{"seq":4,"code":"BEFORE_EVIDENCE","label":"Source evidence via DB Link","status":"DONE"},');
-      clob_app(l_out, '{"seq":5,"code":"SQL_TUNING_ADVISOR","label":"SQL Tuning Advisor","status":"DONE"},');
-      clob_app(l_out, '{"seq":6,"code":"LLM_REWRITE","label":"SQL-only structural rewrite","status":"DONE"},');
-      clob_app(l_out, '{"seq":7,"code":"AFTER_EVIDENCE","label":"Candidate SQL evidence","status":"SKIPPED"},');
-      clob_app(l_out, '{"seq":8,"code":"BEFORE_AFTER_COMPARE","label":"Deterministic comparison","status":"SKIPPED"},');
-      clob_app(l_out, '{"seq":9,"code":"VECTOR_KB","label":"Verified Vector KB search","status":"DONE"},');
-      clob_app(l_out, '{"seq":10,"code":"FINAL_REPORT","label":"Final report synthesis","status":"DONE"},');
-      clob_app(l_out, '{"seq":11,"code":"VECTOR_SAVE","label":"ADB Vector KB save","status":"DONE"}]');
+      clob_app(l_out, '{"seq":5,"code":"LLM_REWRITE","label":"SQL-only structural rewrite","status":"DONE"},');
+      clob_app(l_out, '{"seq":6,"code":"AFTER_EVIDENCE","label":"Candidate SQL evidence","status":"SKIPPED"},');
+      clob_app(l_out, '{"seq":7,"code":"BEFORE_AFTER_COMPARE","label":"Deterministic comparison","status":"SKIPPED"},');
+      clob_app(l_out, '{"seq":8,"code":"FINAL_REPORT","label":"Final report synthesis","status":"DONE"},');
+      clob_app(l_out, '{"seq":9,"code":"VECTOR_SAVE","label":"Verified result save","status":"DONE"}]');
     ELSE
       clob_app_clob(l_out, p_progress_json);
     END IF;

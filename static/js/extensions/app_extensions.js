@@ -13,6 +13,11 @@
       render: () => window.Views.tuningAssistant(),
       dbIndependent: true,
     },
+    tuningHistory: {
+      label: "Tuning History",
+      render: () => window.Views.tuningHistory(),
+      dbIndependent: true,
+    },
   });
 
   function insertMenu() {
@@ -24,11 +29,18 @@
     item.dataset.route = "tuning";
     item.innerHTML = "<span>AI SQL Tuning Assistant</span>";
 
+    const history = document.createElement("div");
+    history.className = "nav-item";
+    history.dataset.route = "tuningHistory";
+    history.innerHTML = "<span>Tuning History</span>";
+
     const sep = sidenav.querySelector(".nav-sep");
     if (sep) {
       sidenav.insertBefore(item, sep);
+      sidenav.insertBefore(history, sep);
     } else {
       sidenav.appendChild(item);
+      sidenav.appendChild(history);
     }
   }
 

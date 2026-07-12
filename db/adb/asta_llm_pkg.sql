@@ -709,6 +709,60 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
     RETURN l_out;
   END compact_vector_evidence;
 
+  FUNCTION compact_verified_history_references(
+    p_json          IN CLOB,
+    p_workload_type IN VARCHAR2
+  ) RETURN CLOB IS
+    l_cases CLOB;
+    l_out   CLOB;
+  BEGIN
+    DBMS_LOB.CREATETEMPORARY(l_out, TRUE);
+    IF p_json IS NULL THEN
+      RETURN TO_CLOB('{"status":"SKIPPED","reason":"NO_VERIFIED_HISTORY_REFERENCES","cases":[]}');
+    END IF;
+    SELECT COALESCE(
+      JSON_ARRAYAGG(
+        JSON_OBJECT(
+          'case_id' VALUE case_id,
+          'matched_fingerprint' VALUE matched_fingerprint,
+          'workload_type' VALUE workload_type,
+          'primary_metric' VALUE primary_metric,
+          'change_summary' VALUE change_summary,
+          'before_buffer_gets' VALUE before_buffer_gets,
+          'after_buffer_gets' VALUE after_buffer_gets,
+          'before_elapsed_time_us' VALUE before_elapsed_time_us,
+          'after_elapsed_time_us' VALUE after_elapsed_time_us
+          RETURNING CLOB
+        ) RETURNING CLOB
+      ), TO_CLOB('[]')
+    ) INTO l_cases
+    FROM JSON_TABLE(p_json, '$.cases[*]'
+      COLUMNS (
+        case_id VARCHAR2(64) PATH '$.case_id',
+        matched_fingerprint VARCHAR2(1) PATH '$.matched_fingerprint',
+        workload_type VARCHAR2(30) PATH '$.workload_type',
+        primary_metric VARCHAR2(30) PATH '$.primary_metric',
+        change_summary VARCHAR2(2000) PATH '$.change_summary',
+        before_buffer_gets NUMBER PATH '$.before_buffer_gets',
+        after_buffer_gets NUMBER PATH '$.after_buffer_gets',
+        before_elapsed_time_us NUMBER PATH '$.before_elapsed_time_us',
+        after_elapsed_time_us NUMBER PATH '$.after_elapsed_time_us',
+        verdict VARCHAR2(30) PATH '$.verdict',
+        learning_class VARCHAR2(30) PATH '$.learning_class'
+      )
+    )
+    WHERE verdict = 'IMPROVED'
+      AND learning_class = 'POSITIVE_VERIFIED'
+      AND UPPER(workload_type) = UPPER(p_workload_type);
+    clob_app(l_out, '{"status":"REFERENCE_ONLY","policy":"VERIFIED_HISTORY_PATTERN_REFERENCE_NO_RAW_SQL","cases":');
+    clob_app_clob(l_out, l_cases);
+    clob_app(l_out, '}');
+    RETURN l_out;
+  EXCEPTION
+    WHEN OTHERS THEN
+      RETURN TO_CLOB('{"status":"SKIPPED","reason":"VERIFIED_HISTORY_REFERENCE_UNAVAILABLE","cases":[]}');
+  END compact_verified_history_references;
+
   FUNCTION compact_before_after(p_json IN CLOB) RETURN CLOB IS
     l_out CLOB;
     l_first BOOLEAN := TRUE;
@@ -984,6 +1038,9 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
     l_guard_error VARCHAR2(2000);
     l_guard_repair_attempted VARCHAR2(1) := 'N';
     l_candidate_source VARCHAR2(40);
+    l_source_executed VARCHAR2(1);
+    l_history_references CLOB;
+    l_history_references_included VARCHAR2(1) := 'N';
   BEGIN
     l_optimization_goal := CASE WHEN l_workload_type = 'BATCH' THEN 'MINIMIZE_ELAPSED_TIME' ELSE 'MINIMIZE_BUFFER_READS' END;
     IF UPPER(NVL(p_use_llm, 'Y')) <> 'Y' THEN
@@ -996,6 +1053,15 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
     asta_sql_guard_pkg.assert_safe_select(p_sql);
     l_plan_text := json_query_clob(p_source_evidence_json, '$.plan_text');
     l_column_dictionary := compact_column_dictionary(p_source_evidence_json);
+    l_source_executed := CASE WHEN LOWER(NVL(json_vc(p_source_evidence_json, '$.source_sql_executed'), 'true')) = 'false' THEN 'N' ELSE 'Y' END;
+    IF l_source_executed = 'Y' THEN
+      l_history_references := compact_verified_history_references(p_vector_json, l_workload_type);
+      IF DBMS_LOB.INSTR(l_history_references, '"case_id"', 1, 1) > 0 THEN
+        l_history_references_included := 'Y';
+      END IF;
+    ELSE
+      l_history_references := TO_CLOB('{"status":"SKIPPED","reason":"SOURCE_SQL_NOT_EXECUTED","cases":[]}');
+    END IF;
     DBMS_LOB.CREATETEMPORARY(l_profile_errors, TRUE);
     clob_app(l_profile_errors, '[');
 
@@ -1006,10 +1072,23 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
     clob_app(l_diagnosis_prompt, 'Return JSON only; do not wrap the response in Markdown fences.' || CHR(10));
     clob_app(l_diagnosis_prompt, 'Return JSON only with rewrite_strategy(array), change_summary(array), semantic_risks(array), target_operations(array). Do not return candidate_sql.' || CHR(10));
     clob_app(l_diagnosis_prompt, 'Identify the safest structural rewrite for repeated scans, correlated MIN/SUM, UNION ALL, nested loops and temp transformations. ASTA will execute and compare the candidate later. Explanations must be Korean.' || CHR(10));
-    IF LOWER(NVL(json_vc(p_source_evidence_json, '$.source_sql_executed'), 'true')) = 'false' THEN
+    -- Workload-specific priority: OLTP optimizes buffer reads, BATCH optimizes elapsed time.
+    IF l_workload_type = 'BATCH' THEN
+      clob_app(l_diagnosis_prompt, 'WORKLOAD_PRIORITY (BATCH, optimization_goal=MINIMIZE_ELAPSED_TIME): rank the dominant bottleneck primarily by elapsed time / wall-clock duration and temp-heavy work (large sorts, hash joins, TEMP spills); buffer gets is a supporting metric only. Do not add hints or index DDL; keep the rewrite purely structural.' || CHR(10));
+    ELSE
+      clob_app(l_diagnosis_prompt, 'WORKLOAD_PRIORITY (OLTP, optimization_goal=MINIMIZE_BUFFER_READS): rank the dominant bottleneck primarily by logical buffer reads (last_cr_buffer_gets per execution) and random table lookups (single-row index/rowid access under nested loops); elapsed time / wall-clock duration is a supporting metric only. Do not add hints or index DDL; keep the rewrite purely structural.' || CHR(10));
+    END IF;
+    IF l_source_executed = 'N' THEN
       clob_app(l_diagnosis_prompt, 'Safety mode is active: the Source SQL was NOT executed. DBMS_XPLAN is an estimated EXPLAIN PLAN only. Do not claim measured A-Time, Buffers, Starts, elapsed time, row counts, or result equivalence. Rank likely cost/cardinality and structural risks from estimated operations and object statistics, clearly labeling every conclusion as an estimate.' || CHR(10));
     ELSE
       clob_app(l_diagnosis_prompt, 'Rank XPLAN operations by measured A-Time and Buffers, using Starts to identify repeated work; choose exactly one dominant repeated-work operation, and record its query block, object, original correlation keys, immediate consumer, and one localized rewrite boundary in target_operations and rewrite_strategy. Do not propose a rewrite when those details cannot be established from the supplied SQL and XPLAN.' || CHR(10));
+      clob_app(l_diagnosis_prompt, 'DOMINANT_TARGET_CONTRACT: target_operations must contain exactly one selected target with operation_id, query_block, object, original_correlation_or_join_keys, immediate_consumer, localized_rewrite_boundary, measured_buffers, measured_a_time, and starts. The selected target must be the highest measured repeated-work opportunity that can be safely rewritten; do not select a cheaper operation or combine multiple unrelated targets. If any field cannot be evidenced from the supplied SQL and XPLAN, return an empty target_operations array and no rewrite strategy.' || CHR(10));
+      IF l_history_references_included = 'Y' THEN
+        clob_app(l_diagnosis_prompt, 'VERIFIED_HISTORY_PATTERN_REFERENCE policy: the following are past IMPROVED/FULL_RESULT patterns for the same workload, not evidence or SQL templates. Never copy identifiers, literals, predicates, joins, or SQL text from a reference. Use a reference only when the current SQL and measured XPLAN independently prove the same dominant repeated-work shape, correlation/join grain, and immediate consumer. Current SQL/XPLAN evidence always wins; references cannot select a target, justify a candidate, or change the final verdict.' || CHR(10));
+        clob_app(l_diagnosis_prompt, 'VERIFIED_HISTORY_PATTERN_REFERENCES (safe metadata only):' || CHR(10));
+        clob_app_clob(l_diagnosis_prompt, l_history_references);
+        clob_app(l_diagnosis_prompt, CHR(10));
+      END IF;
     END IF;
     IF p_tuning_context_json IS NOT NULL THEN
       clob_app(l_diagnosis_prompt, 'User tuning context JSON is a hard scope constraint. Diagnose only the bottleneck named in user_notes and do not add unrelated rewrites:' || CHR(10));
@@ -1089,6 +1168,13 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
     clob_app(l_candidate_prompt, 'Oracle syntax preflight is mandatory before returning SQL: balance every parenthesis; keep every SELECT/FROM/JOIN/WHERE/GROUP BY and set-operation branch syntactically complete; ensure each CTE has one unique name; never give a CTE the same name as a referenced base table or view; update every consumer to the exact new CTE name; prohibit accidental self-reference or recursive WITH; and trace every alias and column to a declared source. Return NO_REWRITE instead of SQL that could raise ORA-00904, ORA-00918, ORA-00942, ORA-01789, ORA-32039, or another Oracle parse/name-resolution error.' || CHR(10));
     clob_app(l_candidate_prompt, 'ORA-25156 preflight: never mix ANSI JOIN syntax with the old-style Oracle outer-join operator (+) in a candidate. Preserve one join style consistently; return NO_REWRITE if a safe conversion is uncertain.' || CHR(10));
     clob_app(l_candidate_prompt, 'For a correlated MIN or SUM whose outer DECODE maps ''-'' to all inner COLOR_CD or SIZE_CD values, pre-aggregate separate exact and wildcard grains with GROUPING SETS and GROUPING flags, then LEFT JOIN at most one aggregate row from the original immediate consumer. Preserve the scalar aggregate result of one NULL value when no inner row matches; never use a detail-grain wildcard join or COALESCE that changes this empty-input result. Return NO_REWRITE if these semantics cannot be preserved.' || CHR(10));
+    clob_app(l_candidate_prompt, 'CANDIDATE_ACCEPTANCE_CHECKLIST: implement only the one DOMINANT_TARGET_CONTRACT target from DIAGNOSIS. Before returning SQL, verify internally that (1) the candidate removes or evaluates once the target repeated base-table access/subquery, (2) every original correlation or join key preserves the original result grain, NULL behavior, duplicate multiplicity, and COUNT(DISTINCT) semantics, (3) each helper join can match at most one aggregate/key row for its immediate consumer, and (4) the leading ASTA change annotation states the removed repeated operation and the evidence-based expected Buffer Gets effect. Return exactly NO_REWRITE if any check fails; never substitute an unrelated rewrite, full-query redesign, or hint-only change.' || CHR(10));
+    IF l_history_references_included = 'Y' THEN
+      clob_app(l_candidate_prompt, 'VERIFIED_HISTORY_PATTERN_REFERENCE candidate rule: references are non-authoritative structural ideas only. Do not copy any reference SQL/object/column/literal/predicate. Apply an idea only after the current DIAGNOSIS and XPLAN prove the same target shape and safety keys; otherwise ignore it. The current candidate must independently pass CANDIDATE_ACCEPTANCE_CHECKLIST and ASTA deterministic validation.' || CHR(10));
+      clob_app(l_candidate_prompt, 'VERIFIED_HISTORY_PATTERN_REFERENCES (safe metadata only):' || CHR(10));
+      clob_app_clob(l_candidate_prompt, l_history_references);
+      clob_app(l_candidate_prompt, CHR(10));
+    END IF;
     IF NVL(DBMS_LOB.GETLENGTH(p_sql), 0) >= 12000 THEN
       clob_app(l_candidate_prompt, 'Long-SQL candidate boundary: rewrite exactly one repeated-access pattern completely across its producer and consumer blocks. Add every helper CTE, projected join key, GROUP BY expression, join, and correlated-reference change required for that one pattern, while copying every unrelated CTE, UNION ALL branch, predicate, and select-list expression verbatim. Do not redesign the full statement, change any set-operation branch projection count, or reference a grouping key after aggregation removed it.' || CHR(10));
     END IF;
@@ -1226,6 +1312,12 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
     clob_app(l_result, ',"xplan_truncated":false');
     clob_app(l_result, ',"source_evidence_included":' || CASE WHEN p_source_evidence_json IS NULL THEN 'false' ELSE 'true' END);
     clob_app(l_result, ',"vector_evidence_included":false');
+    clob_app(l_result, ',"verified_history_references_included":' || CASE WHEN l_history_references_included = 'Y' THEN 'true' ELSE 'false' END);
+    -- This is the same SQL-free metadata supplied to the two LLM prompts.  Keep it
+    -- in the run artifact so the report can state exactly what additional context
+    -- was provided without exposing a prior customer's SQL text.
+    clob_app(l_result, ',"verified_history_reference_summary":');
+    clob_app_clob(l_result, NVL(l_history_references, TO_CLOB('{"status":"SKIPPED","reason":"NO_VERIFIED_HISTORY_REFERENCES","cases":[]}')));
     IF l_candidate_sql IS NOT NULL AND structural_sql_key(p_sql) = structural_sql_key(l_candidate_sql) THEN
       l_candidate_sql := NULL;
       l_candidate_error := 'NO_REWRITE: identical, comment-only, or hint-only candidate';

@@ -5,6 +5,8 @@ import asyncio
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
@@ -94,7 +96,10 @@ def test_asta_analyze_uses_ords_first_proxy(monkeypatch):
 
 
 def test_asta_analyze_does_not_perform_python_sql_guard_or_source_db_calls(monkeypatch):
-    """ASTA 계약/회귀 조건을 검증한다: asta analyze does not perform python sql guard or source db calls."""
+    """analyze는 Python에서 SQL 가드나 Source DB 직접 호출을 수행하지 않는다.
+
+    ORDS(ADB)가 SQL 가드 거절을 반환하면, 프록시는 자체 재판단이나 Source 직접 우회 없이
+    그 실패를 그대로 HTTP 오류로 승격한다. 로컬 Source 실행 경로(_source_runtime_xplan)는 부재한다."""
     deps.set_config(_cfg())
 
     async def fake_post(url, payload, timeout):
@@ -104,9 +109,11 @@ def test_asta_analyze_does_not_perform_python_sql_guard_or_source_db_calls(monke
     monkeypatch.setattr(asta_proxy, "_post_json_to_ords", fake_post)
     assert not hasattr(asta_proxy, "_source_runtime_xplan")
 
-    result = asyncio.run(asta_proxy.analyze(DummyRequest({"sql": "drop table t"}), asta_proxy.BackgroundTasks(), database="devdoADB"))
+    with pytest.raises(asta_proxy.HTTPException) as exc_info:
+        asyncio.run(asta_proxy.analyze(DummyRequest({"sql": "drop table t"}), asta_proxy.BackgroundTasks(), database="devdoADB"))
 
-    assert result["proxy"]["source"] == "ADB_ORDS"
-    assert result["status"] == "FAILED"
+    # ORDS/ADB 경계에서 온 실패이며(4xx/5xx 승격), Python 로컬 가드가 개입하지 않았다.
+    assert exc_info.value.status_code in (422, 502)
+    assert "Only SELECT" in str(exc_info.value.detail)
 
 

@@ -63,7 +63,7 @@ def test_platform_roles_expose_only_real_files_and_symbols():
 
     assert "DBMS_SCHEDULER.CREATE_JOB" in ui
     assert "DBMS_XPLAN.DISPLAY_CURSOR" in ui
-    assert "DBMS_SQLTUNE" in ui
+    assert "DBMS_SQLTUNE" not in ui
     assert "DBMS_CLOUD_AI.GENERATE" in ui
 
 
@@ -137,4 +137,4 @@ def test_related_docs_share_developer_execution_contract_and_cache_version():
         text = read(path)
         for heading in required:
             assert heading in text, f"{path.name} omits {heading}"
-    assert "tuning_assistant.js?v=20260709_no_3s_latency1" in read(INDEX)
+    assert "tuning_assistant.js?v=20260711_progress_contiguous7" in read(INDEX)

@@ -82,4 +82,10 @@ def test_reused_candidate_does_not_weaken_public_adoption_contract():
         "FUNCTION build_response_json(",
         "END build_response_json;",
     )
-    assert "IF l_verdict = 'IMPROVED' AND llm_has_improved_sql(p_llm_json) THEN" in response
+    gate = response.split("-- Keep rejected SQL only in the raw LLM audit artifact.", 1)[1].split(
+        "DBMS_LOB.CREATETEMPORARY", 1
+    )[0]
+    assert "IF l_verdict = 'IMPROVED' THEN" in gate
+    assert "effective_candidate_sql(p_run_id, p_llm_json, p_comparison_json)" in gate
+    assert "llm_has_improved_sql" not in gate
+    assert "ELSE\n      l_candidate_sql_vc := NULL;" in gate

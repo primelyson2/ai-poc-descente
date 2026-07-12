@@ -34,7 +34,7 @@ def test_manual_tabs_have_clear_clickable_and_selected_affordance():
     assert 'class="tuning-manual-tab-index">01</span>' in text
     assert 'class="tuning-manual-tab-index">02</span>' in text
     assert 'class="tuning-manual-tab-label">아키텍처</span>' in text
-    assert 'class="tuning-manual-tab-label">11단계 Workflow</span>' in text
+    assert 'class="tuning-manual-tab-label">분석 Workflow</span>' in text
     assert ".tuning-manual-tab::after { content:'열기';" in text
     assert ".tuning-manual-tab[aria-selected=\"true\"]::after { content:'선택됨 ✓';" in text
     assert "transform:translateY(-1px)" in text
@@ -97,21 +97,19 @@ def test_architecture_maps_oci_resources_into_dev_pro_and_shared_groups():
     assert "OCI Load Balancer → DK-AI-DEV-VM-01" in text
 
 
-def test_workflow_manual_covers_exactly_eleven_canonical_steps_and_procedures():
+def test_workflow_manual_consolidates_internal_nine_steps_into_seven_user_steps():
     text = source()
     assert "ASTA_WORKFLOW_GUIDE" in text
-    for seq in range(1, 12):
+    for seq in range(1, 10):
         assert f"seq: {seq}," in text
     for code in (
         "REQUEST_RECEIVED",
         "ORDS_DISPATCH",
         "SQL_GUARD",
         "BEFORE_EVIDENCE",
-        "SQL_TUNING_ADVISOR",
         "LLM_REWRITE",
         "AFTER_EVIDENCE",
         "BEFORE_AFTER_COMPARE",
-        "VECTOR_KB",
         "FINAL_REPORT",
         "VECTOR_SAVE",
     ):
@@ -122,23 +120,26 @@ def test_workflow_manual_covers_exactly_eleven_canonical_steps_and_procedures():
         "ASTA_SQL_GUARD_PKG.ASSERT_SAFE_SELECT",
         "ASTA_SOURCE_BRIDGE_PKG.RUN_SOURCE_EVIDENCE",
         "ASTA_SOURCE_PKG.RUN_EVIDENCE",
-        "ASTA_SOURCE_PKG.RUN_ADVISOR_OPT",
         "ASTA_LLM_PKG.GENERATE_SQL_ONLY_TUNING",
         "ASTA_PKG.BUILD_COMPARISON_JSON",
-        "ASTA_VECTOR_PKG.SEARCH_SIMILAR_CASES",
         "ASTA_REPORT_PKG.BUILD_REPORT",
         "ASTA_VECTOR_PKG.SAVE_CASE",
     ):
         assert procedure in text
-    assert "호환 단계 번호" in text
-    assert "실제 호출은 9 → 6" in text
+    assert "function userWorkflowGuide()" in text
+    assert 'code: "REQUEST_PREPARATION"' in text
+    assert 'title: "요청 및 분석 준비"' in text
+    assert "ASTA_WORKFLOW_GUIDE.slice(3).map((step, index) => ({ ...step, seq: index + 2 }))" in text
+    assert "const visibleSteps = userWorkflowGuide();" in text
+    assert "실제로 추가된 내용은 결과서에서 확인합니다" in text
+    assert "실제로 추가된 내용은 결과서에서 확인합니다" in text
 
 
 def test_workflow_manual_replaces_short_work_text_with_detailed_task_lists():
     text = source()
     workflow = text[text.index("const ASTA_WORKFLOW_GUIDE"):text.index("const ASTA_DEVELOPER_PLATFORMS")]
     assert "work:" not in workflow
-    assert workflow.count("tasks: [") == 11
+    assert workflow.count("tasks: [") == 9
     assert 'class="tuning-manual-step-task-list"' in text
     assert "step.tasks.map" in text
     for detail in (
@@ -146,12 +147,12 @@ def test_workflow_manual_replaces_short_work_text_with_detailed_task_lists():
         "1초 간격 progress 조회",
         "SUBMIT_RUN 접수 시 한 번",
         "업무 SELECT를 실행하지 않고 EXPLAIN PLAN",
-        "4단계 Source response의 advisor.status",
+            "같은 workload의 IMPROVED/POSITIVE_VERIFIED 사례",
         "정상 LLM 호출은 보통 2회, fallback 포함 최대 6회",
         "실제 실행 체크 시에만 PLAN_ONLY·ONCE",
         "result digest",
-        "generate_sql_only_tuning prompt에는 p_vector_json을 넣지 않아",
-        "11단계 Vector 저장 결과",
+            "현재 SQL/XPLAN이 같은 반복 작업 구조·key·immediate consumer를 독립적으로 증명",
+        "검증 결과 저장과 terminal progress timing",
         "REJECTED_OBSERVATION",
     ):
         assert detail in workflow
@@ -168,4 +169,4 @@ def test_manual_dialog_is_responsive_and_asset_cache_is_bumped():
     ):
         assert selector in text
     assert "@media (max-width: 700px)" in text
-    assert "tuning_assistant.js?v=20260709_no_3s_latency1" in INDEX.read_text(encoding="utf-8")
+    assert "tuning_assistant.js?v=20260711_progress_contiguous7" in INDEX.read_text(encoding="utf-8")

@@ -1,8 +1,14 @@
 """OLTP/BATCH workload 선택의 UI→proxy→ADB 계약 회귀 테스트."""
 import hashlib
 import json
+import re
 from pathlib import Path
 import sys
+
+
+def _collapse_ws(text: str) -> str:
+    """PL/SQL 정렬용 연속 공백을 단일 공백으로 정규화한다(계약 토큰 자체는 보존)."""
+    return re.sub(r"[ \t]+", " ", text)
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -48,7 +54,7 @@ def test_ui_exposes_and_propagates_workload_context_and_resets_oltp():
 
 def test_sql_only_prompt_is_workload_specific_and_artifact_preserves_goal():
     llm = read("db/adb/asta_llm_pkg.sql")
-    assert "p_workload_type IN VARCHAR2 DEFAULT 'OLTP'" in llm
+    assert "p_workload_type IN VARCHAR2 DEFAULT 'OLTP'" in _collapse_ws(llm)
     for token in ["logical buffer reads", "last_cr_buffer_gets per execution", "random table lookups",
                   "elapsed time / wall-clock duration", "temp-heavy work", "buffer gets is a supporting metric",
                   "Do not add hints or index DDL", '\"workload_type\"', '\"optimization_goal\"']:
@@ -59,7 +65,7 @@ def test_orchestration_normalizes_and_passes_workload_to_llm_and_comparison():
     main = read("db/adb/asta_pkg.sql")
     assert "FUNCTION normalize_workload_type" in main
     assert "'$.tuning_context.workload_type'" in main
-    assert "p_workload_type => l_workload_type" in main
+    assert "p_workload_type => l_workload_type" in _collapse_ws(main)
     assert "build_comparison_json(l_source_json, l_after_json, l_workload_type)" in main
     no_rewrite = main[main.index("No structural rewrite candidate"):]
     assert "json_str(l_workload_type)" in no_rewrite

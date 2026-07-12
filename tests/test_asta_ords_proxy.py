@@ -378,7 +378,10 @@ def test_analyze_proxies_to_ords(monkeypatch):
 
 
 def test_analyze_never_uses_direct_source_fallback_after_ords_failure(monkeypatch):
-    """ASTA 계약/회귀 조건을 검증한다: analyze never uses direct source fallback after ords failure."""
+    """ORDS/DB link 실패 후에도 프록시는 Source DB로 직접 우회하지 않는다.
+
+    실패는 ORDS 응답 그대로 HTTP 오류로 승격되며(직접 Source 재실행 경로 부재),
+    오류 메시지는 ORDS/ADB 경계에서 전달된 원문을 유지한다."""
     deps.set_config(_cfg())
 
     async def fake_post(url, payload, timeout):
@@ -391,12 +394,17 @@ def test_analyze_never_uses_direct_source_fallback_after_ords_failure(monkeypatc
         }
 
     monkeypatch.setattr(asta_proxy, "_post_json_to_ords", fake_post)
+    # Python 로컬 Source 실행 경로가 부재해 직접 우회가 원천 불가능하다.
+    assert not hasattr(asta_proxy, "_source_runtime_xplan")
 
-    _, result = _run_analyze_background({"sql": "select * from dual", "run_advisor": True})
+    with pytest.raises(HTTPException) as exc_info:
+        _run_analyze_background({"sql": "select * from dual", "run_advisor": True})
 
-    assert result["status"] == "FAILED"
-    assert result["proxy"]["source"] == "ADB_ORDS"
-    assert "ords_run_id" not in result
+    assert exc_info.value.status_code == 502
+    detail = exc_info.value.detail
+    assert isinstance(detail, dict)
+    # 실패 원인은 ORDS/ADB 경계에서 온 것이며 Source 직접 실행 흔적이 없다.
+    assert "ORA-03150 from DB0903_LINK" in str(detail.get("message"))
 
 
 def test_analyze_drops_browser_controlled_source_link_fields(monkeypatch):

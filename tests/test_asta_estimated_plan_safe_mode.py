@@ -93,7 +93,7 @@ def test_llm_and_report_explicitly_treat_estimated_plan_as_unmeasured():
 
 def test_estimated_plan_candidate_report_does_not_claim_runtime_non_improvement():
     report = read("db/adb/asta_report_pkg.sql")
-    start = report.index("FUNCTION build_report(\n")
+    start = report.rindex("FUNCTION build_report(\n")
     build = report[start:report.index("END build_report;", start)]
     stage_start = report.index("PROCEDURE append_stage_check(")
     stage_check = report[stage_start:report.index("END append_stage_check;", stage_start)]
@@ -105,10 +105,14 @@ def test_estimated_plan_candidate_report_does_not_claim_runtime_non_improvement(
     assert "확보된 근거: 정적 SQL 분석, EXPLAIN PLAN 예상계획, 객체 통계·인덱스 정보, Vector/LLM 분석 결과" in build
     assert "미확보 근거: Source runtime metrics, Before/After 실제 XPLAN, result equivalence, 반복 성능 측정" in build
     assert "실행시간: 미측정 (Source DB에서 원본·후보 SQL 미실행)" in build
-    assert "예상 병목(EXPLAIN PLAN 기반)" in build
-    assert "Buffer Gets, Disk Reads, A-Time, Starts는 실측되지 않았습니다." in build
+    bottleneck_start = report.index("PROCEDURE append_bottleneck_diagnosis(")
+    bottleneck = report[bottleneck_start:report.index("END append_bottleneck_diagnosis;", bottleneck_start)]
+    assert "Source SQL을 실행하지 않은 예상 Plan 기반 진단" in bottleneck
+    assert "append_bottleneck_diagnosis(" in build
+    assert "Buffer Gets, Disk Reads, A-Time, Starts는 실측값이 아닙니다." in bottleneck
     assert "실제 개선 판정을 수행하지 않았습니다." in build
-    assert "표의 DONE은 해당 단계 완료를 뜻하며 업무 SQL 실행 완료를 뜻하지 않습니다." in build
+    assert "## 작업 수행 이력" not in build
+    assert "append_stage_check(l_report" not in build
     assert "Source SQL 미실행; 원본 EXPLAIN PLAN 예상계획 및 객체정보 수집" in stage_check
     assert "후보 SQL 미실행; 후보 EXPLAIN PLAN 예상계획 수집" in stage_check
     assert "실제 성능·결과 동등성·채택 여부 미평가" in stage_check

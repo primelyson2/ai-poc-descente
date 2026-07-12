@@ -165,6 +165,8 @@ select '<script>' from dual;
     assert "<script>" not in body and "javascript:" not in body
     assert "/api/asta/runs/OLD/report/view" in body
     assert "/api/asta/runs/RUN-1/report/download" in body
+    assert "max-width:1800px" in body
+    assert "overflow-x:auto" in body and "max-height:70vh" in body
     assert response.headers["content-security-policy"].startswith("default-src 'none'")
 
 
@@ -183,3 +185,33 @@ def test_report_markdown_download_keeps_json_api_separate(monkeypatch):
     assert download.body.decode() == "# 원본\n\n내용"
     assert download.headers["content-disposition"] == 'attachment; filename="asta-report-RUN-1.md"'
     assert asyncio.run(asta_proxy.get_run_report("RUN-1", "devdoADB")) == payload
+
+
+def test_history_query_is_translated_to_ords_path_parameter(monkeypatch):
+    captured = []
+
+    async def fake_get(url, timeout, headers=None):
+        captured.append((url, timeout, headers))
+        return {"status": "COMPLETED", "runs": []}
+
+    monkeypatch.setattr(asta_proxy, "_resolve_ords_url", lambda *_args: "https://ords.example/asta/history")
+    monkeypatch.setattr(asta_proxy, "_ords_timeout", lambda *_args: 30)
+    monkeypatch.setattr(asta_proxy, "_get_json_from_ords", fake_get)
+    payload = asyncio.run(asta_proxy.get_history("SESL0640.selectList", "devdoADB"))
+    assert payload["status"] == "COMPLETED"
+    assert captured[0][0] == "https://ords.example/asta/history"
+    assert captured[0][2] == {"X-ASTA-History-Search": "SESL0640.selectList"}
+
+
+def test_history_query_removes_control_characters_before_ords_header(monkeypatch):
+    captured = []
+
+    async def fake_get(url, timeout, headers=None):
+        captured.append(headers)
+        return {"status": "COMPLETED", "runs": []}
+
+    monkeypatch.setattr(asta_proxy, "_resolve_ords_url", lambda *_args: "https://ords.example/asta/history")
+    monkeypatch.setattr(asta_proxy, "_ords_timeout", lambda *_args: 30)
+    monkeypatch.setattr(asta_proxy, "_get_json_from_ords", fake_get)
+    asyncio.run(asta_proxy.get_history("SESL0640\r\nInjected: value\x00", "devdoADB"))
+    assert captured == [{"X-ASTA-History-Search": "SESL0640 Injected: value"}]
