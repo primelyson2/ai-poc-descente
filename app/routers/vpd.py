@@ -163,6 +163,9 @@ async def policy_enable(payload: dict, database: str = Depends(current_db)) -> d
 
 @router.post("/policy/drop")
 async def policy_drop(payload: dict, database: str = Depends(current_db)) -> dict:
+    """정책 삭제. drop_function=true 이면 정책 삭제 후 정책 함수(또는 패키지)도 삭제한다.
+    body: { object_schema, object_name, policy_name,
+            drop_function?, function_schema?, function_name?, function_is_package? }"""
     o = _ident((payload.get("object_schema") or "").strip(), "object_schema")
     t = _ident((payload.get("object_name") or "").strip(), "object_name")
     p = _ident((payload.get("policy_name") or "").strip(), "policy_name")
@@ -174,7 +177,43 @@ async def policy_drop(payload: dict, database: str = Depends(current_db)) -> dic
         )
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=400, detail={"error": first_line(exc)})
-    return {"ok": True}
+
+    result = {"ok": True, "function_dropped": False, "function_error": None}
+    if payload.get("drop_function"):
+        # 정책이 먼저 제거된 뒤라 함수 참조가 없어 DROP 가능. 함수 삭제 실패는 결과에 실어 반환
+        # (정책은 이미 삭제됨). 식별자는 화이트리스트 검증 후 보간.
+        fo = _ident((payload.get("function_schema") or "").strip(), "function_schema")
+        fn = _ident((payload.get("function_name") or "").strip(), "function_name")
+        kind = "PACKAGE" if payload.get("function_is_package") else "FUNCTION"
+        try:
+            await db.execute(database, f"DROP {kind} {fo}.{fn}")
+            result["function_dropped"] = True
+        except Exception as exc:  # noqa: BLE001
+            result["function_error"] = first_line(exc)
+    return result
+
+
+@router.post("/context/drop")
+async def context_drop(payload: dict, database: str = Depends(current_db)) -> dict:
+    """Application Context 삭제(DROP CONTEXT). drop_package=true 이면 USING 객체도 삭제한다.
+    USING 객체는 항상 프로시저로 가정한다(템플릿 규약 — PRC_OAC_SETINFO_*).
+    body: { namespace, drop_package?, schema?, package? }"""
+    ns = _ident((payload.get("namespace") or "").strip(), "namespace")
+    try:
+        await db.execute(database, f"DROP CONTEXT {ns}")  # 컨텍스트는 스키마 소유가 아님(전역)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail={"error": first_line(exc)})
+
+    result = {"ok": True, "package_dropped": False, "package_error": None}
+    if payload.get("drop_package"):
+        o = _ident((payload.get("schema") or "").strip(), "schema")
+        n = _ident((payload.get("package") or "").strip(), "package")
+        try:
+            await db.execute(database, f"DROP PROCEDURE {o}.{n}")
+            result["package_dropped"] = True
+        except Exception as exc:  # noqa: BLE001
+            result["package_error"] = first_line(exc)
+    return result
 
 
 def _strip_slash(block: str) -> str:
