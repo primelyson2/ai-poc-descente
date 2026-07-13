@@ -185,6 +185,7 @@
             window.Toast.show(`설정 실행 완료 (${res.ok_count}/${res.total} 문장)`, "success");
           }
           loadList(host);
+          loadContexts(host, loadState().ctxSchema || "");  // Application Context 도 자동 재조회
         } catch (e) { window.Toast.show(errMsg(e, "설정 실행 실패"), "error"); }
       }, "실행 (DB 적용)");
     });
@@ -220,10 +221,73 @@
         { key: "namespace", label: "NAMESPACE" },
         { key: "schema", label: "SCHEMA" },
         { key: "package", label: "PACKAGE (USING)" },
+        { key: "_act", label: "", headerAlign: "center", align: "center", format: (_v, row) => buildContextActions(row, host) },
       ],
       rows || [],
       { className: "keep-case", emptyText: "정의된 Application Context 가 없습니다." }
     ));
+  }
+
+  function buildContextActions(row, host) {
+    const box = document.createElement("div");
+    box.className = "row"; box.style.gap = "6px"; box.style.justifyContent = "center";
+    box.addEventListener("click", (e) => e.stopPropagation());
+    const del = document.createElement("button");
+    del.className = "btn btn-primary"; del.textContent = "삭제";
+    del.addEventListener("click", () => showContextDeleteModal(row, host));
+    box.appendChild(del);
+    return box;
+  }
+
+  // Application Context 삭제 — "USING 객체(Package/프로시저/함수)도 함께 삭제할지" 물어본 뒤 실행.
+  function showContextDeleteModal(row, host) {
+    const ns = row.namespace, sch = row.schema, pkg = row.package;
+    const hasUsing = !!(sch && pkg);
+    const usingLabel = hasUsing ? `${sch}.${pkg}` : "";
+    const dropCtx = `DROP CONTEXT ${ns};`;
+    const dropUsing = hasUsing ? `DROP PROCEDURE ${usingLabel};` : "";  // USING 객체는 프로시저로 가정
+    const bd = modal(`
+      <div class="modal" style="width:680px; max-width:95vw;">
+        <div class="modal-header"><h2>Application Context 삭제 — ${window.escapeHtml(ns)}</h2>
+          <button class="btn btn-ghost" id="cd-close">✕</button></div>
+        <div class="modal-body stack">
+          <div>컨텍스트 <b>${window.escapeHtml(ns)}</b> 를 삭제합니다.</div>
+          ${hasUsing ? `
+          <label class="row" style="gap:8px; align-items:center; cursor:pointer;">
+            <input type="checkbox" id="cd-pkg"> USING 객체 <code>${window.escapeHtml(usingLabel)}</code> <span class="muted">(PROCEDURE)</span> 도 함께 삭제
+          </label>` : `<div class="muted" style="font-size:var(--fs-sm);">USING 객체 정보가 없어 컨텍스트만 삭제합니다.</div>`}
+          <label style="font-size:var(--fs-sm); color:var(--text-muted);">실행 스크립트</label>
+          <pre id="cd-sql" style="white-space:pre; margin:0; font-family:var(--font-mono); font-size:var(--fs-sm); background:var(--surface-alt); padding:var(--space-3); border-radius:var(--radius-md); overflow:auto; max-height:40vh;"></pre>
+        </div>
+        <div class="modal-footer row end" style="gap:8px;">
+          <button class="btn btn-ghost" id="cd-cancel">취소</button>
+          <button class="btn btn-primary" id="cd-run">삭제 실행</button>
+        </div>
+      </div>`);
+    const chk = bd.querySelector("#cd-pkg"), pre = bd.querySelector("#cd-sql");
+    const refresh = () => { pre.textContent = (chk && chk.checked) ? `${dropCtx}\n\n${dropUsing}` : dropCtx; };
+    refresh();
+    if (chk) chk.addEventListener("change", refresh);
+    bd.querySelector("#cd-close").addEventListener("click", () => bd.remove());
+    bd.querySelector("#cd-cancel").addEventListener("click", () => bd.remove());
+    bd.querySelector("#cd-run").addEventListener("click", async () => {
+      const withPkg = !!(chk && chk.checked);
+      const btn = bd.querySelector("#cd-run"); btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> 삭제 중...';
+      try {
+        const res = await window.API.post("/api/vpd/context/drop", {
+          namespace: ns, drop_package: withPkg, schema: sch, package: pkg,
+        });
+        if (withPkg && res && res.package_error) {
+          window.Toast.show(`컨텍스트 '${ns}' 삭제됨 · USING 객체 삭제 실패: ${res.package_error}`, "error");
+        } else if (withPkg && res && res.package_dropped) {
+          window.Toast.show(`컨텍스트 '${ns}' + USING 객체 '${usingLabel}' 삭제됨`, "success");
+        } else {
+          window.Toast.show(`컨텍스트 '${ns}' 삭제됨`, "success");
+        }
+        loadContexts(host, loadState().ctxSchema || "");
+      } catch (e) { window.Toast.show(errMsg(e, "삭제 실패"), "error"); }
+      finally { bd.remove(); }
+    });
   }
 
   const paramInput = (key, label, val, hint) => `
@@ -288,7 +352,7 @@
     const on = String(row.enable).toUpperCase() === "YES";
     const key = { object_schema: row.object_owner, object_name: row.object_name, policy_name: row.policy_name };
     const toggle = document.createElement("button");
-    toggle.className = "btn btn-ghost"; toggle.textContent = on ? "사용중지" : "재개";
+    toggle.className = "btn btn-primary"; toggle.textContent = on ? "사용중지" : "재개";
     toggle.addEventListener("click", async () => {
       try {
         await window.API.post("/api/vpd/policy/enable", { ...key, enable: !on });
@@ -299,15 +363,60 @@
     box.appendChild(toggle);
     const del = document.createElement("button");
     del.className = "btn btn-primary"; del.textContent = "삭제";
-    del.addEventListener("click", () => {
-      const sql = `BEGIN\n  DBMS_RLS.DROP_POLICY(object_schema => '${row.object_owner}', object_name => '${row.object_name}', policy_name => '${row.policy_name}');\nEND;\n/`;
-      showScriptModal(`정책 삭제 — ${row.policy_name}`, sql, async () => {
-        try { await window.API.post("/api/vpd/policy/drop", key); window.Toast.show(`정책 '${row.policy_name}' 삭제됨`, "success"); loadList(host); }
-        catch (e) { window.Toast.show(errMsg(e, "삭제 실패"), "error"); }
-      }, "삭제 실행");
-    });
+    del.addEventListener("click", () => showPolicyDeleteModal(row, host, key));
     box.appendChild(del);
     return box;
+  }
+
+  // 정책 삭제 — "정책 함수도 함께 삭제할지" 물어본 뒤 실행.
+  function showPolicyDeleteModal(row, host, key) {
+    // 정책 함수 대상: package 컬럼이 있으면 패키지, 없으면 standalone 함수.
+    const isPkg = !!row.package;
+    const fSchema = row.pf_owner, fObj = isPkg ? row.package : row.function;
+    const fLabel = `${fSchema}.${fObj}`;
+    const dropPolicy = `BEGIN\n  DBMS_RLS.DROP_POLICY(object_schema => '${row.object_owner}', object_name => '${row.object_name}', policy_name => '${row.policy_name}');\nEND;\n/`;
+    const dropFn = `DROP ${isPkg ? "PACKAGE" : "FUNCTION"} ${fLabel};`;
+    const bd = modal(`
+      <div class="modal" style="width:680px; max-width:95vw;">
+        <div class="modal-header"><h2>정책 삭제 — ${window.escapeHtml(row.policy_name)}</h2>
+          <button class="btn btn-ghost" id="pd-close">✕</button></div>
+        <div class="modal-body stack">
+          <div>정책 <b>${window.escapeHtml(row.policy_name)}</b> <span class="muted">(${window.escapeHtml(row.object_owner)}.${window.escapeHtml(row.object_name)})</span> 를 삭제합니다.</div>
+          <label class="row" style="gap:8px; align-items:center; cursor:pointer;">
+            <input type="checkbox" id="pd-fn"> 정책 함수 <code>${window.escapeHtml(fLabel)}</code> 도 함께 삭제
+          </label>
+          <label style="font-size:var(--fs-sm); color:var(--text-muted);">실행 스크립트</label>
+          <pre id="pd-sql" style="white-space:pre; margin:0; font-family:var(--font-mono); font-size:var(--fs-sm); background:var(--surface-alt); padding:var(--space-3); border-radius:var(--radius-md); overflow:auto; max-height:40vh;"></pre>
+        </div>
+        <div class="modal-footer row end" style="gap:8px;">
+          <button class="btn btn-ghost" id="pd-cancel">취소</button>
+          <button class="btn btn-primary" id="pd-run">삭제 실행</button>
+        </div>
+      </div>`);
+    const chk = bd.querySelector("#pd-fn"), pre = bd.querySelector("#pd-sql");
+    const refresh = () => { pre.textContent = chk.checked ? `${dropPolicy}\n\n${dropFn}` : dropPolicy; };
+    refresh();
+    chk.addEventListener("change", refresh);
+    bd.querySelector("#pd-close").addEventListener("click", () => bd.remove());
+    bd.querySelector("#pd-cancel").addEventListener("click", () => bd.remove());
+    bd.querySelector("#pd-run").addEventListener("click", async () => {
+      const withFn = chk.checked;
+      const btn = bd.querySelector("#pd-run"); btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> 삭제 중...';
+      try {
+        const res = await window.API.post("/api/vpd/policy/drop", {
+          ...key, drop_function: withFn, function_schema: fSchema, function_name: fObj, function_is_package: isPkg,
+        });
+        if (withFn && res && res.function_error) {
+          window.Toast.show(`정책 '${row.policy_name}' 삭제됨 · 함수 삭제 실패: ${res.function_error}`, "error");
+        } else if (withFn && res && res.function_dropped) {
+          window.Toast.show(`정책 '${row.policy_name}' + 함수 '${fLabel}' 삭제됨`, "success");
+        } else {
+          window.Toast.show(`정책 '${row.policy_name}' 삭제됨`, "success");
+        }
+        loadList(host);
+      } catch (e) { window.Toast.show(errMsg(e, "삭제 실패"), "error"); }
+      finally { bd.remove(); }
+    });
   }
   function showDetailModal(row) {
     const ro = (label, value) => `
