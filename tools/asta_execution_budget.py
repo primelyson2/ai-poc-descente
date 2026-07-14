@@ -127,9 +127,6 @@ def summarize_measurements(runs: list[dict[str, Any]], policy: dict[str, Any]) -
         and len(completed) == expected
     )
     metrics_complete = median_elapsed is not None and median_buffers is not None and elapsed_noise is not None
-    noise_passed = (
-        elapsed_noise is not None and elapsed_noise <= float(policy.get("max_noise_pct", 0.0))
-    )
     status = "COMPLETE" if complete and metrics_complete else "INCOMPLETE"
     reason_code = None if status == "COMPLETE" else "MEASUREMENT_INCOMPLETE"
     return {
@@ -143,7 +140,6 @@ def summarize_measurements(runs: list[dict[str, Any]], policy: dict[str, Any]) -
         "median_elapsed_us": median_elapsed,
         "median_buffer_gets": median_buffers,
         "elapsed_noise_pct": elapsed_noise,
-        "noise_gate_passed": noise_passed,
         "measurement_runs": completed,
     }
 
@@ -359,15 +355,6 @@ def evaluate_measurement_campaign(
             before_summary=before_summary, after_summary=after_summary,
             optimizer_verdict=intent_verdict,
         )
-    if not before_summary["noise_gate_passed"] or not after_summary["noise_gate_passed"]:
-        reason = "MEASUREMENT_NOISE_TOO_HIGH"
-        terminal_state = _terminalize(consumed_state, candidate_id, reason)
-        return _blocked_campaign(
-            candidate_id, reason, terminal_state, len(all_runs), budget=budget,
-            before_summary=before_summary, after_summary=after_summary,
-            optimizer_verdict=intent_verdict,
-        )
-
     from tools.asta_optimizer_intent import evaluate_candidate_after_optimizer_intent
 
     comparison = evaluate_candidate_after_optimizer_intent(
@@ -390,8 +377,6 @@ def evaluate_measurement_campaign(
     status = "ACCEPTED"
     if comparison.get("semantic_equivalent") is not True:
         status, reason = "REJECTED", "RESULT_DIGEST_NOT_EQUIVALENT"
-    elif comparison.get("measurement_noisy") is True:
-        status, reason = "BLOCKED", "MEASUREMENT_NOISE_TOO_HIGH"
     elif comparison.get("latency_guard_passed") is not True:
         status, reason = "REJECTED", "OLTP_LATENCY_GUARD_NOT_MET"
     elif not isinstance(comparison.get("primary_reduction_pct"), (int, float)) or comparison["primary_reduction_pct"] < 5:

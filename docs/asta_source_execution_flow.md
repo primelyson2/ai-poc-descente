@@ -71,7 +71,7 @@ Browser polling
 
 `SQL 분석 입력`과 `ASTA 분석 결과`는 독립적인 `<details>`다. 결과가 정상 렌더링될 때 입력은 접고 결과를 펼친다. 초기화하면 결과를 비우고 입력을 다시 연다.
 
-상단 **매뉴얼 및 사용설명**은 `aria-modal` dialog를 연다. `01 아키텍처`, `02 분석 Workflow`, `03 개발자 실행 추적` 세 탭이 있다. User/개발자 카드는 OCI 리소스 없이 PoC 샘플 화면 역할만 표시한다. UI(VM) 카드는 `OCI Load Balancer → DK-AI-DEV-VM-01` 진입 경로를 포함하고, AI Lakehouse/BaseDB 카드는 DEV/PRO/shared OCI 리소스를 기능·경계와 함께 표시한다. Workflow/개발자 탭은 사용자 화면 7단계와 실제 package/procedure·파일·심볼·API 추적 경로를 화면 안에서 보여준다. backdrop, 닫기 버튼, `Escape`로 닫을 수 있고 포커스는 열기 전 control로 돌아간다.
+상단 **매뉴얼 및 사용설명**은 `aria-modal` dialog를 연다. `01 소개`, `02 아키텍처`, `03 분석 Workflow`, `04 개발자 실행 추적` 네 탭이 있다. 소개 탭은 SQL 튜너의 분석 절차 자동화, XPLAN·참조 오브젝트 정보 수집, GenAI 비효율 진단, 검증 결과 Vector Search와 프롬프트 강화, 튜닝 가이드·후보 생성 역할을 요약한다. User/개발자 카드는 OCI 리소스 없이 PoC 샘플 화면 역할만 표시한다. UI(VM) 카드는 `OCI Load Balancer → DK-AI-DEV-VM-01` 진입 경로를 포함하고, AI Lakehouse/BaseDB 카드는 DEV/PRO/shared OCI 리소스를 기능·경계와 함께 표시한다. Workflow/개발자 탭은 사용자 화면 7단계와 실제 package/procedure·파일·심볼·API 추적 경로를 화면 안에서 보여준다. backdrop, 닫기 버튼, `Escape`로 닫을 수 있고 포커스는 열기 전 control로 돌아간다.
 
 ## 3. 브라우저 제출
 

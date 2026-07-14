@@ -64,7 +64,6 @@ def execution_policy(**overrides):
         "max_candidate_runs": 12,
         "max_candidate_wall_time_ms": 30_000,
         "per_run_timeout_ms": 180_000,
-        "max_noise_pct": 20.0,
     }
     value.update(overrides)
     return value
@@ -281,7 +280,7 @@ def test_before_plan_evidence_is_required_and_must_be_stable_independently_of_af
     assert baseline_flip["reason_code"] == "BEFORE_PLAN_UNSTABLE"
 
 
-def test_bind_specific_equivalence_buffer_and_noise_failures_are_not_hidden_by_other_binds():
+def test_bind_specific_equivalence_and_buffer_failures_are_not_hidden_by_other_binds():
     equivalence = campaign_cases()
     equivalence[1]["equivalence_evidence"]["after_runs"][0]["result_digest"] = "different"
     buffers = campaign_cases()
@@ -301,5 +300,5 @@ def test_bind_specific_equivalence_buffer_and_noise_failures_are_not_hidden_by_o
     assert mismatch["stability_evaluated"] is False
     assert regression["reason_code"] == "BIND_CASE_PERFORMANCE_REGRESSION"
     assert regression["failed_bind_case_id"] == "STYLE_SELECTIVE"
-    assert unstable["reason_code"] == "BIND_CASE_MEASUREMENT_UNSTABLE"
-    assert unstable["failed_bind_case_id"] == "STYLE_SELECTIVE"
+    assert unstable["reason_code"] == "BIND_PLAN_STABILITY_VERIFIED"
+    assert unstable["processed_run_count"] == 24

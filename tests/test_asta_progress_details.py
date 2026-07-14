@@ -143,7 +143,7 @@ def test_timestamp_normalization_in_asia_seoul_runtime():
 
 def test_progress_details_asset_has_a_fresh_cache_buster():
     index = (ROOT / "static/index.html").read_text(encoding="utf-8")
-    assert "tuning_assistant.js?v=20260711_progress_contiguous7" in index
+    assert "tuning_assistant.js?v=20260714_guide_introduction1" in index
 
 
 def test_before_evidence_shows_concrete_internal_work_without_fake_substage_progress():

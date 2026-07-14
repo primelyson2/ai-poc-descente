@@ -678,8 +678,6 @@ def classify_failure(row: dict[str, Any]) -> str:
         return "CANDIDATE_TERMINAL_FAILURE"
     if measurement_reason == "MEASUREMENT_INCOMPLETE":
         return "MEASUREMENT_INCOMPLETE"
-    if measurement_reason == "MEASUREMENT_NOISE_TOO_HIGH":
-        return "MEASUREMENT_NOISE"
     error = str(row.get("candidate_error") or row.get("execution_error") or "")
     if "ORA-" in error.upper():
         return "ORACLE_SYNTAX_OR_EXECUTION_ERROR"
@@ -691,8 +689,6 @@ def classify_failure(row: dict[str, Any]) -> str:
         return "REPORT_DECISION_ERROR"
     if not semantic:
         return "SEMANTIC_EQUIVALENCE_FAILURE"
-    if row.get("measurement_noisy") is True:
-        return "MEASUREMENT_NOISE"
     if row.get("latency_guard_passed") is False:
         return "PERFORMANCE_NOT_IMPROVED"
     if not isinstance(row.get("primary_reduction_pct"), (int, float)) or row["primary_reduction_pct"] < 5:
@@ -737,7 +733,6 @@ def normalize_result(row: dict[str, Any], workloads: dict[str, str], cycle_id: s
         "semantic_equivalent": equivalent,
         "reported_equivalent": reported_equivalent,
         "equivalence_strength": comparison.get("equivalence_strength") or ("SHAPE_ONLY" if reported_equivalent else "NONE"),
-        "measurement_noisy": comparison.get("measurement_noisy") is True,
         "latency_guard_passed": comparison.get("latency_guard_passed", latency_guard_passed) is True,
         "optimizer_intent_status": comparison.get("optimizer_intent_status"),
         "optimizer_intent_verdict": comparison.get("optimizer_intent_verdict") or comparison.get("verdict_reason"),

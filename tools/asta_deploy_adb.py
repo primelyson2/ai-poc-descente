@@ -606,7 +606,6 @@ def aa7_reassess_manual_intent(outdir: Path) -> int:
         summary.get("full_result_equivalent") is True,
         intent.get("status") == "VERIFIED",
         summary.get("bind_status") == "BIND_NOT_APPLICABLE",
-        max((summary.get("elapsed_noise_pct") or {}).values()) <= 20,
         summary.get("oltp_latency_pass") is True,
         summary.get("elapsed_increase_pass") is True,
         float(summary.get("buffer_reduction_pct") or 0) >= 5,

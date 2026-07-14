@@ -113,7 +113,8 @@ def test_source_auto_measurement_contract_is_one_warmup_plus_three_measures():
         '"elapsed_noise_pct":', '"measurement_runs":',
     ):
         assert token in source
-    assert "l_elapsed_noise_pct <= 20" in source
+    assert "l_elapsed_noise_pct <= 20" not in source
+    assert "do not reject otherwise complete" in source
     loop = source[source.index("FOR i IN 1..l_repeats LOOP"):source.index("END LOOP;", source.index("FOR i IN 1..l_repeats LOOP"))]
     assert "l_elapsed_us := NULL" in loop
     assert "l_cr_buffer_gets := NULL" in loop
@@ -155,4 +156,4 @@ def test_proxy_runtime_adapter_is_deterministic_and_masks_original_error():
 def test_ui_cache_buster_marks_report_tabs_runtime_asset():
     index = (ROOT / "static/index.html").read_text(encoding="utf-8")
     assert "asta_report_tabs.js?v=20260709_estimated_plan_tabs1" in index
-    assert "tuning_assistant.js?v=20260711_progress_contiguous7" in index
+    assert "tuning_assistant.js?v=20260714_guide_introduction1" in index

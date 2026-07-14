@@ -200,7 +200,7 @@ def test_history_query_is_translated_to_ords_path_parameter(monkeypatch):
     payload = asyncio.run(asta_proxy.get_history("SESL0640.selectList", "devdoADB"))
     assert payload["status"] == "COMPLETED"
     assert captured[0][0] == "https://ords.example/asta/history"
-    assert captured[0][2] == {"X-ASTA-History-Search": "SESL0640.selectList"}
+    assert captured[0][2] == {"X-ASTA-History-Verdict": "ALL", "X-ASTA-History-Search": "SESL0640.selectList"}
 
 
 def test_history_query_removes_control_characters_before_ords_header(monkeypatch):
@@ -214,4 +214,18 @@ def test_history_query_removes_control_characters_before_ords_header(monkeypatch
     monkeypatch.setattr(asta_proxy, "_ords_timeout", lambda *_args: 30)
     monkeypatch.setattr(asta_proxy, "_get_json_from_ords", fake_get)
     asyncio.run(asta_proxy.get_history("SESL0640\r\nInjected: value\x00", "devdoADB"))
-    assert captured == [{"X-ASTA-History-Search": "SESL0640 Injected: value"}]
+    assert captured == [{"X-ASTA-History-Verdict": "ALL", "X-ASTA-History-Search": "SESL0640 Injected: value"}]
+
+
+def test_history_date_and_verdict_filters_are_passed_as_safe_ords_headers(monkeypatch):
+    captured = []
+
+    async def fake_get(url, timeout, headers=None):
+        captured.append(headers)
+        return {"status": "COMPLETED", "runs": []}
+
+    monkeypatch.setattr(asta_proxy, "_resolve_ords_url", lambda *_args: "https://ords.example/asta/history")
+    monkeypatch.setattr(asta_proxy, "_ords_timeout", lambda *_args: 30)
+    monkeypatch.setattr(asta_proxy, "_get_json_from_ords", fake_get)
+    asyncio.run(asta_proxy.get_history("", "devdoADB", "2026-07-07", "2026-07-13", "improved"))
+    assert captured == [{"X-ASTA-History-Verdict": "IMPROVED", "X-ASTA-History-From": "2026-07-07", "X-ASTA-History-To": "2026-07-13"}]

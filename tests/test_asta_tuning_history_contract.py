@@ -16,14 +16,21 @@ def _ords_handler(source: str, pattern: str) -> str:
 
 def test_adb_history_returns_bounded_run_summaries_without_full_sql():
     src = (ROOT / "db/adb/asta_pkg.sql").read_text()
-    assert "FUNCTION list_history(p_search IN VARCHAR2 DEFAULT NULL, p_limit IN NUMBER DEFAULT 50) RETURN CLOB;" in src
-    section = src.split("FUNCTION list_history(p_search IN VARCHAR2 DEFAULT NULL, p_limit IN NUMBER DEFAULT 50) RETURN CLOB IS", 1)[1].split("END list_history;", 1)[0]
+    assert "p_from_date IN VARCHAR2 DEFAULT NULL" in src
+    assert "p_to_date IN VARCHAR2 DEFAULT NULL" in src
+    assert "p_verdict IN VARCHAR2 DEFAULT NULL" in src
+    section = src.rsplit("FUNCTION list_history(\n    p_search", 1)[1].split("END list_history;", 1)[0]
     assert "DBMS_LOB.SUBSTR(input_sql, 500, 1) AS sql_preview" in section
     assert "WHERE ROWNUM <= l_limit" in section
     assert '"report_ready"' in section
     assert '"verdict"' in section
     assert "INSTR(UPPER(run_id), UPPER(l_search)) > 0" in section
     assert "DBMS_LOB.INSTR(UPPER(input_sql), UPPER(l_search), 1, 1) > 0" in section
+    assert "SYSTIMESTAMP AT TIME ZONE 'Asia/Seoul'" in section
+    assert "created_at >= l_from_at" in section
+    assert "created_at < l_to_at" in section
+    assert "l_verdict = 'ALL'" in section
+    assert '"date_from"' in section and '"date_to"' in section and '"verdict"' in section
     assert "FUNCTION get_input_sql(p_run_id IN VARCHAR2) RETURN CLOB;" in src
     assert "clob_app_json_str(l_out, l_sql);" in src
 
@@ -32,7 +39,9 @@ def test_ords_and_proxy_expose_a_dedicated_history_endpoint_before_run_id_route(
     ords = (ROOT / "db/ords/asta_ords_module.sql").read_text()
     proxy = (ROOT / "app/routers/asta_proxy.py").read_text()
     assert "p_pattern     => 'history'" in ords
-    assert "ASTA_PKG.LIST_HISTORY(p_search => :search)" in ords
+    assert "p_from_date => :from_date" in ords
+    assert "p_to_date => :to_date" in ords
+    assert "p_verdict => :verdict" in ords
     assert "X-ASTA-History-Search" in ords
     assert "ASTA_PKG.GET_INPUT_SQL(:run_id)" in ords
     assert '@router.get("/history")' in proxy
@@ -43,7 +52,7 @@ def test_history_and_input_sql_handlers_individually_enforce_sensitive_clob_cont
     """각 신규 endpoint가 다른 handler의 헤더/스트리밍 구현에 기대어 통과하지 못하게 한다."""
     ords = (ROOT / "db/ords/asta_ords_module.sql").read_text()
     expected_calls = {
-        "history": "ASTA_PKG.LIST_HISTORY(p_search => :search)",
+        "history": "p_verdict => :verdict",
         "runs/:run_id/input-sql": "ASTA_PKG.GET_INPUT_SQL(:run_id)",
     }
     for pattern, package_call in expected_calls.items():
@@ -72,6 +81,9 @@ def test_history_and_input_sql_handlers_individually_enforce_sensitive_clob_cont
     assert "p_bind_variable_name => 'search'" in parameter
     assert "p_source_type => 'HEADER'" in parameter
     assert "p_access_method => 'IN'" in parameter
+    for header, bind in (("X-ASTA-History-From", "from_date"), ("X-ASTA-History-To", "to_date"), ("X-ASTA-History-Verdict", "verdict")):
+        assert f"p_name => '{header}'" in parameter
+        assert f"p_bind_variable_name => '{bind}'" in parameter
 
 
 def test_ui_has_history_menu_and_report_viewer_actions():
@@ -83,7 +95,14 @@ def test_ui_has_history_menu_and_report_viewer_actions():
     assert "/report/view" in view
     assert "결과서 열기" in view
     assert 'timeZone: "Asia/Seoul"' in view
-    assert "Run ID 또는 SQL 키워드로 검색" in view
-    assert "?q=${encodeURIComponent(currentSearch)}" in view
-    assert "/input-sql" in view
-    assert "요청 SQL 전체" in view
+    assert "조회 시작일" in view and "조회 종료일" in view
+    assert "IMPROVED" in view and "전체 결과" in view
+    assert "let currentFrom = kstDate(-6);" in view
+    assert "date_from: currentFrom" in view and "verdict: currentVerdict" in view
+    assert "요청일:" in view
+    assert "asta-history-row-actions" in view
+    assert "const parseAstaTimestamp" in view
+    assert "`${raw}Z`" in view
+    assert "const filteredRuns" not in view
+    assert "const runs = (Array.isArray(data?.runs) ? data.runs : []).filter" in view
+    assert 'document.getElementById("asta-history-detail")' not in view

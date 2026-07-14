@@ -30,11 +30,11 @@ def read(path: Path) -> str:
 def test_developer_tab_is_separate_accessible_and_rendered():
     ui = read(UI)
     assert 'data-manual-tab="developer"' in ui
-    assert 'class="tuning-manual-tab-index">03</span>' in ui
+    assert 'class="tuning-manual-tab-index">04</span>' in ui
     assert 'class="tuning-manual-tab-label">개발자 실행 추적</span>' in ui
     assert 'id="asta-manual-developer"' in ui
     assert "function renderDeveloperManual" in ui
-    assert '["architecture", "workflow", "developer"]' in ui
+    assert '["introduction", "architecture", "workflow", "developer"]' in ui
     assert "ASTA_DEVELOPER_PLATFORMS" in ui
     assert "ASTA_DEVELOPER_CALL_FLOW" in ui
     assert "ASTA_DEVELOPER_BRANCHES" in ui
@@ -137,4 +137,4 @@ def test_related_docs_share_developer_execution_contract_and_cache_version():
         text = read(path)
         for heading in required:
             assert heading in text, f"{path.name} omits {heading}"
-    assert "tuning_assistant.js?v=20260711_progress_contiguous7" in read(INDEX)
+    assert "tuning_assistant.js?v=20260714_guide_introduction1" in read(INDEX)

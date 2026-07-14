@@ -22,7 +22,6 @@ execution_budget:
     max_candidate_runs: 4
     max_candidate_wall_time_ms: 15000
     per_run_timeout_ms: 180000
-    max_noise_pct: 20.0
   workloads:
     OLTP:
       per_run_timeout_ms: 180000

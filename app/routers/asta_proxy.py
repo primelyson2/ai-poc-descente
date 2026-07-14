@@ -625,15 +625,49 @@ async def _audited_run_lookup(run_id: str, database: str, endpoint_kind: str, su
     return apply_runtime_gates(annotated) if isinstance(gate_comparison, dict) and gate_comparison else annotated
 
 
+_HISTORY_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_HISTORY_VERDICTS = {"ALL", "IMPROVED", "ANALYSIS_ONLY", "NOT_IMPROVED", "CANDIDATE_FAILED", "NON_EQUIVALENT", "NO_REWRITE", "INSUFFICIENT_EVIDENCE"}
+
+
 @router.get("/history")
-async def get_history(q: str | None = None, database: str = Depends(current_db)) -> dict[str, Any]:
+async def get_history(
+    q: str | None = None,
+    database: str = Depends(current_db),
+    date_from: str | None = None,
+    date_to: str | None = None,
+    verdict: str | None = None,
+) -> dict[str, Any]:
     """Search persisted ASTA runs by run ID or input SQL text."""
     # This value crosses the FastAPI→ORDS boundary in a request header. Fold
     # control characters before truncation so browser input cannot create an
     # invalid or injected HTTP header while ordinary whitespace remains searchable.
     search = re.sub(r"[\x00-\x1f\x7f]+", " ", str(q or "")).strip()[:200]
+    def clean_date(value: str | None, name: str) -> str | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        if not _HISTORY_DATE.fullmatch(text):
+            raise HTTPException(status_code=422, detail=f"{name} must be YYYY-MM-DD")
+        try:
+            datetime.strptime(text, "%Y-%m-%d")
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=f"{name} must be a valid date") from exc
+        return text
+    history_from = clean_date(date_from, "date_from")
+    history_to = clean_date(date_to, "date_to")
+    if history_from and history_to and history_from > history_to:
+        raise HTTPException(status_code=422, detail="date_from must not be after date_to")
+    history_verdict = str(verdict or "ALL").strip().upper()
+    if history_verdict not in _HISTORY_VERDICTS:
+        raise HTTPException(status_code=422, detail="unsupported history verdict")
     url = _resolve_ords_url(database, "history_path", "/history")
-    headers = {"X-ASTA-History-Search": search} if search else None
+    headers = {"X-ASTA-History-Verdict": history_verdict}
+    if search:
+        headers["X-ASTA-History-Search"] = search
+    if history_from:
+        headers["X-ASTA-History-From"] = history_from
+    if history_to:
+        headers["X-ASTA-History-To"] = history_to
     data = await _get_json_from_ords(url, _ords_timeout(database), headers)
     return _annotate_proxy(data)
 

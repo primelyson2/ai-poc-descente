@@ -20,6 +20,7 @@ def test_manual_dialog_has_accessible_trigger_tabs_and_close_paths():
     assert 'role="dialog" aria-modal="true"' in text
     assert 'aria-labelledby="asta-manual-title"' in text
     assert 'role="tablist" aria-label="ASTA 도움말 목차"' in text
+    assert 'data-manual-tab="introduction"' in text
     assert 'data-manual-tab="architecture"' in text
     assert 'data-manual-tab="workflow"' in text
     assert "function openAstaManualDialog" in text
@@ -33,6 +34,9 @@ def test_manual_tabs_have_clear_clickable_and_selected_affordance():
     text = source()
     assert 'class="tuning-manual-tab-index">01</span>' in text
     assert 'class="tuning-manual-tab-index">02</span>' in text
+    assert 'class="tuning-manual-tab-index">03</span>' in text
+    assert 'class="tuning-manual-tab-index">04</span>' in text
+    assert 'class="tuning-manual-tab-label">소개</span>' in text
     assert 'class="tuning-manual-tab-label">아키텍처</span>' in text
     assert 'class="tuning-manual-tab-label">분석 Workflow</span>' in text
     assert ".tuning-manual-tab::after { content:'열기';" in text
@@ -40,6 +44,20 @@ def test_manual_tabs_have_clear_clickable_and_selected_affordance():
     assert "transform:translateY(-1px)" in text
     assert "cursor:pointer" in text
     assert "box-shadow:inset 0 -3px var(--primary)" in text
+
+
+def test_introduction_explains_asta_concept_roles_and_safety_boundary():
+    text = source()
+    assert "function renderIntroductionManual()" in text
+    for concept in ("튜너 업무 자동화", "근거 중심 GenAI", "검증 사례 활용"):
+        assert concept in text
+    for role in ("근거 수집", "비효율 진단", "튜닝 가이드 생성", "비교·기록"):
+        assert role in text
+    for evidence in ("XPLAN·통계 수집", "Vector Search", "GenAI 진단·튜닝", "GenAI와 Codex"):
+        assert evidence in text
+    assert "운영 SQL 교체" in text
+    assert 'data-manual-tab="introduction"' in text
+    assert 'tabName = "introduction"' in text
 
 
 def test_architecture_explains_all_four_requested_responsibility_zones():
@@ -169,4 +187,4 @@ def test_manual_dialog_is_responsive_and_asset_cache_is_bumped():
     ):
         assert selector in text
     assert "@media (max-width: 700px)" in text
-    assert "tuning_assistant.js?v=20260711_progress_contiguous7" in INDEX.read_text(encoding="utf-8")
+    assert "tuning_assistant.js?v=20260714_guide_introduction1" in INDEX.read_text(encoding="utf-8")

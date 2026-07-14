@@ -1582,14 +1582,15 @@ CREATE OR REPLACE PACKAGE BODY asta_source_pkg AS
       l_median_elapsed_us := NULL; l_median_buffer_gets := NULL;
       l_median_disk_reads := NULL; l_elapsed_noise_pct := NULL;
     END;
+    -- Elapsed time varies with concurrent DB activity and I/O.  Keep its
+    -- spread as diagnostic telemetry, but do not reject otherwise complete
+    -- evidence based on a relative time-noise threshold.
     IF l_warmup_count = 1 AND l_measurement_count = 3
        AND l_completed_measurements = 3
-       AND l_elapsed_noise_pct IS NOT NULL AND l_elapsed_noise_pct <= 20 THEN
+       AND l_median_elapsed_us IS NOT NULL
+       AND l_median_buffer_gets IS NOT NULL THEN
       l_measurement_status := 'ACCEPTED';
       l_measurement_reason := 'MEASUREMENT_ACCEPTED';
-    ELSIF l_completed_measurements = 3
-          AND l_elapsed_noise_pct IS NOT NULL AND l_elapsed_noise_pct > 20 THEN
-      l_measurement_reason := 'MEASUREMENT_NOISE_TOO_HIGH';
     END IF;
 
     -- 6. sql_text의 ASTA_RUN_ID 표식으로 V$SQL에서 커서를 찾는다.

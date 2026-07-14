@@ -11,21 +11,36 @@ def read(path: str) -> str:
 def test_evidence_prompt_requests_leading_header_and_server_can_supply_it():
     llm = read("db/adb/asta_llm_pkg.sql")
     assert "For a changed SQL, prepend: /* ASTA_TUNING_CHANGE_1:" in llm
-    assert "ASTA will add it if omitted" in llm
+    assert "ASTA will add a detailed header if omitted or incomplete" in llm
     assert "prepend_generated_change_annotation" in llm
-    assert "expected buffer/elapsed effect" in llm
+    assert "변경 위치=<query block, CTE, join, subquery, or operation boundary>" in llm
+    assert "변경 방법=<exact structural rewrite>" in llm
+    assert "기대 효과=<expected buffer/elapsed effect>" in llm
 
 
 def test_structural_candidate_gets_missing_header_and_comment_only_is_not_rewrite():
     llm = read("db/adb/asta_llm_pkg.sql")
     assert "FUNCTION leading_change_annotation_count" in llm
-    assert "leading_change_annotation_count(l_candidate_sql) < 1" in llm
-    assert "prepend_generated_change_annotation(l_candidate_sql)" in llm
-    assert "ASTA added the required leading change annotation" in llm
+    assert "FUNCTION has_detailed_change_annotation" in llm
+    assert "OR NOT has_detailed_change_annotation(l_candidate_sql)" in llm
+    assert "prepend_generated_change_annotation(l_candidate_sql, l_diagnosis_response)" in llm
+    assert "ASTA added a detailed change location, method, and expected-effect header" in llm
     marker_check = llm.index("leading_change_annotation_count(l_candidate_sql) < 1")
     assert marker_check < llm.index("l_profile := l_try_profile", marker_check)
     assert "structural_sql_key(p_sql) = structural_sql_key(l_candidate_sql)" in llm
     assert "identical, comment-only, or hint-only candidate" in llm
+
+
+def test_generated_annotation_names_where_how_and_expected_effect_from_diagnosis():
+    llm = read("db/adb/asta_llm_pkg.sql")
+    generated = llm[llm.index("FUNCTION prepend_generated_change_annotation("):llm.index("END prepend_generated_change_annotation;")]
+    assert "localized_rewrite_boundary" in generated
+    assert "$.rewrite_strategy[0]" in generated
+    assert "변경 위치=" in generated
+    assert "변경 방법=" in generated
+    assert "기대 효과=" in generated
+    assert "safe_annotation_text" in generated
+    assert "SELECT safe_annotation_text" not in generated
 
 
 def test_artifact_exposes_header_metadata_and_preserves_candidate_clob():

@@ -7,7 +7,13 @@ CREATE OR REPLACE PACKAGE asta_pkg AUTHID DEFINER AS
   PROCEDURE enforce_candidate_timeout(p_run_id IN VARCHAR2);
   FUNCTION analyze_sql(p_body_json IN CLOB) RETURN CLOB;
   FUNCTION list_profiles RETURN CLOB;
-  FUNCTION list_history(p_search IN VARCHAR2 DEFAULT NULL, p_limit IN NUMBER DEFAULT 50) RETURN CLOB;
+  FUNCTION list_history(
+    p_search IN VARCHAR2 DEFAULT NULL,
+    p_limit IN NUMBER DEFAULT 50,
+    p_from_date IN VARCHAR2 DEFAULT NULL,
+    p_to_date IN VARCHAR2 DEFAULT NULL,
+    p_verdict IN VARCHAR2 DEFAULT NULL
+  ) RETURN CLOB;
   FUNCTION get_input_sql(p_run_id IN VARCHAR2) RETURN CLOB;
   FUNCTION get_run(p_run_id IN VARCHAR2) RETURN CLOB;
   FUNCTION get_progress(p_run_id IN VARCHAR2) RETURN CLOB;
@@ -2304,12 +2310,41 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
         json_str(SUBSTR(SQLERRM, 1, 4000)) || TO_CLOB('}}');
   END get_input_sql;
 
-  FUNCTION list_history(p_search IN VARCHAR2 DEFAULT NULL, p_limit IN NUMBER DEFAULT 50) RETURN CLOB IS
+  FUNCTION list_history(
+    p_search IN VARCHAR2 DEFAULT NULL,
+    p_limit IN NUMBER DEFAULT 50,
+    p_from_date IN VARCHAR2 DEFAULT NULL,
+    p_to_date IN VARCHAR2 DEFAULT NULL,
+    p_verdict IN VARCHAR2 DEFAULT NULL
+  ) RETURN CLOB IS
     l_out   CLOB;
     l_limit PLS_INTEGER := LEAST(GREATEST(NVL(TRUNC(p_limit), 50), 1), 100);
     l_search VARCHAR2(200) := NULLIF(TRIM(SUBSTR(p_search, 1, 200)), '');
+    l_today_kst DATE;
+    l_from_date DATE;
+    l_to_date DATE;
+    l_from_at TIMESTAMP;
+    l_to_at TIMESTAMP;
+    l_verdict VARCHAR2(30) := UPPER(TRIM(NVL(p_verdict, 'ALL')));
     l_first BOOLEAN := TRUE;
   BEGIN
+    l_today_kst := TRUNC(CAST(SYSTIMESTAMP AT TIME ZONE 'Asia/Seoul' AS DATE));
+    l_from_date := l_today_kst - 6;
+    l_to_date := l_today_kst;
+    IF REGEXP_LIKE(TRIM(p_from_date), '^\d{4}-\d{2}-\d{2}$') THEN
+      l_from_date := TO_DATE(TRIM(p_from_date), 'YYYY-MM-DD');
+    END IF;
+    IF REGEXP_LIKE(TRIM(p_to_date), '^\d{4}-\d{2}-\d{2}$') THEN
+      l_to_date := TO_DATE(TRIM(p_to_date), 'YYYY-MM-DD');
+    END IF;
+    IF l_from_date > l_to_date THEN
+      RAISE_APPLICATION_ERROR(-20001, 'ASTA history date range is invalid');
+    END IF;
+    l_from_at := CAST(FROM_TZ(CAST(l_from_date AS TIMESTAMP), 'Asia/Seoul') AT TIME ZONE 'UTC' AS TIMESTAMP);
+    l_to_at := CAST(FROM_TZ(CAST(l_to_date + 1 AS TIMESTAMP), 'Asia/Seoul') AT TIME ZONE 'UTC' AS TIMESTAMP);
+    IF l_verdict NOT IN ('ALL', 'IMPROVED', 'ANALYSIS_ONLY', 'NOT_IMPROVED', 'CANDIDATE_FAILED', 'NON_EQUIVALENT', 'NO_REWRITE', 'INSUFFICIENT_EVIDENCE') THEN
+      l_verdict := 'ALL';
+    END IF;
     DBMS_LOB.CREATETEMPORARY(l_out, TRUE);
     clob_app(l_out, '{"status":"COMPLETED","source":"ADB_ORDS","architecture":"ADB_ORDS_PLSQL","contract_version":"asta.v1",');
     clob_app(l_out, migration_boundary_json);
@@ -2342,9 +2377,13 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
                response_json,
                detailed_report_md
         FROM asta_runs
-        WHERE l_search IS NULL
-           OR INSTR(UPPER(run_id), UPPER(l_search)) > 0
-           OR DBMS_LOB.INSTR(UPPER(input_sql), UPPER(l_search), 1, 1) > 0
+        WHERE created_at >= l_from_at
+          AND created_at < l_to_at
+          AND (l_search IS NULL
+               OR INSTR(UPPER(run_id), UPPER(l_search)) > 0
+               OR DBMS_LOB.INSTR(UPPER(input_sql), UPPER(l_search), 1, 1) > 0)
+          AND (l_verdict = 'ALL'
+               OR UPPER(NVL(JSON_VALUE(response_json, '$.comparison.verdict' RETURNING VARCHAR2(64) NULL ON ERROR), status)) = l_verdict)
         ORDER BY created_at DESC NULLS LAST, run_id DESC
       )
       WHERE ROWNUM <= l_limit
@@ -2365,7 +2404,10 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
       clob_app(l_out, ',"execution_mode":' || json_str(r.execution_mode));
       clob_app(l_out, ',"report_ready":' || r.report_ready || '}');
     END LOOP;
-    clob_app(l_out, '],"limit":' || json_num(l_limit) || ',"search":' || json_str(l_search) || '}');
+    clob_app(l_out, '],"limit":' || json_num(l_limit) || ',"search":' || json_str(l_search) ||
+      ',"date_from":' || json_str(TO_CHAR(l_from_date, 'YYYY-MM-DD')) ||
+      ',"date_to":' || json_str(TO_CHAR(l_to_date, 'YYYY-MM-DD')) ||
+      ',"verdict":' || json_str(l_verdict) || '}');
     RETURN l_out;
   EXCEPTION
     WHEN OTHERS THEN

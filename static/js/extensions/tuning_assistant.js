@@ -989,7 +989,7 @@ ORDER BY SRC.COMP_CD, SRC.BRAND_CD, SRC.ITEM_CD`,
     RESULT_METADATA_MISMATCH: { title: "결과 컬럼 구성이 다릅니다", message: "컬럼명, 순서 또는 데이터 형식이 달라 개선 SQL을 적용하지 않았습니다.", action: "개선 SQL을 사용하지 말고 SELECT 컬럼 구성을 확인해 주세요." },
     BIND_COVERAGE_INSUFFICIENT: { title: "입력값별 안전성을 충분히 확인하지 못했습니다", message: "조건값에 따라 실행 방식이 달라질 수 있어 개선 SQL을 확정하지 않았습니다.", action: "대표적인 조건값으로 다시 검증하거나 Run ID를 담당자에게 전달해 주세요." },
     MEASUREMENT_EVIDENCE_INCOMPLETE: { title: "성능 측정 횟수가 부족합니다", message: "일시적인 변동을 제외할 만큼 반복 측정이 완료되지 않았습니다.", action: "원본 SQL을 유지하고 잠시 후 다시 실행해 주세요." },
-    MEASUREMENT_NOISE_TOO_HIGH: { title: "실행시간 변동이 너무 큽니다", message: "측정할 때마다 실행시간 차이가 커서 개선 여부를 확정할 수 없습니다.", action: "DB 부하가 낮을 때 다시 실행해 주세요." },
+    MEASUREMENT_NOISE_TOO_HIGH: { title: "이전 실행의 시간 변동 기록", message: "이 Run은 이전 시간 변동률 정책으로 보류되었습니다. 현재 정책에서는 시간 변동률을 판정 차단 조건으로 사용하지 않습니다.", action: "현재 정책으로 다시 검증하려면 새 Run을 실행해 주세요." },
     OPTIMIZER_INTENT_EVIDENCE_INCOMPLETE: { title: "병목이 실제로 줄었는지 확인하지 못했습니다", message: "개선 SQL의 실행계획에서 목표한 반복 작업 감소를 확인할 정보가 부족합니다.", action: "원본 SQL을 유지하고 Run ID를 담당자에게 전달해 주세요." },
     OLTP_LATENCY_TARGET_NOT_MET: { title: "응답시간 기준을 통과하지 못했습니다", message: "과거 정책에서 개선 SQL의 응답시간 기준을 통과하지 못해 적용하지 않았습니다.", action: "현재 정책은 3초 hard guard를 사용하지 않습니다. 최신 Run으로 다시 검증해 주세요." },
     BATCH_ELAPSED_TIME_NOT_IMPROVED: { title: "전체 실행시간이 줄지 않았습니다", message: "개선 SQL이 원본보다 빠르지 않아 적용하지 않았습니다.", action: "원본 SQL을 계속 사용해 주세요." },
@@ -1010,6 +1010,46 @@ ORDER BY SRC.COMP_CD, SRC.BRAND_CD, SRC.ITEM_CD`,
       .replaceAll(">", "&gt;")
       .replaceAll('"', "&quot;")
       .replaceAll("'", "&#039;");
+  }
+
+  /** ASTA의 콘셉트와 역할을 처음 보는 사용자도 빠르게 이해하도록 요약한다. */
+  function renderIntroductionManual() {
+    return `
+      <div class="tuning-manual-overview-hero">
+        <span class="tuning-manual-eyebrow">AI SQL Tuning Assistant</span>
+        <h3>SQL 튜너가 수행하던 분석 절차를 자동화한 AI SQL 튜닝 어시스턴트입니다.</h3>
+        <p>ASTA는 GenAI와 Codex를 활용해 구현한 프로그램입니다. SQL의 XPLAN과 참조 오브젝트의 통계·컬럼·인덱스 정보를 수집하고, GenAI가 비효율적인 부분을 찾도록 근거와 검증된 과거 개선 패턴을 하나의 프롬프트로 구성해 튜닝 가이드와 개선 후보를 만듭니다.</p>
+        <div class="tuning-manual-overview-flow" aria-label="ASTA의 핵심 처리 흐름">
+          <span>SQL 입력</span><b aria-hidden="true">→</b><span>XPLAN·통계 수집</span><b aria-hidden="true">→</b><span>Vector Search</span><b aria-hidden="true">→</b><span>GenAI 진단·튜닝</span><b aria-hidden="true">→</b><span>검증·결과서</span>
+        </div>
+      </div>
+      <div class="tuning-manual-concept-grid">
+        <article>
+          <span class="tuning-manual-concept-number">01</span>
+          <h3>튜너 업무 자동화</h3>
+          <p>SQL 접수부터 실행계획 분석, 개선 후보 생성, 전후 비교와 결과서 작성까지 튜너의 반복 업무를 하나의 흐름으로 연결합니다.</p>
+        </article>
+        <article>
+          <span class="tuning-manual-concept-number">02</span>
+          <h3>근거 중심 GenAI</h3>
+          <p>GenAI에 SQL만 보내지 않고 XPLAN, 참조 오브젝트의 통계·컬럼·인덱스 정보를 함께 제공해 비효율 진단의 근거를 강화합니다.</p>
+        </article>
+        <article>
+          <span class="tuning-manual-concept-number">03</span>
+          <h3>검증 사례 활용</h3>
+          <p>과거에 수행한 검증 결과를 Vector Search로 찾아 안전하게 요약하고, 현재 SQL의 근거와 함께 프롬프트에 전달해 더 적절한 튜닝 가이드를 찾습니다.</p>
+        </article>
+      </div>
+      <div class="tuning-manual-role-grid">
+        <article><strong>근거 수집</strong><span>XPLAN과 SQL이 참조하는 오브젝트의 통계·컬럼·인덱스 정보를 수집합니다.</span></article>
+        <article><strong>비효율 진단</strong><span>수집한 근거를 GenAI가 분석해 반복 접근과 비용이 큰 SQL 구조를 찾습니다.</span></article>
+        <article><strong>튜닝 가이드 생성</strong><span>현재 근거와 과거 검증 패턴을 조합한 프롬프트로 개선 방향과 SQL 후보를 만듭니다.</span></article>
+        <article><strong>비교·기록</strong><span>원본과 후보를 검증하고 판정 사유, 전후 비교와 Run ID를 결과서로 남깁니다.</span></article>
+      </div>
+      <aside class="tuning-manual-principle">
+        <strong>자동화의 경계</strong>
+        <span>분석과 튜닝 가이드 생성을 자동화하지만 운영 SQL 교체, DDL/DML 실행, 인덱스·통계·SQL Profile·SQL Plan Baseline 생성 또는 적용은 자동으로 수행하지 않습니다. 최종 반영은 코드 리뷰·업무 테스트·사용자 승인 후 결정합니다.</span>
+      </aside>`;
   }
 
   /** 매뉴얼 팝업의 4개 책임 영역 아키텍처를 안전한 정적 HTML로 만든다. */
@@ -2457,7 +2497,7 @@ ORDER BY SRC.COMP_CD, SRC.BRAND_CD, SRC.ITEM_CD`,
         .tuning-manual-close { flex:0 0 auto; min-width:42px; min-height:38px; padding:8px 11px; border:1px solid var(--border); border-radius:var(--radius-lg); background:var(--surface); color:var(--text); font-weight:750; cursor:pointer; }
         .tuning-manual-close:hover { border-color:var(--border-strong); background:var(--surface-hover); }
         .tuning-manual-close:focus-visible, .tuning-manual-tab:focus-visible { outline:2px solid var(--primary); outline-offset:2px; }
-        .tuning-manual-tabs { display:grid; grid-template-columns:repeat(3,minmax(190px,260px)); gap:10px; padding:12px 22px; border-bottom:1px solid var(--border); background:var(--surface-alt); }
+        .tuning-manual-tabs { display:grid; grid-template-columns:repeat(4,minmax(170px,1fr)); gap:10px; padding:12px 22px; border-bottom:1px solid var(--border); background:var(--surface-alt); }
         .tuning-manual-tab { position:relative; display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:9px; min-height:50px; padding:8px 12px; border:1px solid var(--border-strong); border-radius:var(--radius-lg); background:var(--surface); color:var(--text); font-size:13px; font-weight:750; text-align:left; cursor:pointer; box-shadow:var(--shadow-sm); transition:transform .15s ease,border-color .15s ease,box-shadow .15s ease,background .15s ease; }
         .tuning-manual-tab::after { content:'열기'; padding:3px 6px; border-radius:999px; background:var(--surface-alt); color:var(--text-muted); font-size:9px; font-weight:800; }
         .tuning-manual-tab:hover { border-color:var(--primary); color:var(--primary); background:var(--primary-light); box-shadow:var(--shadow-md); transform:translateY(-1px); }
@@ -2468,6 +2508,21 @@ ORDER BY SRC.COMP_CD, SRC.BRAND_CD, SRC.ITEM_CD`,
         .tuning-manual-tab-label { min-width:0; }
         .tuning-manual-content { flex:1 1 auto; min-height:0; overflow:auto; padding:22px; background:var(--surface-alt); }
         .tuning-manual-panel-view[hidden] { display:none; }
+        .tuning-manual-overview-hero { padding:24px; border:1px solid #bfdbfe; border-radius:16px; background:linear-gradient(135deg,#eff6ff 0%,var(--surface) 65%); }
+        .tuning-manual-overview-hero h3 { max-width:830px; margin:7px 0 10px; font-size:clamp(20px,2.6vw,31px); line-height:1.3; letter-spacing:-.025em; }
+        .tuning-manual-overview-hero p { max-width:880px; margin:0; color:var(--text-muted); font-size:13px; line-height:1.7; }
+        .tuning-manual-overview-flow { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:18px; font-size:11px; font-weight:750; }
+        .tuning-manual-overview-flow span { padding:6px 10px; border:1px solid #bfdbfe; border-radius:999px; background:var(--surface); color:#1e40af; }
+        .tuning-manual-overview-flow b { color:var(--primary); }
+        .tuning-manual-concept-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin-top:14px; }
+        .tuning-manual-concept-grid article { padding:16px; border:1px solid var(--border); border-radius:var(--radius-lg); background:var(--surface); }
+        .tuning-manual-concept-number { display:inline-grid; place-items:center; width:30px; height:25px; border-radius:7px; background:var(--primary-light); color:var(--primary); font-size:9px; font-weight:850; }
+        .tuning-manual-concept-grid h3 { margin:10px 0 6px; font-size:15px; }
+        .tuning-manual-concept-grid p { margin:0; color:var(--text-muted); font-size:11px; line-height:1.6; }
+        .tuning-manual-role-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; margin-top:14px; }
+        .tuning-manual-role-grid article { display:grid; gap:6px; padding:14px; border-left:4px solid var(--primary); border-radius:0 var(--radius-lg) var(--radius-lg) 0; background:var(--surface); }
+        .tuning-manual-role-grid strong { font-size:12px; }
+        .tuning-manual-role-grid span { color:var(--text-muted); font-size:10px; line-height:1.55; }
         .tuning-manual-intro { display:flex; align-items:center; justify-content:space-between; gap:18px; margin-bottom:16px; }
         .tuning-manual-intro p { max-width:680px; margin:0; color:var(--text-muted); line-height:1.6; }
         .tuning-manual-flow { display:flex; align-items:center; gap:7px; flex-wrap:wrap; justify-content:flex-end; color:var(--text-muted); font-size:11px; }
@@ -2832,6 +2887,7 @@ ORDER BY SRC.COMP_CD, SRC.BRAND_CD, SRC.ITEM_CD`,
           .tuning-grid { grid-template-columns:1fr; }
           .tuning-aside { position:static; }
           .tuning-controls-row { grid-template-columns:repeat(2, minmax(0, 1fr)); }
+          .tuning-manual-role-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
           .tuning-manual-architecture-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
           .tuning-manual-zone::after { display:none; }
           .tuning-manual-step-details { grid-template-columns:1fr; }
@@ -2853,9 +2909,12 @@ ORDER BY SRC.COMP_CD, SRC.BRAND_CD, SRC.ITEM_CD`,
           .tuning-manual-panel { width:100vw; max-height:94dvh; border-radius:18px 18px 0 0; }
           .tuning-manual-header { padding:16px; }
           .tuning-manual-header p { font-size:12px; }
-          .tuning-manual-tabs { position:sticky; top:0; z-index:2; grid-template-columns:repeat(3,minmax(0,1fr)); padding:9px 16px; }
+          .tuning-manual-tabs { position:sticky; top:0; z-index:2; grid-template-columns:repeat(2,minmax(0,1fr)); padding:9px 16px; }
           .tuning-manual-tab::after { display:none; }
           .tuning-manual-content { padding:14px; }
+          .tuning-manual-overview-hero { padding:18px; }
+          .tuning-manual-overview-flow { align-items:flex-start; }
+          .tuning-manual-concept-grid, .tuning-manual-role-grid { grid-template-columns:1fr; }
           .tuning-manual-intro { display:block; }
           .tuning-manual-flow { justify-content:flex-start; margin-top:10px; }
           .tuning-manual-architecture-grid { grid-template-columns:1fr; }
@@ -3138,17 +3197,21 @@ ORDER BY SRC.COMP_CD, SRC.BRAND_CD, SRC.ITEM_CD`,
               <div>
                 <span class="tuning-manual-eyebrow">ASTA Guide</span>
                 <h2 id="asta-manual-title">매뉴얼 및 사용설명</h2>
-                <p>구성 영역별 책임, 사용자 7단계 흐름, 개발자용 파일·함수·추적 절차를 확인합니다.</p>
+                <p>ASTA의 콘셉트와 역할, 구성 영역별 책임, 사용자 7단계 흐름, 개발자용 실행 추적 절차를 확인합니다.</p>
               </div>
               <button class="tuning-manual-close" type="button" aria-label="매뉴얼 닫기">닫기</button>
             </header>
             <div class="tuning-manual-tabs" role="tablist" aria-label="ASTA 도움말 목차">
-              <button id="asta-manual-tab-architecture" class="tuning-manual-tab" type="button" role="tab" aria-selected="true" aria-controls="asta-manual-architecture" data-manual-tab="architecture"><span class="tuning-manual-tab-index">01</span><span class="tuning-manual-tab-label">아키텍처</span></button>
-              <button id="asta-manual-tab-workflow" class="tuning-manual-tab" type="button" role="tab" aria-selected="false" aria-controls="asta-manual-workflow" data-manual-tab="workflow" tabindex="-1"><span class="tuning-manual-tab-index">02</span><span class="tuning-manual-tab-label">분석 Workflow</span></button>
-              <button id="asta-manual-tab-developer" class="tuning-manual-tab" type="button" role="tab" aria-selected="false" aria-controls="asta-manual-developer" data-manual-tab="developer" tabindex="-1"><span class="tuning-manual-tab-index">03</span><span class="tuning-manual-tab-label">개발자 실행 추적</span></button>
+              <button id="asta-manual-tab-introduction" class="tuning-manual-tab" type="button" role="tab" aria-selected="true" aria-controls="asta-manual-introduction" data-manual-tab="introduction"><span class="tuning-manual-tab-index">01</span><span class="tuning-manual-tab-label">소개</span></button>
+              <button id="asta-manual-tab-architecture" class="tuning-manual-tab" type="button" role="tab" aria-selected="false" aria-controls="asta-manual-architecture" data-manual-tab="architecture" tabindex="-1"><span class="tuning-manual-tab-index">02</span><span class="tuning-manual-tab-label">아키텍처</span></button>
+              <button id="asta-manual-tab-workflow" class="tuning-manual-tab" type="button" role="tab" aria-selected="false" aria-controls="asta-manual-workflow" data-manual-tab="workflow" tabindex="-1"><span class="tuning-manual-tab-index">03</span><span class="tuning-manual-tab-label">분석 Workflow</span></button>
+              <button id="asta-manual-tab-developer" class="tuning-manual-tab" type="button" role="tab" aria-selected="false" aria-controls="asta-manual-developer" data-manual-tab="developer" tabindex="-1"><span class="tuning-manual-tab-index">04</span><span class="tuning-manual-tab-label">개발자 실행 추적</span></button>
             </div>
             <div class="tuning-manual-content">
-              <section id="asta-manual-architecture" class="tuning-manual-panel-view" role="tabpanel" aria-labelledby="asta-manual-tab-architecture">
+              <section id="asta-manual-introduction" class="tuning-manual-panel-view" role="tabpanel" aria-labelledby="asta-manual-tab-introduction">
+                ${renderIntroductionManual()}
+              </section>
+              <section id="asta-manual-architecture" class="tuning-manual-panel-view" role="tabpanel" aria-labelledby="asta-manual-tab-architecture" hidden>
                 ${renderArchitectureManual()}
               </section>
               <section id="asta-manual-workflow" class="tuning-manual-panel-view" role="tabpanel" aria-labelledby="asta-manual-tab-workflow" hidden>
@@ -3177,16 +3240,16 @@ ORDER BY SRC.COMP_CD, SRC.BRAND_CD, SRC.ITEM_CD`,
     const manualTabs = Array.from(manualDialog?.querySelectorAll("[data-manual-tab]") || []);
     let manualReturnFocus = null;
 
-    /** 매뉴얼 dialog의 아키텍처/Workflow 탭을 전환하고 roving focus를 유지한다. */
+    /** 매뉴얼 dialog의 소개/아키텍처/Workflow/개발자 탭을 전환하고 roving focus를 유지한다. */
     function setAstaManualTab(tabName, moveFocus = false) {
-      const selectedName = ["architecture", "workflow", "developer"].includes(tabName) ? tabName : "architecture";
+      const selectedName = ["introduction", "architecture", "workflow", "developer"].includes(tabName) ? tabName : "introduction";
       manualTabs.forEach((tab) => {
         const selected = tab.dataset.manualTab === selectedName;
         tab.setAttribute("aria-selected", selected ? "true" : "false");
         tab.tabIndex = selected ? 0 : -1;
         if (selected && moveFocus) tab.focus();
       });
-      ["architecture", "workflow", "developer"].forEach((name) => {
+      ["introduction", "architecture", "workflow", "developer"].forEach((name) => {
         const panel = document.getElementById(`asta-manual-${name}`);
         if (panel) panel.hidden = name !== selectedName;
       });
@@ -3195,7 +3258,7 @@ ORDER BY SRC.COMP_CD, SRC.BRAND_CD, SRC.ITEM_CD`,
     }
 
     /** ASTA 매뉴얼 팝업을 열고 닫기 전 포커스를 기억한다. */
-    function openAstaManualDialog(tabName = "architecture") {
+    function openAstaManualDialog(tabName = "introduction") {
       if (!manualDialog) return;
       manualReturnFocus = document.activeElement;
       setAstaManualTab(tabName);
@@ -3606,12 +3669,12 @@ ORDER BY SRC.COMP_CD, SRC.BRAND_CD, SRC.ITEM_CD`,
         .asta-history-head h1 { margin:0; font-size:28px; }
         .asta-history-head p { margin:6px 0 0; color:var(--text-muted); }
         .asta-history-refresh { white-space:nowrap; }
-        .asta-history-search { display:flex; gap:8px; margin:0 0 18px; }.asta-history-search input { flex:1; min-width:0; }
-        .asta-history-grid { display:grid; grid-template-columns:minmax(0,1fr) minmax(340px,.9fr); gap:18px; }
-        .asta-history-list, .asta-history-detail { background:var(--surface); border:1px solid var(--border); border-radius:14px; box-shadow:var(--shadow-sm); }
+        .asta-history-search { display:flex; flex-wrap:wrap; gap:8px; margin:0 0 18px; }.asta-history-search input[type="search"] { flex:1; min-width:180px; }.asta-history-search input[type="date"], .asta-history-search select { min-width:138px; }
+        .asta-history-grid { display:grid; grid-template-columns:minmax(0,1fr); gap:18px; }
+        .asta-history-list { background:var(--surface); border:1px solid var(--border); border-radius:14px; box-shadow:var(--shadow-sm); }
         .asta-history-list { overflow:hidden; }
-        .asta-history-row { width:100%; border:0; border-bottom:1px solid var(--border); background:transparent; padding:15px 17px; text-align:left; cursor:pointer; color:inherit; }
-        .asta-history-row:hover, .asta-history-row[aria-current="true"] { background:var(--surface-alt); }
+        .asta-history-row { border-bottom:1px solid var(--border); padding:15px 17px; }
+        .asta-history-row:hover { background:var(--surface-alt); }
         .asta-history-row:last-child { border-bottom:0; }
         .asta-history-row-top { display:flex; gap:9px; align-items:center; justify-content:space-between; }
         .asta-history-run { font:600 12px ui-monospace,SFMono-Regular,Menlo,monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -3619,28 +3682,48 @@ ORDER BY SRC.COMP_CD, SRC.BRAND_CD, SRC.ITEM_CD`,
         .asta-history-badge.improved { background:#dcfce7; color:#166534; }.asta-history-badge.failed { background:#fee2e2; color:#991b1b; }.asta-history-badge.analysis { background:#fef3c7; color:#92400e; }
         .asta-history-meta, .asta-history-sql { margin-top:7px; color:var(--text-muted); font-size:12px; }
         .asta-history-sql { color:var(--text); font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-        .asta-history-detail { padding:20px; min-height:330px; }.asta-history-detail h2 { margin:0 0 8px; font-size:17px; }.asta-history-detail code { word-break:break-all; }
-        .asta-history-detail pre { white-space:pre-wrap; overflow:auto; max-height:280px; padding:12px; background:#0f172a; color:#e2e8f0; border-radius:9px; font-size:12px; }
+        .asta-history-date { margin-top:7px; font-weight:600; color:var(--text); font-size:12px; }.asta-history-row-actions { margin-top:11px; }
         .asta-history-actions { display:flex; flex-wrap:wrap; gap:8px; margin:16px 0; }.asta-history-empty { padding:30px; color:var(--text-muted); text-align:center; }
         @media (max-width:800px) { .asta-history-grid { grid-template-columns:1fr; }.asta-history-head { align-items:start; flex-direction:column; }.asta-history-detail { min-height:auto; } }
       </style>
       <section class="asta-history">
         <header class="asta-history-head"><div><h1>Tuning History</h1><p>고객이 요청한 SQL과 분석 결과서를 최근 요청 순으로 확인합니다.</p></div><button id="asta-history-refresh" class="btn btn-secondary asta-history-refresh" type="button">새로고침</button></header>
-        <form id="asta-history-search" class="asta-history-search"><input id="asta-history-query" class="input" type="search" maxlength="200" placeholder="Run ID 또는 SQL 키워드로 검색" aria-label="Run ID 또는 SQL 키워드 검색" /><button class="btn btn-primary" type="submit">조회</button></form>
-        <div class="asta-history-grid"><div id="asta-history-list" class="asta-history-list" aria-live="polite"><div class="asta-history-empty">튜닝 이력을 불러오는 중입니다.</div></div><aside id="asta-history-detail" class="asta-history-detail"><div class="asta-history-empty">왼쪽 목록에서 요청을 선택하면 SQL과 결과서 링크를 확인할 수 있습니다.</div></aside></div>
+        <form id="asta-history-search" class="asta-history-search"><input id="asta-history-query" class="input" type="search" maxlength="200" placeholder="Run ID 또는 SQL 키워드" aria-label="Run ID 또는 SQL 키워드 검색" /><input id="asta-history-from" class="input" type="date" aria-label="조회 시작일" /><input id="asta-history-to" class="input" type="date" aria-label="조회 종료일" /><select id="asta-history-verdict" class="input" aria-label="결과 판정"><option value="ALL">전체 결과</option><option value="IMPROVED">IMPROVED</option><option value="ANALYSIS_ONLY">ANALYSIS_ONLY</option><option value="NOT_IMPROVED">NOT_IMPROVED</option><option value="INSUFFICIENT_EVIDENCE">INSUFFICIENT_EVIDENCE</option><option value="NON_EQUIVALENT">NON_EQUIVALENT</option><option value="CANDIDATE_FAILED">CANDIDATE_FAILED</option><option value="NO_REWRITE">NO_REWRITE</option></select><button class="btn btn-primary" type="submit">조회</button></form>
+        <div class="asta-history-grid"><div id="asta-history-list" class="asta-history-list" aria-live="polite"><div class="asta-history-empty">튜닝 이력을 불러오는 중입니다.</div></div></div>
       </section>`;
     const list = document.getElementById("asta-history-list");
-    const detail = document.getElementById("asta-history-detail");
     const refresh = document.getElementById("asta-history-refresh");
     const searchForm = document.getElementById("asta-history-search");
     const searchInput = document.getElementById("asta-history-query");
+    const fromInput = document.getElementById("asta-history-from");
+    const toInput = document.getElementById("asta-history-to");
+    const verdictInput = document.getElementById("asta-history-verdict");
     let currentSearch = "";
+    const kstDate = (offsetDays = 0) => {
+      const date = new Date(Date.now() + offsetDays * 86400000);
+      const values = Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Seoul", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(date).filter((part) => part.type !== "literal").map((part) => [part.type, part.value]));
+      return `${values.year}-${values.month}-${values.day}`;
+    };
+    let currentFrom = kstDate(-6);
+    let currentTo = kstDate();
+    let currentVerdict = "ALL";
+    const parseAstaTimestamp = (value) => {
+      const raw = String(value || "").trim();
+      if (!raw) return new Date(NaN);
+      return new Date(/[zZ]$|[+-]\d{2}:?\d{2}$/.test(raw) ? raw : `${raw}Z`);
+    };
     const formatTime = (value) => {
       if (!value) return "시간 정보 없음";
-      const date = new Date(value);
+      const date = parseAstaTimestamp(value);
       return Number.isNaN(date.getTime())
         ? String(value)
         : `${date.toLocaleString("ko-KR", { timeZone: "Asia/Seoul" })} KST`;
+    };
+    const kstYmd = (value) => {
+      const date = parseAstaTimestamp(value);
+      if (Number.isNaN(date.getTime())) return String(value || "").slice(0, 10);
+      const values = Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Seoul", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(date).filter((part) => part.type !== "literal").map((part) => [part.type, part.value]));
+      return `${values.year}-${values.month}-${values.day}`;
     };
     const badgeClass = (run) => {
       const verdict = String(run.verdict || run.status || "").toUpperCase();
@@ -3650,43 +3733,31 @@ ORDER BY SRC.COMP_CD, SRC.BRAND_CD, SRC.ITEM_CD`,
       return "";
     };
     const badgeText = (run) => run.verdict || run.status || "UNKNOWN";
-    const showDetail = async (run) => {
-      const runId = String(run.run_id || "");
-      const reportUrl = `${DEFAULT_ORDS_BASE_URL}/runs/${encodeURIComponent(runId)}/report/view`;
-      const downloadUrl = `${DEFAULT_ORDS_BASE_URL}/runs/${encodeURIComponent(runId)}/report/download`;
-      detail.dataset.runId = runId;
-      detail.innerHTML = `<h2>선택한 튜닝 요청</h2><p><code>${escapeHtml(runId)}</code></p><p class="asta-history-meta">${escapeHtml(formatTime(run.created_at))} · ${escapeHtml(run.source_db_id || "Source DB 미상")} · ${escapeHtml(run.llm_profile || "AI profile 미상")}</p><p><span class="asta-history-badge ${badgeClass(run)}">${escapeHtml(badgeText(run))}</span> ${escapeHtml(run.execution_mode || "실행 범위 미상")}</p><h3>요청 SQL 전체</h3><pre id="asta-history-full-sql">SQL 원문을 불러오는 중입니다.</pre><div class="asta-history-actions">${run.report_ready ? `<a class="btn btn-primary" href="${reportUrl}" target="_blank" rel="noopener">결과서 열기</a><a class="btn btn-secondary" href="${downloadUrl}">결과서 다운로드</a>` : "<span class=\"muted\">아직 결과서가 생성되지 않았습니다.</span>"}</div>${run.error_message ? `<p class="muted">오류: ${escapeHtml(run.error_code || "ASTA") } — ${escapeHtml(run.error_message)}</p>` : ""}`;
-      list.querySelectorAll(".asta-history-row").forEach((row) => row.setAttribute("aria-current", String(row.dataset.runId === runId)));
-      try {
-        const payload = await fetchJson(`${DEFAULT_ORDS_BASE_URL}/runs/${encodeURIComponent(runId)}/input-sql`);
-        if (detail.dataset.runId !== runId) return;
-        const target = detail.querySelector("#asta-history-full-sql");
-        if (target) target.textContent = payload?.input_sql || "저장된 SQL이 없습니다.";
-      } catch (error) {
-        if (detail.dataset.runId !== runId) return;
-        const target = detail.querySelector("#asta-history-full-sql");
-        if (target) target.textContent = `SQL 원문을 불러오지 못했습니다. ${error.message || ""}`;
-      }
-    };
-    const load = async (query = currentSearch) => {
+    const load = async (query = currentSearch, from = currentFrom, to = currentTo, verdict = currentVerdict) => {
       currentSearch = String(query || "").trim().slice(0, 200);
+      currentFrom = String(from || ""); currentTo = String(to || ""); currentVerdict = String(verdict || "ALL").toUpperCase();
       searchInput.value = currentSearch;
+      fromInput.value = currentFrom; toInput.value = currentTo; verdictInput.value = currentVerdict;
       refresh.disabled = true;
-      searchInput.disabled = true;
+      searchInput.disabled = true; fromInput.disabled = true; toInput.disabled = true; verdictInput.disabled = true;
       try {
-        const suffix = currentSearch ? `?q=${encodeURIComponent(currentSearch)}` : "";
+        const params = new URLSearchParams({ date_from: currentFrom, date_to: currentTo, verdict: currentVerdict });
+        if (currentSearch) params.set("q", currentSearch);
+        const suffix = `?${params.toString()}`;
         const data = await fetchJson(`${DEFAULT_ORDS_BASE_URL}/history${suffix}`);
-        const runs = Array.isArray(data?.runs) ? data.runs : [];
-        if (!runs.length) { list.innerHTML = `<div class="asta-history-empty">${currentSearch ? "검색 조건에 맞는 튜닝 요청이 없습니다." : "표시할 튜닝 요청 이력이 없습니다."}</div>`; detail.innerHTML = '<div class="asta-history-empty">Run ID 또는 SQL 키워드를 바꿔 다시 조회해 주세요.</div>'; return; }
-        list.innerHTML = runs.map((run) => `<button class="asta-history-row" type="button" data-run-id="${escapeHtml(run.run_id)}"><div class="asta-history-row-top"><span class="asta-history-run">${escapeHtml(run.run_id)}</span><span class="asta-history-badge ${badgeClass(run)}">${escapeHtml(badgeText(run))}</span></div><div class="asta-history-meta">${escapeHtml(formatTime(run.created_at))} · ${escapeHtml(run.source_db_id || "Source DB 미상")}</div><div class="asta-history-sql">${escapeHtml(run.sql_preview || "저장된 SQL 없음")}</div></button>`).join("");
-        list.querySelectorAll(".asta-history-row").forEach((row) => row.addEventListener("click", () => { void showDetail(runs.find((run) => run.run_id === row.dataset.runId) || {}); }));
-        showDetail(runs[0]);
+        const runs = (Array.isArray(data?.runs) ? data.runs : []).filter((run) => {
+          const runDate = kstYmd(run.created_at);
+          const runVerdict = String(run.verdict || run.status || "").toUpperCase();
+          return (!currentFrom || runDate >= currentFrom) && (!currentTo || runDate <= currentTo) && (currentVerdict === "ALL" || runVerdict === currentVerdict);
+        });
+        if (!runs.length) { list.innerHTML = `<div class="asta-history-empty">검색 조건에 맞는 튜닝 요청이 없습니다.</div>`; return; }
+        list.innerHTML = runs.map((run) => { const runId = String(run.run_id || ""); const reportUrl = `${DEFAULT_ORDS_BASE_URL}/runs/${encodeURIComponent(runId)}/report/view`; return `<article class="asta-history-row"><div class="asta-history-row-top"><span class="asta-history-run">${escapeHtml(runId)}</span><span class="asta-history-badge ${badgeClass(run)}">${escapeHtml(badgeText(run))}</span></div><div class="asta-history-date">요청일: ${escapeHtml(formatTime(run.created_at))}</div><div class="asta-history-meta">${escapeHtml(run.source_db_id || "Source DB 미상")} · ${escapeHtml(run.llm_profile || "AI profile 미상")}</div><div class="asta-history-sql">${escapeHtml(run.sql_preview || "저장된 SQL 없음")}</div><div class="asta-history-row-actions">${run.report_ready ? `<a class="btn btn-primary" href="${reportUrl}" target="_blank" rel="noopener">결과서 열기</a>` : '<span class="muted">결과서 준비 중</span>'}</div></article>`; }).join("");
       } catch (error) {
         list.innerHTML = `<div class="asta-history-empty">이력을 불러오지 못했습니다. ${escapeHtml(error.message || "")}</div>`;
-      } finally { refresh.disabled = false; searchInput.disabled = false; }
+      } finally { refresh.disabled = false; searchInput.disabled = false; fromInput.disabled = false; toInput.disabled = false; verdictInput.disabled = false; }
     };
     refresh.addEventListener("click", () => load(currentSearch));
-    searchForm.addEventListener("submit", (event) => { event.preventDefault(); load(searchInput.value); });
+    searchForm.addEventListener("submit", (event) => { event.preventDefault(); load(searchInput.value, fromInput.value, toInput.value, verdictInput.value); });
     await load();
   };
 })();

@@ -1,5 +1,77 @@
 # Real ASTA 작업 인계
 
+## ASTA × Codex 바이브 코딩 쇼케이스 영문 스크린샷 — 2026-07-14
+
+- 요청/결론: `reports/asta_codex_vibe_coding_showcase_20260714/`의 기존 발표용 이미지 6장을 영문화했다. `screenshots_en/`에 즉시 삽입 가능한 1600×900 PNG 6장, `svg_sources_en/`에 편집 가능한 영문 SVG 6장을 추가했다.
+- 변경 파일: 쇼케이스 `README.md`, 영문 SVG/PNG 12개, 이 handoff. 기존 한글 이미지와 원본은 보존했다.
+- 검증: 영문 SVG에 한글 텍스트가 남지 않은 것을 확인하고, PNG 전부 `1600 x 900 RGB`로 렌더링했다. 안내·분석 입력·Workflow·검증 결과 화면을 실제로 열어 영문 텍스트 잘림을 보정했다. 단일 Run 검증 수치와 민감정보 제외 경계는 원본과 동일하다.
+- 남은 문제/다음 단계: 없음. 코드·DB·서비스·배포 변경 없음.
+- 관련 커밋: 없음.
+
+## ASTA × Codex 바이브 코딩 회사 소개 자료 제작 — 2026-07-14
+
+- 요청/결론: 사용자가 Desktop PowerPoint를 만들 수 있도록 `reports/asta_codex_vibe_coding_showcase_20260714/` 새 폴더에 회사 소개용 Markdown과 16:9 이미지 세트를 준비했다. 발표 메시지는 ASTA를 “SQL 튜너 분석 절차 자동화”, Codex를 “다계층 구현·검증 개발 파트너”, Runtime GenAI를 “근거 기반 진단·후보 생성 엔진”으로 분리했다.
+- 문서: `README.md`(사용법·30초 소개), `ONE_PAGE_SUMMARY.md`(1페이지 요약), `PPT_STORYBOARD.md`(12장 슬라이드 문구·발표자 노트·FAQ), `SCREENSHOT_INDEX.md`(이미지별 캡션·주의사항)를 작성했다. 확인되지 않은 개발 기간·생산성 수치는 만들지 않고 사용자 입력 자리로 남겼다.
+- 이미지: `screenshots/`에 1600×900 PNG 6장(Guide 소개, 분석 입력, 7단계 Workflow, 아키텍처, 실제 단일 검증 Run 결과, Human×Codex 반복 구조)을 만들고 `svg_sources/`에 편집 가능한 원본을 보존했다. VM에 브라우저 캡처 엔진이 없어 실제 UI 레이블·구조를 기반으로 민감정보를 제거한 발표용 재구성 캡처로 제작했다. 한글 렌더링용 Noto Sans KR은 `/tmp`에서만 사용하고 산출물에 포함하지 않았다.
+- 검증: PNG 6장 모두 `1600 x 900 RGB`, Markdown의 모든 screenshot 참조 파일 존재, 전체 폴더 약 980KB, `git diff --check` 통과. 이미지 6장을 실제로 열어 한글 깨짐·겹침·잘림을 점검하고 어두운 배경의 대비를 보정했다. 고객 SQL 원문·인증정보·비밀번호·쿠키·토큰은 포함하지 않았다.
+- 성과 표기 경계: 검증 이미지의 Buffer Gets `9,160,632 → 1,079,348`(88.22% 감소), elapsed 약 `124.01초 → 1.46초`, `EQUIVALENT`는 기존 인계의 실제 단일 Run 기록을 사용했다. 평균 개선율이나 모든 SQL 성능 보장이 아니라는 주의를 문서와 이미지에 표시했다.
+- 남은 문제/다음 단계: 사용자가 PowerPoint에서 발표자/조직, 실제 개발 기간·생산성 측정값, 사내 적용 대상과 다음 단계를 채우면 된다. 코드·DB·서비스·배포 변경 없음.
+- 관련 커밋: 없음(기존 dirty worktree에 신규 report 폴더와 handoff만 추가).
+
+## ASTA Guide `01 소개` 추가 — 2026-07-14
+
+- 요청/결론: 화면 **매뉴얼 및 사용설명(ASTA Guide)**의 첫 탭에 프로그램 소개를 추가했다. `01 소개`를 기본 진입 탭으로 만들고 기존 탭을 `02 아키텍처`, `03 분석 Workflow`, `04 개발자 실행 추적`으로 이동했다. 소개는 ASTA를 GenAI와 Codex를 활용해 구현한 SQL 튜너 분석 절차 자동화 프로그램으로 정의한다.
+- 소개 내용: `SQL 입력 → XPLAN·참조 오브젝트 통계 수집 → 과거 검증 결과 Vector Search → GenAI 진단·튜닝 → 검증·결과서` 흐름, 튜너 업무 자동화·근거 중심 GenAI·검증 사례 활용 콘셉트, 근거 수집·비효율 진단·튜닝 가이드 생성·비교/기록 역할을 요약했다. 분석은 자동화하지만 운영 SQL 교체나 DDL/DML·인덱스·통계·SQL Profile·SQL Plan Baseline 적용은 자동 수행하지 않는 경계도 표시했다.
+- 변경 파일: `static/js/extensions/tuning_assistant.js`, `static/index.html`, `docs/README.md`, `docs/AI_SQL_TUNING_ASSISTANT_MANUAL.md`, `docs/OADT2_ASTA_ARCHITECTURE.md`, `docs/asta_source_execution_flow.md`, 매뉴얼/캐시 계약 테스트 7개, 이 handoff. cache marker는 `tuning_assistant.js?v=20260714_guide_introduction1`이다.
+- 실행한 테스트와 실제 결과: `node --check static/js/extensions/tuning_assistant.js`, `git diff --check` 통과. 전체 pytest는 프로젝트 venv 의존성과 캐시된 pytest runner를 함께 사용해 `513 passed in 1.42s`. 실제 서비스 `/`가 새 cache marker를, 제공 JS가 `01 소개`, XPLAN·통계 수집, Vector Search, GenAI/Codex 문구를 HTTP 200으로 제공한다.
+- 남은 문제/다음 단계: 없음. 정적 파일 직접 제공 변경이라 서비스 재시작, ADB/ORDS/package 배포, DB 변경은 수행하지 않았다.
+- 관련 커밋: 없음(기존 작업과 함께 dirty worktree 상태).
+
+## Tuning History KST 날짜 필터·목록형 결과서 UI 보정 — 2026-07-13
+
+- 요청/결론: 날짜를 바꿔도 검색 조건이 반영되지 않는 것처럼 보이던 문제를 보정했다. ADB `ASTA_RUNS.created_at`은 UTC 기준인데 UI는 KST 날짜를 입력받으므로, ADB 기간 비교를 KST 자정의 UTC timestamp 경계로 변환했다. 화면도 응답에 대해 같은 KST 날짜·verdict 조건을 보조 적용한다.
+- UI 변경: `선택한 튜닝 요청` 상세 패널과 전체 SQL lazy-load를 제거했다. 각 목록 행에 명시적인 `요청일: YYYY. M. D. HH:MM:SS KST`, Source/profile, SQL preview, 결과 badge 및 `결과서 열기` 버튼을 직접 표시한다. cache marker는 `tuning_assistant.js?v=20260713_tuning_history_filters_kst3`다.
+- 변경 파일: `db/adb/asta_pkg.sql`, `static/js/extensions/tuning_assistant.js`, `static/index.html`, History 계약 테스트와 이 handoff.
+- 실행한 테스트와 실제 결과: 최종 전체 `uv run --with pytest pytest -q` → `512 passed in 1.49s`; `node --check`, `git diff --check` 통과. 서비스 `/`와 제공 JS가 새 cache marker, `요청일`, `결과서 열기`, UTC→KST parser를 실제로 제공한다.
+- 배포: active Scheduler job/run/progress 0건에서 KST boundary가 포함된 `ASTA_PKG`와 ORDS History handler를 재배포했다. PACKAGE/BODY VALID, USER_ERRORS=0이며 기간·IMPROVED smoke 통과. artifact는 `reports/asta_history_filters_deploy/20260713T033831Z/`다. FastAPI 재시작은 앞선 filter 배포에서 완료되어 그대로 active다.
+- 남은 문제/다음 단계: 없음. 신규 tuning Run이나 데이터 변경은 수행하지 않았다.
+- 관련 커밋: 없음(작업 트리 변경 상태).
+
+## Tuning History 날짜·결과 판정 필터 배포 — 2026-07-13
+
+- 요청/결론: Tuning History에 기간과 최종 판정 필터를 추가했다. 처음 열면 KST 오늘을 포함한 최근 7일(시작일=오늘-6일, 종료일=오늘)이 기본이며, Run ID/SQL 키워드 검색과 함께 `IMPROVED`, `ANALYSIS_ONLY`, `NOT_IMPROVED`, `INSUFFICIENT_EVIDENCE`, `NON_EQUIVALENT`, `CANDIDATE_FAILED`, `NO_REWRITE`, 전체를 선택할 수 있다.
+- 변경 파일: `static/js/extensions/tuning_assistant.js`, `static/index.html`, `app/routers/asta_proxy.py`, `db/ords/asta_ords_module.sql`, `db/adb/asta_pkg.sql`, `docs/AI_SQL_TUNING_ASSISTANT_MANUAL.md`, History/API/UI 계약 테스트와 이 handoff.
+- 구현/안전 경계: 브라우저 query는 FastAPI에서 YYYY-MM-DD·순서·허용 verdict를 검증한 뒤 ORDS header로 전달한다. ORDS는 `ASTA_PKG.LIST_HISTORY`의 기간·판정 인자로 넘기고, ADB가 `created_at`의 inclusive 날짜 범위와 comparison verdict를 적용한다. SQL 미리보기 500자·전체 SQL lazy-load·limit 50은 유지했다.
+- 실행한 테스트와 실제 결과: History focused `15 passed`; 최종 전체 `uv run --with pytest pytest -q` → `512 passed in 1.38s`; `node --check static/js/extensions/tuning_assistant.js`, `git diff --check` 통과.
+- 배포/스모크: Scheduler job/run/progress 0건에서 `ASTA_PKG` spec/body를 백업·배포하고 ORDS `asta.v1` module을 반영했다. 최종 PACKAGE/BODY VALID, USER_ERRORS=0. `LIST_HISTORY(2026-07-07..2026-07-13, IMPROVED)` smoke가 요청 filter echo와 `COMPLETED`를 통과했다. FastAPI service를 재시작했으며 active, `/`가 `tuning_assistant.js?v=20260713_tuning_history_filters1`을 제공하고 OpenAPI에 `date_from/date_to/verdict` query parameter를 노출한다. artifact는 `reports/asta_history_filters_deploy/20260713T033105Z/`다.
+- 남은 문제/다음 단계: 없음. 새 tuning Run이나 데이터 변경은 수행하지 않았다.
+- 관련 커밋: 없음(작업 트리 변경 상태).
+
+## 튜닝 SQL 변경 위치·방법 주석 보강 및 배포 — 2026-07-13
+
+- 요청/결론: 튜닝 SQL 상단 주석이 일반적인 변경 설명만 담아 실제 변경 위치와 방법을 알기 어렵던 문제를 수정했다. 새 후보는 SQL 첫 줄에 `ASTA_TUNING_CHANGE_n: 변경 위치=<실제 query block/CTE/join/subquery 경계> -> 변경 방법=<구조 재작성> -> 기대 효과=<측정 목표>` 형식으로 남긴다. 모델 주석이 누락되거나 일반론이면 Stage 1 diagnosis의 `localized_rewrite_boundary`와 `rewrite_strategy`로 ASTA가 상세 header를 보완한다. 기존 결과 동등성·SQL Guard·구조 비교 정책은 유지한다.
+- 변경 파일: `db/adb/asta_llm_pkg.sql`, `tests/test_asta_inline_change_annotations.py`, 이 handoff.
+- 실행한 테스트와 실제 결과: 상세 주석/LLM contract focused `100 passed`; 전체 `uv run --with pytest pytest -q` → `511 passed in 1.41s`; `node --check static/js/extensions/tuning_assistant.js`, `git diff --check` 통과.
+- 배포: active ADB Scheduler job/run/progress 모두 0건에서 `ASTA_LLM_PKG` spec/body를 백업·컴파일했다. 첫 컴파일은 PL/SQL local helper를 SQL expression으로 호출한 오류 3건으로 body가 INVALID가 됐으나, 오류 위치를 확인해 PL/SQL assignment로 수정 후 즉시 재컴파일했다. 최종 PACKAGE/BODY 모두 VALID, USER_ERRORS=0, detailed annotation function marker 1 및 header marker 2를 확인했다. 외부 LLM 호출·신규 tuning Run·데이터 변경은 없었다. artifact는 `reports/asta_detailed_sql_annotation_deploy/20260713T015602Z/`다.
+- 남은 문제/다음 단계: 기존 저장 Run의 후보 SQL은 변경하지 않았다. 새 Run에서 생성되는 후보부터 적용된다.
+- 관련 커밋: 없음(작업 트리 변경 상태).
+
+## 실행시간 noise 차단 정책 제거 구현 — 2026-07-13
+
+- 요청/결론: 사용자의 지시에 따라 `(max-min)/median <= 20%` 실행시간 변동률을 `IMPROVED` 판정의 차단 조건에서 제거했다. 반복 측정(워밍업 1회+실측 3회), 결과 digest 동등성, bind 안정성, optimizer intent, workload별 buffer gets/elapsed 성능 기준 및 실행 예산은 유지한다. 시간 변동률은 JSON telemetry로만 보존한다.
+- 변경 파일: `db/source/asta_source_pkg.sql`, `tools/asta_execution_budget.py`, `tools/run_asta_prompt_abc_adb.py`, `tools/asta_quality_agent.py`, `tools/asta_bind_plan_stability.py`, `tools/asta_deploy_adb.py`, `asta-quality-agent.yaml.example`, UI/문서와 관련 테스트를 변경했다. `static/index.html` cache marker는 `20260713_elapsed_noise_telemetry1`로 갱신했다.
+- 실행한 테스트와 실제 결과: focused 정책 회귀 `61 passed`; 전체 `uv run --with pytest pytest -q` → `510 passed in 1.47s`; `node --check static/js/extensions/tuning_assistant.js`, `git diff --check` 통과. `select-ai-test.service`는 active이고 실제 `/` 및 JS asset이 새 cache marker와 정책 안내 문구를 HTTP 200으로 제공한다.
+- 배포 상태: SQLcl 저장 `DSNT` 연결을 재확인해 Source scheduler job 0건에서 `ASTA_SOURCE_PKG` spec/body를 백업·컴파일했다. PACKAGE/BODY VALID, USER_ERRORS=0, 배포본의 legacy threshold/reason marker는 각각 0, telemetry marker는 5다. AUTO/FULL_RESULT `dual` smoke는 `COMPLETED / measurement_status=ACCEPTED / measurement_count=3 / result_digest_status=COMPLETED`를 통과했다. ADB DB Link read-only 재확인에서도 legacy time-noise rejection/reason은 false, telemetry는 true다. artifact는 `reports/asta_elapsed_noise_policy_deploy/20260713T014907Z/`다. ADB/ORDS package 변경은 필요 없었다.
+- 관련 커밋: 없음(작업 트리 변경 상태).
+
+## 지정 Run `4df472ad` 측정 noise 판정 읽기 전용 진단 — 2026-07-13
+
+- 요청/결론: `OADT2-ASTA-4df472adfee54ecabf55be136201c038`가 개선 수치에도 `INSUFFICIENT_EVIDENCE / MEASUREMENT_NOISE_TOO_HIGH`가 된 사유를 확인했다. 결과 동등성·optimizer intent·bind 조건은 모두 통과했고 후보의 buffer gets도 15,730→1,045로 감소했다. 다만 후보 실행시간 3회가 1,425/1,180/976µs여서 중앙값 1,180µs 기준 `(max-min)/median` 변동률이 38.051%로 정책 한도 20%를 초과했다. 따라서 fail-closed 측정 gate가 `measurement_status=BLOCKED`, 최종 `INSUFFICIENT_EVIDENCE`로 확정한 정상 정책 동작이다.
+- 변경 파일: `.agent-handoff/CONTEXT.md`만 갱신했다. DB·서비스·배포 변경 없음.
+- 실행한 검증과 실제 결과: `/tmp/inspect_asta_measurement_run.py`의 read-only 조회로 source 측정 15,790/15,548/15,741µs (noise 1.537%, ACCEPTED), after 측정 위 3건 (noise 38.051%, BLOCKED), 결과 digest 동등성 VERIFIED, optimizer intent VERIFIED, bind NOT_APPLICABLE를 확인했다. 코드상 기준은 `tools/asta_execution_budget.py`의 `max_noise_pct=20.0`이며 noise는 `(max-min)/median*100`이다.
+- 남은 문제/다음 단계: 재실행 시 DB 부하가 낮은 구간에서 후보 측정을 늘리거나, 초단시간 SQL에 대한 절대 변동 허용치/추가 반복 측정 정책을 별도 승인 후 검토한다. 현재 저장 Run의 판정을 수동으로 `IMPROVED`로 바꾸면 안 된다.
+- 관련 커밋: 후속 인계 기록 커밋 필요.
+
 ## GitHub ASTA push 완료 확인 — 2026-07-12
 
 - 요청/결론: 다른 작업 세션에서 완료된 Real ASTA remediation의 원격 반영과 미배포 항목을 확인했다. DB package·ORDS·정적 UI·FastAPI service 반영 및 인증 API smoke는 기존 완료 기록대로 모두 완료되어 추가 배포는 필요하지 않았다.

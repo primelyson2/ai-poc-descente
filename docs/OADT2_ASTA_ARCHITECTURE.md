@@ -175,7 +175,7 @@ run의 `QUEUED`, `RUNNING`, `COMPLETED`, `FAILED`는 처리 상태다. `COMPLETE
 | `ANALYSIS_ONLY` | 미실행 모드에서 후보와 예상 Plan을 제안했지만 성능·동등성은 미검증 | 원본 |
 | `NOT_IMPROVED` | 결과는 비교 가능하지만 성능 개선 없음 | 원본 |
 | `NON_EQUIVALENT` | 원본과 후보 결과가 다름 | 원본 |
-| `INSUFFICIENT_EVIDENCE` | 계획·결과·bind·반복 측정 근거 부족 | 원본 |
+| `INSUFFICIENT_EVIDENCE` | 계획·결과·bind·반복 측정 완료 근거 부족 | 원본 |
 | `CANDIDATE_FAILED` | 후보 SQL 실행 실패 | 원본 |
 | `NO_REWRITE` | 안전한 구조 재작성 후보 없음 | 원본 |
 
@@ -227,7 +227,7 @@ UI는 결과서를 다음 6개 탭으로 나눈다.
 
 입력과 결과는 독립적인 접기 영역이다. 진행 중에는 compact 현재 단계가 `현재/7` 형식으로 보이고 **진행 상세** Drawer는 내부 접수·연결·Guard를 1번 `요청 및 분석 준비`로 묶은 뒤 나머지 카드를 2~7로 연속 표시한다. 사용자 3단계가 완료되면 검증 중 후보 SQL을 별도 접기 영역에 표시하며, 이는 최종 적용 권고가 아니다. polling은 같은 run의 DOM을 매번 재생성하지 않고 변경된 값만 갱신한다.
 
-상단 **매뉴얼 및 사용설명** dialog는 `01 아키텍처`, `02 분석 Workflow`, `03 개발자 실행 추적` 세 탭을 제공한다. 아키텍처는 User/개발자 → UI(VM) → OCI AI Lakehouse → OCI ERP Database(BaseDB)의 책임과 실행 경계를 구분한다. Workflow는 사용자 화면 7단계에 실제 package/procedure, 수행 내용, 생성 evidence, 실패 동작을 순서대로 표시한다. 개발자 탭은 실제 파일·심볼·API와 Run ID 추적 순서를 표시한다.
+상단 **매뉴얼 및 사용설명** dialog는 `01 소개`, `02 아키텍처`, `03 분석 Workflow`, `04 개발자 실행 추적` 네 탭을 제공한다. 소개는 ASTA를 GenAI와 Codex를 활용해 구현한 SQL 튜너 분석 절차 자동화 프로그램으로 정의한다. XPLAN과 참조 오브젝트 통계·컬럼·인덱스 수집, GenAI 비효율 진단, 과거 검증 결과 Vector Search, 강화된 프롬프트 기반 튜닝 가이드·후보 생성과 자동화 경계를 요약한다. 아키텍처는 User/개발자 → UI(VM) → OCI AI Lakehouse → OCI ERP Database(BaseDB)의 책임과 실행 경계를 구분한다. Workflow는 사용자 화면 7단계에 실제 package/procedure, 수행 내용, 생성 evidence, 실패 동작을 순서대로 표시한다. 개발자 탭은 실제 파일·심볼·API와 Run ID 추적 순서를 표시한다.
 
 아키텍처 탭은 별도 리소스 목록을 두지 않고 각 책임 영역 카드 안에 compartment와 OCI Resource를 결합한다. User/개발자 카드는 OCI 리소스가 없는 PoC 샘플 화면이며 입력·검토 역할만 표시한다.
 

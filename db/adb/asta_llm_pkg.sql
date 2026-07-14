@@ -428,14 +428,52 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
     WHEN OTHERS THEN RETURN 0;
   END leading_change_annotation_count;
 
-  FUNCTION prepend_generated_change_annotation(p_sql IN CLOB) RETURN CLOB IS
+  FUNCTION has_detailed_change_annotation(p_sql IN CLOB) RETURN BOOLEAN IS
+    l_text VARCHAR2(32767);
+  BEGIN
+    IF p_sql IS NULL THEN RETURN FALSE; END IF;
+    l_text := DBMS_LOB.SUBSTR(p_sql, 32767, 1);
+    RETURN REGEXP_LIKE(
+      l_text,
+      'ASTA_TUNING_CHANGE_[0-9]+:[^*]*변경[[:space:]]*위치[[:space:]]*=[^*]+->[[:space:]]*변경[[:space:]]*방법[[:space:]]*=[^*]+->[[:space:]]*기대[[:space:]]*효과[[:space:]]*=',
+      'n'
+    );
+  EXCEPTION WHEN OTHERS THEN
+    RETURN FALSE;
+  END has_detailed_change_annotation;
+
+  FUNCTION safe_annotation_text(p_value IN VARCHAR2, p_default IN VARCHAR2) RETURN VARCHAR2 IS
+    l_text VARCHAR2(4000) := TRIM(NVL(p_value, p_default));
+  BEGIN
+    l_text := REPLACE(REPLACE(l_text, '/*', ''), '*/', '');
+    l_text := REPLACE(REPLACE(l_text, CHR(13), ' '), CHR(10), ' ');
+    l_text := TRIM(REGEXP_REPLACE(l_text, '[[:space:]]+', ' '));
+    RETURN SUBSTR(NVL(l_text, p_default), 1, 900);
+  END safe_annotation_text;
+
+  FUNCTION prepend_generated_change_annotation(
+    p_sql IN CLOB,
+    p_diagnosis_json IN CLOB DEFAULT NULL
+  ) RETURN CLOB IS
     l_out CLOB;
+    l_location VARCHAR2(1000);
+    l_method VARCHAR2(1000);
+    l_effect VARCHAR2(1000);
   BEGIN
     IF p_sql IS NULL THEN
       RETURN NULL;
     END IF;
+    l_location := safe_annotation_text(
+      JSON_VALUE(p_diagnosis_json, '$.target_operations[0].localized_rewrite_boundary' RETURNING VARCHAR2(1000) NULL ON ERROR),
+      '후보 SQL에서 반복 접근이 확인된 query block/서브쿼리 경계'
+    );
+    l_method := safe_annotation_text(
+      JSON_VALUE(p_diagnosis_json, '$.rewrite_strategy[0]' RETURNING VARCHAR2(1000) NULL ON ERROR),
+      '반복 접근을 한 번의 집계·조인 또는 CTE 구조로 재작성'
+    );
+    l_effect := '동일 결과를 유지하면서 반복 접근 및 Buffer Gets 감소를 목표로 검증';
     DBMS_LOB.CREATETEMPORARY(l_out, TRUE);
-    clob_app(l_out, '/* ASTA_TUNING_CHANGE_1: 실행계획과 실행 통계에 근거한 구조 재작성 후보 -> 모델이 제안한 SQL 구조를 보존하고 ASTA가 설명 헤더를 보완 -> 후보 실행 및 Before/After 검증 예정 */' || CHR(10));
+    clob_app(l_out, '/* ASTA_TUNING_CHANGE_1: 변경 위치=' || l_location || ' -> 변경 방법=' || l_method || ' -> 기대 효과=' || l_effect || ' */' || CHR(10));
     clob_app_clob(l_out, p_sql);
     RETURN l_out;
   END prepend_generated_change_annotation;
@@ -1182,7 +1220,7 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
     clob_app(l_candidate_prompt, 'AUTHORITATIVE SOURCE COLUMN DICTIONARY JSON follows. For every listed owner.table, use only column_name values present in that table entry; never copy a correlation key from a similar table. An empty or absent table entry means unknown and is not permission to invent a column. Preserve unchanged view/query-block text when its columns are not listed.' || CHR(10));
     clob_app_clob(l_candidate_prompt, l_column_dictionary);
     clob_app(l_candidate_prompt, CHR(10));
-    clob_app(l_candidate_prompt, 'For a changed SQL, prepend: /* ASTA_TUNING_CHANGE_1: existing issue -> structural rewrite -> expected buffer/elapsed effect */. Keep all numbered change comments in the leading header; ASTA will add it if omitted.' || CHR(10));
+    clob_app(l_candidate_prompt, 'For a changed SQL, prepend: /* ASTA_TUNING_CHANGE_1: 변경 위치=<query block, CTE, join, subquery, or operation boundary> -> 변경 방법=<exact structural rewrite> -> 기대 효과=<expected buffer/elapsed effect> */. Do not use generic wording: the location and method must identify the actual changed SQL fragment. Keep all numbered change comments in the leading header; ASTA will add a detailed header if omitted or incomplete.' || CHR(10));
     clob_app(l_candidate_prompt, 'If absolutely no candidate can be written, return exactly NO_REWRITE.' || CHR(10));
     IF p_tuning_context_json IS NOT NULL THEN
       clob_app(l_candidate_prompt, 'User tuning context JSON is a hard scope constraint. Implement only the localized rewrite requested in user_notes; copy every unrelated SQL fragment verbatim:' || CHR(10));
@@ -1259,8 +1297,9 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
       END IF;
       BEGIN
         asta_sql_guard_pkg.assert_candidate_compatible(l_candidate_sql);
-        IF leading_change_annotation_count(l_candidate_sql) < 1 THEN
-          l_candidate_sql := prepend_generated_change_annotation(l_candidate_sql);
+        IF leading_change_annotation_count(l_candidate_sql) < 1
+           OR NOT has_detailed_change_annotation(l_candidate_sql) THEN
+          l_candidate_sql := prepend_generated_change_annotation(l_candidate_sql, l_diagnosis_response);
           l_annotation_added := 'Y';
         END IF;
         asta_sql_guard_pkg.assert_candidate_compatible(l_candidate_sql);
@@ -1328,7 +1367,7 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
     clob_app(l_result, ',"guard_repair_attempted":' || CASE WHEN l_guard_repair_attempted = 'Y' THEN 'true' ELSE 'false' END);
     clob_app(l_result, ',"leading_change_annotations_present":' || CASE WHEN l_annotation_count > 0 THEN 'true' ELSE 'false' END);
     clob_app(l_result, ',"leading_change_annotation_count":' || TO_CHAR(l_annotation_count));
-    clob_app(l_result, ',"annotation_note":' || json_str(CASE WHEN l_annotation_added = 'Y' THEN 'ASTA added the required leading change annotation' END));
+    clob_app(l_result, ',"annotation_note":' || json_str(CASE WHEN l_annotation_added = 'Y' THEN 'ASTA added a detailed change location, method, and expected-effect header' END));
     clob_app(l_result, ',"candidate_sql":');
     clob_app_json_str(l_result, l_candidate_sql);
     -- Stage-1 diagnosis owns explanatory arrays; candidate SQL is plain CLOB.
@@ -1389,7 +1428,7 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
     clob_app(l_prompt, 'Perform a full Oracle syntax and name-resolution preflight: balance parentheses; make every clause and UNION branch complete; ensure CTE names are unique and do not collide with referenced base table/view names; replace all stale consumer references after a CTE rename; prohibit accidental recursive WITH; and ensure every alias.column resolves to a declared projection. Do not return the same failing SQL. Return NO_REWRITE only if no safe executable repair is possible.' || CHR(10));
     clob_app(l_prompt, 'ORA-32039 rule: Oracle can treat a CTE as recursive when its name equals a schema-qualified base table or view read inside that CTE (for example WITH VIF_WHOLESALE_S AS (... FROM DSNT.VIF_WHOLESALE_S ...)). Rename the CTE to a distinct helper name such as WHOLESALE_STYLE_KEYS and update every consumer to that exact helper name; do not add a recursive column alias list unless the original SQL intentionally uses recursion.' || CHR(10));
     clob_app(l_prompt, 'ORA-25156 rule: never mix ANSI JOIN syntax with the old-style Oracle outer-join operator (+). Preserve one join style consistently across the repaired candidate.' || CHR(10));
-    clob_app(l_prompt, 'No JSON, Markdown, prose, DDL, DML, PL/SQL, new hints, semicolon, or slash. Keep the leading ASTA_TUNING_CHANGE comments.' || CHR(10));
+    clob_app(l_prompt, 'No JSON, Markdown, prose, DDL, DML, PL/SQL, new hints, semicolon, or slash. Keep the leading ASTA_TUNING_CHANGE comments and state 변경 위치, 변경 방법, 기대 효과 in the first comment.' || CHR(10));
     clob_app(l_prompt, 'AUTHORITATIVE SOURCE COLUMN DICTIONARY JSON follows. For every listed owner.table, use only column_name values present in that table entry. Remove or remap an invalid identifier only from ORIGINAL SQL evidence and this dictionary; never copy a key from a similar table or invent a replacement column.' || CHR(10));
     clob_app_clob(l_prompt, l_column_dictionary);
     clob_app(l_prompt, CHR(10));
@@ -1431,7 +1470,8 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
           CONTINUE;
         END IF;
         asta_sql_guard_pkg.assert_candidate_compatible(l_candidate);
-        IF leading_change_annotation_count(l_candidate) < 1 THEN
+        IF leading_change_annotation_count(l_candidate) < 1
+           OR NOT has_detailed_change_annotation(l_candidate) THEN
           l_candidate := prepend_generated_change_annotation(l_candidate);
         END IF;
         asta_sql_guard_pkg.assert_candidate_compatible(l_candidate);

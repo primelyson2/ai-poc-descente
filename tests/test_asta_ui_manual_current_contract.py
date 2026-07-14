@@ -180,4 +180,4 @@ def test_screen_names_defaults_api_and_cache_buster_match_current_ui():
         assert button in manual
     for path in DOCS:
         assert "최종 업데이트: 2026-07-10" in read(path)
-    assert "tuning_assistant.js?v=20260711_progress_contiguous7" in read(INDEX)
+    assert "tuning_assistant.js?v=20260714_guide_introduction1" in read(INDEX)

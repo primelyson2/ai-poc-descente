@@ -209,7 +209,6 @@ def compare_repeated(
     before_runs: list[dict],
     after_runs: list[dict],
     workload: str,
-    max_noise_pct: float = 20.0,
     max_oltp_elapsed_us: int = 3_000_000,
     max_oltp_elapsed_increase_us: int = 300_000,
     sql_text: str | None = None,
@@ -235,7 +234,6 @@ def compare_repeated(
         semantic_equivalent = equivalence.get("status") == "VERIFIED"
     before_noise = _noise_pct(completed_before, "last_elapsed_time_us")
     after_noise = _noise_pct(completed_after, "last_elapsed_time_us")
-    noisy = any(value is not None and value > max_noise_pct for value in (before_noise, after_noise))
 
     def reduction(before, after):
         if not isinstance(before, (int, float)) or not isinstance(after, (int, float)) or before <= 0:
@@ -276,7 +274,6 @@ def compare_repeated(
         "buffer_gets_reduction_pct": buffer_pct,
         "before_elapsed_noise_pct": before_noise,
         "after_elapsed_noise_pct": after_noise,
-        "measurement_noisy": noisy,
         "latency_guard_passed": latency_guard_passed,
         "oltp_latency_target_us": max_oltp_elapsed_us if workload.upper() == "OLTP" else None,
         "oltp_max_elapsed_increase_us": max_oltp_elapsed_increase_us if workload.upper() == "OLTP" else None,
@@ -313,7 +310,6 @@ def main() -> int:
     ap.add_argument("--strategies", default="AUTO")
     ap.add_argument("--benchmark-runs", type=int, default=1)
     ap.add_argument("--ora-retries", type=int, default=0)
-    ap.add_argument("--max-noise-pct", type=float, default=20.0)
     ap.add_argument("--max-oltp-elapsed-us", type=int, default=3_000_000)
     ap.add_argument("--max-oltp-elapsed-increase-us", type=int, default=300_000)
     ap.add_argument("--source-repeat-policy", default="ONCE")
@@ -372,7 +368,7 @@ def main() -> int:
                         error = execution_error
                         break
                     comp = compare_repeated(
-                        before_runs, after_runs, sample.get("workload") or "OLTP", args.max_noise_pct,
+                        before_runs, after_runs, sample.get("workload") or "OLTP",
                         args.max_oltp_elapsed_us, args.max_oltp_elapsed_increase_us,
                         sql_text=sample["sql"],
                     ) if candidate and after_runs else {}

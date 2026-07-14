@@ -251,7 +251,7 @@ def test_oracle_retry_prompt_contains_exact_error_and_failed_sql():
     assert "Return only one complete executable Oracle SELECT or WITH statement" in prompt
 
 
-def test_repeated_batch_comparison_uses_median_and_flags_noise():
+def test_repeated_batch_comparison_keeps_elapsed_variance_as_telemetry():
     before = [
         {"status": "COMPLETED", "row_count": 100, "last_output_rows": 1,
          "last_elapsed_time_us": value, "last_cr_buffer_gets": 1000}
@@ -262,11 +262,11 @@ def test_repeated_batch_comparison_uses_median_and_flags_noise():
          "last_elapsed_time_us": value, "last_cr_buffer_gets": 800}
         for value in (70, 80, 130)
     ]
-    comparison = compare_repeated(before, after, workload="BATCH", max_noise_pct=20)
+    comparison = compare_repeated(before, after, workload="BATCH")
     assert comparison["before_elapsed_time_us"] == 100
     assert comparison["after_elapsed_time_us"] == 80
     assert comparison["elapsed_time_reduction_pct"] == 20.0
-    assert comparison["measurement_noisy"] is True
+    assert comparison["after_elapsed_noise_pct"] == 75.0
     assert comparison["equivalence_strength"] == "SHAPE_ONLY"
     assert comparison["semantic_equivalent"] is False
 
@@ -294,9 +294,9 @@ def test_failure_classifier_covers_required_customer_sql_failure_families():
     assert classify_failure({"candidate_generated": False, "candidate_error": "ORA-00936: missing expression"}) == "ORACLE_SYNTAX_OR_EXECUTION_ERROR"
     assert classify_failure({"candidate_generated": True, "semantic_equivalent": False}) == "SEMANTIC_EQUIVALENCE_FAILURE"
     assert classify_failure({"candidate_generated": True, "semantic_equivalent": True,
-                             "measurement_noisy": True}) == "MEASUREMENT_NOISE"
+                             "primary_reduction_pct": 20}) == "IMPROVED"
     assert classify_failure({"candidate_generated": True, "semantic_equivalent": True,
-                             "measurement_noisy": False, "primary_reduction_pct": -1}) == "PERFORMANCE_NOT_IMPROVED"
+                             "primary_reduction_pct": -1}) == "PERFORMANCE_NOT_IMPROVED"
     assert classify_failure({"candidate_generated": True, "semantic_equivalent": False,
                              "reported_equivalent": True}) == "REPORT_DECISION_ERROR"
 

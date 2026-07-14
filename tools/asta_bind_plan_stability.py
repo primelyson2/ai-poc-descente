@@ -476,8 +476,6 @@ def evaluate_bind_campaign(
                 overall_reason = "BIND_CASE_EQUIVALENCE_FAILED"
             elif failed_reason == "PERFORMANCE_NOT_IMPROVED":
                 overall_reason = "BIND_CASE_PERFORMANCE_REGRESSION"
-            elif failed_reason == "MEASUREMENT_NOISE_TOO_HIGH":
-                overall_reason = "BIND_CASE_MEASUREMENT_UNSTABLE"
             elif "BUDGET" in failed_reason:
                 overall_reason = "BIND_EXECUTION_BUDGET_EXCEEDED"
             else:

@@ -203,7 +203,12 @@ DECLARE
   l_offset   PLS_INTEGER := 1;
   l_chunk    VARCHAR2(32767);
 BEGIN
-  l_response := ASTA_PKG.LIST_HISTORY(p_search => :search);
+  l_response := ASTA_PKG.LIST_HISTORY(
+    p_search => :search,
+    p_from_date => :from_date,
+    p_to_date => :to_date,
+    p_verdict => :verdict
+  );
 
   OWA_UTIL.mime_header('application/json; charset=utf-8', FALSE);
   HTP.p('Cache-Control: no-store');
@@ -225,7 +230,7 @@ BEGIN
   END LOOP;
 END;
 ]',
-    p_comments    => 'Calls ASTA_PKG.LIST_HISTORY(:search)'
+    p_comments    => 'Calls ASTA_PKG.LIST_HISTORY(:search, :from_date, :to_date, :verdict)'
   );
 
   ORDS.DEFINE_PARAMETER(
@@ -238,6 +243,25 @@ END;
     p_param_type  => 'STRING',
     p_access_method => 'IN',
     p_comments    => 'Optional internal history search text; never expose SQL in URL paths'
+  );
+
+  ORDS.DEFINE_PARAMETER(
+    p_module_name => 'asta.v1', p_pattern => 'history', p_method => 'GET',
+    p_name => 'X-ASTA-History-From', p_bind_variable_name => 'from_date',
+    p_source_type => 'HEADER', p_param_type => 'STRING', p_access_method => 'IN',
+    p_comments => 'Inclusive YYYY-MM-DD history date; defaults to the last seven calendar days'
+  );
+  ORDS.DEFINE_PARAMETER(
+    p_module_name => 'asta.v1', p_pattern => 'history', p_method => 'GET',
+    p_name => 'X-ASTA-History-To', p_bind_variable_name => 'to_date',
+    p_source_type => 'HEADER', p_param_type => 'STRING', p_access_method => 'IN',
+    p_comments => 'Inclusive YYYY-MM-DD history end date'
+  );
+  ORDS.DEFINE_PARAMETER(
+    p_module_name => 'asta.v1', p_pattern => 'history', p_method => 'GET',
+    p_name => 'X-ASTA-History-Verdict', p_bind_variable_name => 'verdict',
+    p_source_type => 'HEADER', p_param_type => 'STRING', p_access_method => 'IN',
+    p_comments => 'Optional comparison verdict filter; ALL disables verdict filtering'
   );
 
   ORDS.DEFINE_TEMPLATE(

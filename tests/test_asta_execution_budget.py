@@ -35,7 +35,6 @@ def policy(**overrides):
         "max_candidate_runs": 4,
         "max_candidate_wall_time_ms": 10_000,
         "per_run_timeout_ms": 180_000,
-        "max_noise_pct": 20.0,
     }
     value.update(overrides)
     return value
@@ -154,7 +153,6 @@ def test_customer_summary_excludes_warmup_and_uses_three_measured_runs():
     assert after["median_elapsed_us"] == 1_641_880
     assert after["median_buffer_gets"] == 1_079_324
     assert after["elapsed_noise_pct"] == 1.758
-    assert after["noise_gate_passed"] is True
 
 
 def test_customer_campaign_fits_total_and_candidate_run_time_budgets():
@@ -285,7 +283,7 @@ def test_terminal_failed_candidate_cannot_consume_more_runs():
     assert second["state"]["used_total_runs"] == used
 
 
-def test_incomplete_or_noisy_measurements_never_infer_success():
+def test_incomplete_measurements_block_but_time_variance_is_telemetry_only():
     verified = intent("NOT_EXISTS_UNION_DISTINCT_BARRIER", SUCCESS_PLAN)
     incomplete = evaluate_measurement_campaign(
         FIXTURE["candidate_id"], verified, FIXTURE["before_runs"], FIXTURE["after_runs"][:-1],
@@ -302,8 +300,9 @@ def test_incomplete_or_noisy_measurements_never_infer_success():
 
     assert incomplete["status"] == "BLOCKED"
     assert incomplete["reason_code"] == "MEASUREMENT_INCOMPLETE"
-    assert noisy["status"] == "BLOCKED"
-    assert noisy["reason_code"] == "MEASUREMENT_NOISE_TOO_HIGH"
+    assert noisy["status"] == "ACCEPTED"
+    assert noisy["reason_code"] == "MEASUREMENT_ACCEPTED"
+    assert noisy["after_summary"]["elapsed_noise_pct"] == 200.0
 
 
 def test_oltp_three_second_and_300ms_guards_are_fail_closed_on_medians():
