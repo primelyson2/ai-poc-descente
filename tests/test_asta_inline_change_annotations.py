@@ -10,7 +10,8 @@ def read(path: str) -> str:
 
 def test_evidence_prompt_requests_leading_header_and_server_can_supply_it():
     llm = read("db/adb/asta_llm_pkg.sql")
-    assert "For a changed SQL, prepend: /* ASTA_TUNING_CHANGE_1:" in llm
+    assert "For a changed SQL, prepend one leading header per independent structural change:" in llm
+    assert "Number headers consecutively in source order (1, 2, 3 ...)" in llm
     assert "ASTA will add a detailed header if omitted or incomplete" in llm
     assert "prepend_generated_change_annotation" in llm
     assert "변경 위치=<query block, CTE, join, subquery, or operation boundary>" in llm
@@ -21,6 +22,7 @@ def test_evidence_prompt_requests_leading_header_and_server_can_supply_it():
 def test_structural_candidate_gets_missing_header_and_comment_only_is_not_rewrite():
     llm = read("db/adb/asta_llm_pkg.sql")
     assert "FUNCTION leading_change_annotation_count" in llm
+    assert "FUNCTION highest_change_annotation_number" in llm
     assert "FUNCTION has_detailed_change_annotation" in llm
     assert "OR NOT has_detailed_change_annotation(l_candidate_sql)" in llm
     assert "prepend_generated_change_annotation(l_candidate_sql, l_diagnosis_response)" in llm
@@ -39,6 +41,8 @@ def test_generated_annotation_names_where_how_and_expected_effect_from_diagnosis
     assert "변경 위치=" in generated
     assert "변경 방법=" in generated
     assert "기대 효과=" in generated
+    assert "strip_change_annotations(p_sql)" in generated
+    assert "highest_change_annotation_number(l_clean_sql) + 1" in generated
     assert "safe_annotation_text" in generated
     assert "SELECT safe_annotation_text" not in generated
 

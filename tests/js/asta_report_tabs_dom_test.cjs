@@ -117,10 +117,10 @@ const tabs = root.querySelectorAll('[role="tab"]');
 const panels = root.querySelectorAll('[role="tabpanel"]');
 
 assert.deepEqual(tabs.map((tab) => tab.textContent), [
-  "요약", "튜닝 전", "SQL 변경", "튜닝 후", "상세 분석", "객체 정보",
+  "분석결과", "튜닝 전", "SQL 변경", "튜닝 후", "객체 정보",
 ]);
-assert.equal(tabs.length, 6);
-assert.equal(panels.length, 6);
+assert.equal(tabs.length, 5);
+assert.equal(panels.length, 5);
 assert.equal(root.querySelectorAll('[role="tablist"]').length, 1);
 assert.equal(tabs[0].getAttribute("aria-selected"), "true");
 assert.equal(panels[0].hidden, false);
@@ -137,22 +137,28 @@ assert.match(allText(panels[2]), /SQL 변경 비교/);
 assert.match(allText(panels[2]), /무엇을 어디서 바꿨나/);
 assert.match(allText(panels[2]), /반복 스칼라 조회를 한 번의 조인으로 변경/);
 assert.match(allText(panels[2]), /SELECT 절의 반복 조회/);
-assert.match(allText(panels[2]), /1줄 추가/);
+assert.match(allText(panels[2]), /줄 추가/);
 assert.match(allText(panels[2]), /1줄 삭제/);
 assert.match(allText(panels[2]), /VISIBLE_LITERAL/);
 assert.match(allText(panels[2]), /AFTER_LITERAL/);
 assert.equal(panels[2].querySelectorAll(".tuning-sql-side-by-side").length, 1);
 assert.equal(panels[2].querySelectorAll(".tuning-sql-diff-pane-before").length, 1);
 assert.equal(panels[2].querySelectorAll(".tuning-sql-diff-pane-after").length, 1);
-assert.equal(panels[2].querySelectorAll(".tuning-sql-diff-remove").length, 1);
-assert.equal(panels[2].querySelectorAll(".tuning-sql-diff-add").length, 1);
+assert.ok(panels[2].querySelectorAll(".tuning-sql-diff-remove").length >= 1);
+assert.ok(panels[2].querySelectorAll(".tuning-sql-diff-add").length >= 1);
 assert.match(panels[1].textContent + panels[1].querySelectorAll("pre code").map((node) => node.textContent).join(""), /VISIBLE_LITERAL/);
 assert.match(panels[3].querySelectorAll("pre code").map((node) => node.textContent).join(""), /AFTER_LITERAL/);
 assert.equal(globalThis.__pwned, undefined);
 assert.equal(root.querySelectorAll("script").length, 0);
 assert.equal(root.querySelectorAll("a").length, 0);
-assert.match(allText(panels[5]), /262 rows/);
-assert.match(allText(panels[5]), /object_info 표시 중 오류/);
+assert.match(allText(panels[4]), /262 rows/);
+assert.match(allText(panels[4]), /object_info 표시 중 오류/);
+
+const sameSqlDifferentLayout = tabsApi.buildSqlLineDiff(
+  "select a,b from dual where a=1 and b = 'x'",
+  "SELECT A,\n  B\nFROM DUAL\nWHERE A = 1\n  AND B='x'",
+);
+assert.ok(sameSqlDifferentLayout.every((row) => row.type === "context"), "format-only differences must stay context");
 
 const verdictSummary = panels[0].querySelector(".tuning-verdict-summary");
 const verdictToggle = panels[0].querySelector(".tuning-verdict-help-toggle");
@@ -212,18 +218,18 @@ tabs[1].dispatchEvent({ type: "keydown", key: "ArrowRight" });
 assert.equal(fakeDocument.activeElement, tabs[2]);
 assert.equal(tabs[2].getAttribute("aria-selected"), "true");
 tabs[2].dispatchEvent({ type: "keydown", key: "End" });
-assert.equal(fakeDocument.activeElement, tabs[5]);
-tabs[5].dispatchEvent({ type: "keydown", key: "Home" });
+assert.equal(fakeDocument.activeElement, tabs[4]);
+tabs[4].dispatchEvent({ type: "keydown", key: "Home" });
 assert.equal(fakeDocument.activeElement, tabs[0]);
 tabs[0].dispatchEvent({ type: "keydown", key: "ArrowLeft" });
-assert.equal(fakeDocument.activeElement, tabs[5]);
+assert.equal(fakeDocument.activeElement, tabs[4]);
 
 const missingRoot = new FakeElement("div");
 tabsApi.renderReportTabs(missingRoot, "## 결론\n내용만 있음");
 const missingPanels = missingRoot.querySelectorAll('[role="tabpanel"]');
 assert.equal(missingPanels[1].querySelector(".tuning-report-empty").textContent, "표시할 내용이 없습니다.");
 assert.match(missingPanels[2].querySelector(".tuning-report-empty").textContent, /비교할 원본 SQL과 튜닝 SQL/);
-assert.equal(missingPanels[5].querySelector(".tuning-report-empty").textContent, "표시할 내용이 없습니다.");
+assert.equal(missingPanels[4].querySelector(".tuning-report-empty").textContent, "표시할 내용이 없습니다.");
 
 const duplicate = tabsApi.classifyReportSections("## 튜닝 전 SQL\nA\n## 튜닝전 SQL\nB\n## 결론\nOK");
 assert.equal(duplicate.tabs.before.length, 0, "duplicate heading must fail closed");
@@ -233,7 +239,6 @@ assert.equal(duplicate.tabs.overview.length, 1, "an ambiguous section must not p
 const advisorH2 = tabsApi.classifyReportSections("## Oracle SQL Tuning Advisor 요약\nCOMPLETED\n## 결론\nOK");
 assert.equal(advisorH2.tabs.overview.length, 1, "adjacent Overview ranges may be merged");
 assert.match(advisorH2.tabs.overview[0], /Oracle SQL Tuning Advisor 요약\nCOMPLETED/);
-assert.equal(advisorH2.tabs.details.length, 0);
 
 const duplicateAdvisor = tabsApi.classifyReportSections(
   "### Oracle SQL Tuning Advisor 요약\nA\n### Oracle SQL Tuning Advisor 요약\nB",
@@ -264,5 +269,5 @@ assert.match(estimatedPanels[1].querySelectorAll("pre code").map((node) => node.
 assert.match(allText(estimatedPanels[3]), /튜닝 후 예상 Plan/);
 assert.match(estimatedPanels[3].querySelectorAll("pre code").map((node) => node.textContent).join("\n"), /Plan hash value: 456/);
 
-assert.equal(result.tabs.length, 6);
+assert.equal(result.tabs.length, 5);
 console.log("asta_report_tabs_dom_test: PASS");

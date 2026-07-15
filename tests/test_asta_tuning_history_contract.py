@@ -103,6 +103,10 @@ def test_ui_has_history_menu_and_report_viewer_actions():
     assert "asta-history-row-actions" in view
     assert "const parseAstaTimestamp" in view
     assert "`${raw}Z`" in view
+    assert 'class="spinner" aria-hidden="true"' in view
+    assert "튜닝 이력을 검색 중입니다." in view
+    assert 'list.setAttribute("aria-busy", "true")' in view
+    assert 'list.setAttribute("aria-busy", "false")' in view
     assert "const filteredRuns" not in view
     assert "const runs = (Array.isArray(data?.runs) ? data.runs : []).filter" in view
     assert 'document.getElementById("asta-history-detail")' not in view

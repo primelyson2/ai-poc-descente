@@ -428,6 +428,32 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
     WHEN OTHERS THEN RETURN 0;
   END leading_change_annotation_count;
 
+  FUNCTION highest_change_annotation_number(p_sql IN CLOB) RETURN PLS_INTEGER IS
+    l_text VARCHAR2(32767);
+    l_number_text VARCHAR2(40);
+    l_highest PLS_INTEGER := 0;
+    l_index PLS_INTEGER := 1;
+  BEGIN
+    IF p_sql IS NULL THEN RETURN 0; END IF;
+    l_text := DBMS_LOB.SUBSTR(p_sql, 32767, 1);
+    LOOP
+      l_number_text := REGEXP_SUBSTR(
+        l_text,
+        'ASTA_TUNING_CHANGE_([0-9]+):',
+        1,
+        l_index,
+        'n',
+        1
+      );
+      EXIT WHEN l_number_text IS NULL;
+      l_highest := GREATEST(l_highest, TO_NUMBER(l_number_text));
+      l_index := l_index + 1;
+    END LOOP;
+    RETURN l_highest;
+  EXCEPTION
+    WHEN OTHERS THEN RETURN 0;
+  END highest_change_annotation_number;
+
   FUNCTION has_detailed_change_annotation(p_sql IN CLOB) RETURN BOOLEAN IS
     l_text VARCHAR2(32767);
   BEGIN
@@ -451,6 +477,21 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
     RETURN SUBSTR(NVL(l_text, p_default), 1, 900);
   END safe_annotation_text;
 
+  FUNCTION strip_change_annotations(p_sql IN CLOB) RETURN CLOB IS
+  BEGIN
+    IF p_sql IS NULL THEN RETURN NULL; END IF;
+    -- This path is used only to replace missing/incomplete model headers.  Retain
+    -- the SQL itself, but remove stale annotations so the guard sees 1..n once.
+    RETURN REGEXP_REPLACE(
+      p_sql,
+      '/\*[[:space:]]*ASTA_TUNING_CHANGE_[0-9]+:[^*]*\*/[[:space:]]*',
+      '',
+      1,
+      0,
+      'n'
+    );
+  END strip_change_annotations;
+
   FUNCTION prepend_generated_change_annotation(
     p_sql IN CLOB,
     p_diagnosis_json IN CLOB DEFAULT NULL
@@ -459,6 +500,8 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
     l_location VARCHAR2(1000);
     l_method VARCHAR2(1000);
     l_effect VARCHAR2(1000);
+    l_annotation_number PLS_INTEGER;
+    l_clean_sql CLOB;
   BEGIN
     IF p_sql IS NULL THEN
       RETURN NULL;
@@ -472,9 +515,11 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
       '반복 접근을 한 번의 집계·조인 또는 CTE 구조로 재작성'
     );
     l_effect := '동일 결과를 유지하면서 반복 접근 및 Buffer Gets 감소를 목표로 검증';
+    l_clean_sql := strip_change_annotations(p_sql);
+    l_annotation_number := highest_change_annotation_number(l_clean_sql) + 1;
     DBMS_LOB.CREATETEMPORARY(l_out, TRUE);
-    clob_app(l_out, '/* ASTA_TUNING_CHANGE_1: 변경 위치=' || l_location || ' -> 변경 방법=' || l_method || ' -> 기대 효과=' || l_effect || ' */' || CHR(10));
-    clob_app_clob(l_out, p_sql);
+    clob_app(l_out, '/* ASTA_TUNING_CHANGE_' || TO_CHAR(l_annotation_number) || ': 변경 위치=' || l_location || ' -> 변경 방법=' || l_method || ' -> 기대 효과=' || l_effect || ' */' || CHR(10));
+    clob_app_clob(l_out, l_clean_sql);
     RETURN l_out;
   END prepend_generated_change_annotation;
 
@@ -1220,7 +1265,7 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
     clob_app(l_candidate_prompt, 'AUTHORITATIVE SOURCE COLUMN DICTIONARY JSON follows. For every listed owner.table, use only column_name values present in that table entry; never copy a correlation key from a similar table. An empty or absent table entry means unknown and is not permission to invent a column. Preserve unchanged view/query-block text when its columns are not listed.' || CHR(10));
     clob_app_clob(l_candidate_prompt, l_column_dictionary);
     clob_app(l_candidate_prompt, CHR(10));
-    clob_app(l_candidate_prompt, 'For a changed SQL, prepend: /* ASTA_TUNING_CHANGE_1: 변경 위치=<query block, CTE, join, subquery, or operation boundary> -> 변경 방법=<exact structural rewrite> -> 기대 효과=<expected buffer/elapsed effect> */. Do not use generic wording: the location and method must identify the actual changed SQL fragment. Keep all numbered change comments in the leading header; ASTA will add a detailed header if omitted or incomplete.' || CHR(10));
+    clob_app(l_candidate_prompt, 'For a changed SQL, prepend one leading header per independent structural change: /* ASTA_TUNING_CHANGE_n: 변경 위치=<query block, CTE, join, subquery, or operation boundary> -> 변경 방법=<exact structural rewrite> -> 기대 효과=<expected buffer/elapsed effect> */. Number headers consecutively in source order (1, 2, 3 ...); a single consolidated change uses 1, and never repeat a number. Do not use generic wording: the location and method must identify the actual changed SQL fragment. Keep all numbered change comments in the leading header; ASTA will add a detailed header if omitted or incomplete.' || CHR(10));
     clob_app(l_candidate_prompt, 'If absolutely no candidate can be written, return exactly NO_REWRITE.' || CHR(10));
     IF p_tuning_context_json IS NOT NULL THEN
       clob_app(l_candidate_prompt, 'User tuning context JSON is a hard scope constraint. Implement only the localized rewrite requested in user_notes; copy every unrelated SQL fragment verbatim:' || CHR(10));
@@ -1527,7 +1572,7 @@ CREATE OR REPLACE PACKAGE BODY asta_llm_pkg AS
     clob_app(l_prompt, 'Return JSON only with report_markdown, equivalence_risk, performance_readout, and recommendation.' || CHR(10));
     clob_app(l_prompt, 'report_markdown must exactly follow this section format and use only supplied evidence:' || CHR(10));
     clob_app(l_prompt, '# SQL 튜닝 결과서' || CHR(10));
-    clob_app(l_prompt, '## 결론' || CHR(10));
+    clob_app(l_prompt, '## 분석결과' || CHR(10));
     clob_app(l_prompt, '- 추천: <SQL 변경/원본 유지 + 핵심 이유>' || CHR(10));
     clob_app(l_prompt, '- 수행시간: <before> 초 → <after> 초 (<개선율 또는 악화율>)' || CHR(10));
     clob_app(l_prompt, '- buffer_gets: <before> → <after> (<개선율 또는 악화율>)' || CHR(10));

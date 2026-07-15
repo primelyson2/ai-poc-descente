@@ -16,7 +16,7 @@ def test_report_discloses_actual_safe_history_prompt_context_without_sql_preview
     )[0]
 
     for required in (
-        "### 유사 개선 사례를 LLM 프롬프트에 반영한 내용",
+        "## Vector 검색·프롬프트 반영",
         "검토 수행:",
         "프롬프트 반영 결과: 반영하지 않음",
         "판단 사유:",
@@ -34,32 +34,22 @@ def test_report_discloses_actual_safe_history_prompt_context_without_sql_preview
     assert "append_verified_history_prompt_summary(l_report, p_llm_json);" in src
 
 
-def test_report_has_detailed_bottleneck_but_no_duplicate_execution_history():
+def test_report_keeps_only_core_bottleneck_explanation():
     src = REPORT.read_text(encoding="utf-8")
     helper = src.split("PROCEDURE append_bottleneck_diagnosis(", 1)[1].split(
         "END append_bottleneck_diagnosis;", 1
     )[0]
     build = src.rsplit("FUNCTION build_report(", 1)[1].split("END build_report;", 1)[0]
 
-    for marker in (
-        "### 진단 기준",
-        "### 지배 병목 대상",
-        "operation_id",
-        "query_block",
-        "original_correlation_or_join_keys",
-        "immediate_consumer",
-        "localized_rewrite_boundary",
-        "measured_buffers",
-        "measured_a_time",
-        "starts",
-        "### 진단 요약과 변경 전략",
-        "### 의미 보존 위험과 확인 사항",
-    ):
-        assert marker in helper
+    assert "핵심 병목 설명" in helper
+    for removed in ("### 지배 병목 대상", "### 진단 요약과 변경 전략", "### 의미 보존 위험과 확인 사항"):
+        assert removed not in helper
     assert "append_bottleneck_diagnosis(" in build
     assert "## 작업 수행 이력" not in build
     assert "append_stage_check(l_report" not in build
     assert "append_stage_timing(l_report" not in build
+    assert "## 상세 분석" not in build
+    assert "append_verified_history_prompt_summary(l_report" in build
 
 
 def test_report_does_not_render_oracle_sql_tuning_advisor_sections():

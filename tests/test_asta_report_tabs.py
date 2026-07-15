@@ -114,6 +114,8 @@ def test_report_tabs_expose_safe_line_diff_for_before_and_tuned_sql():
     assert '{ id: "changes", label: "SQL 변경" }' in tabs
     assert tabs.index('{ id: "before", label: "튜닝 전" }') < tabs.index('{ id: "changes", label: "SQL 변경" }') < tabs.index('{ id: "after", label: "튜닝 후" }')
     assert "function buildSqlLineDiff(beforeSql, afterSql)" in tabs
+    assert "function formatSqlForDiff(sql)" in tabs
+    assert "공백·줄바꿈·키워드 대소문자를 통일한 SQL 포맷 기준" in tabs
     assert "function alignSqlDiffRows(rows)" in tabs
     assert "function renderSqlDiff(parent, beforeSql, afterSql, changeSummary, changeLocation)" in tabs
     assert "무엇을 어디서 바꿨나" in tabs

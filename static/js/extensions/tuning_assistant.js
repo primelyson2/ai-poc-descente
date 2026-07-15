@@ -3689,7 +3689,7 @@ ORDER BY SRC.COMP_CD, SRC.BRAND_CD, SRC.ITEM_CD`,
       <section class="asta-history">
         <header class="asta-history-head"><div><h1>Tuning History</h1><p>고객이 요청한 SQL과 분석 결과서를 최근 요청 순으로 확인합니다.</p></div><button id="asta-history-refresh" class="btn btn-secondary asta-history-refresh" type="button">새로고침</button></header>
         <form id="asta-history-search" class="asta-history-search"><input id="asta-history-query" class="input" type="search" maxlength="200" placeholder="Run ID 또는 SQL 키워드" aria-label="Run ID 또는 SQL 키워드 검색" /><input id="asta-history-from" class="input" type="date" aria-label="조회 시작일" /><input id="asta-history-to" class="input" type="date" aria-label="조회 종료일" /><select id="asta-history-verdict" class="input" aria-label="결과 판정"><option value="ALL">전체 결과</option><option value="IMPROVED">IMPROVED</option><option value="ANALYSIS_ONLY">ANALYSIS_ONLY</option><option value="NOT_IMPROVED">NOT_IMPROVED</option><option value="INSUFFICIENT_EVIDENCE">INSUFFICIENT_EVIDENCE</option><option value="NON_EQUIVALENT">NON_EQUIVALENT</option><option value="CANDIDATE_FAILED">CANDIDATE_FAILED</option><option value="NO_REWRITE">NO_REWRITE</option></select><button class="btn btn-primary" type="submit">조회</button></form>
-        <div class="asta-history-grid"><div id="asta-history-list" class="asta-history-list" aria-live="polite"><div class="asta-history-empty">튜닝 이력을 불러오는 중입니다.</div></div></div>
+        <div class="asta-history-grid"><div id="asta-history-list" class="asta-history-list" aria-live="polite" aria-busy="true"><div class="asta-history-empty"><span class="spinner" aria-hidden="true"></span> 튜닝 이력을 검색 중입니다.</div></div></div>
       </section>`;
     const list = document.getElementById("asta-history-list");
     const refresh = document.getElementById("asta-history-refresh");
@@ -3740,6 +3740,8 @@ ORDER BY SRC.COMP_CD, SRC.BRAND_CD, SRC.ITEM_CD`,
       fromInput.value = currentFrom; toInput.value = currentTo; verdictInput.value = currentVerdict;
       refresh.disabled = true;
       searchInput.disabled = true; fromInput.disabled = true; toInput.disabled = true; verdictInput.disabled = true;
+      list.setAttribute("aria-busy", "true");
+      list.innerHTML = '<div class="asta-history-empty"><span class="spinner" aria-hidden="true"></span> 튜닝 이력을 검색 중입니다.</div>';
       try {
         const params = new URLSearchParams({ date_from: currentFrom, date_to: currentTo, verdict: currentVerdict });
         if (currentSearch) params.set("q", currentSearch);
@@ -3754,7 +3756,7 @@ ORDER BY SRC.COMP_CD, SRC.BRAND_CD, SRC.ITEM_CD`,
         list.innerHTML = runs.map((run) => { const runId = String(run.run_id || ""); const reportUrl = `${DEFAULT_ORDS_BASE_URL}/runs/${encodeURIComponent(runId)}/report/view`; return `<article class="asta-history-row"><div class="asta-history-row-top"><span class="asta-history-run">${escapeHtml(runId)}</span><span class="asta-history-badge ${badgeClass(run)}">${escapeHtml(badgeText(run))}</span></div><div class="asta-history-date">요청일: ${escapeHtml(formatTime(run.created_at))}</div><div class="asta-history-meta">${escapeHtml(run.source_db_id || "Source DB 미상")} · ${escapeHtml(run.llm_profile || "AI profile 미상")}</div><div class="asta-history-sql">${escapeHtml(run.sql_preview || "저장된 SQL 없음")}</div><div class="asta-history-row-actions">${run.report_ready ? `<a class="btn btn-primary" href="${reportUrl}" target="_blank" rel="noopener">결과서 열기</a>` : '<span class="muted">결과서 준비 중</span>'}</div></article>`; }).join("");
       } catch (error) {
         list.innerHTML = `<div class="asta-history-empty">이력을 불러오지 못했습니다. ${escapeHtml(error.message || "")}</div>`;
-      } finally { refresh.disabled = false; searchInput.disabled = false; fromInput.disabled = false; toInput.disabled = false; verdictInput.disabled = false; }
+      } finally { list.setAttribute("aria-busy", "false"); refresh.disabled = false; searchInput.disabled = false; fromInput.disabled = false; toInput.disabled = false; verdictInput.disabled = false; }
     };
     refresh.addEventListener("click", () => load(currentSearch));
     searchForm.addEventListener("submit", (event) => { event.preventDefault(); load(searchInput.value, fromInput.value, toInput.value, verdictInput.value); });

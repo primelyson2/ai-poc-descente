@@ -990,6 +990,24 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
     clob_app(l_out, json_str(SUBSTR(p_reason, 1, 4000)));
     clob_app(l_out, ',"rejected_candidate_sql":');
     clob_app_json_str(l_out, p_rejected_candidate);
+    -- Repair/fallback paths must retain the Stage-1 explanation at the same
+    -- top-level contract consumed by ASTA_REPORT_PKG.  Keeping only the raw
+    -- generation object below loses the diagnosis after a successful repair.
+    clob_app(l_out, ',"change_summary":');
+    clob_app_clob(l_out, NVL(
+      JSON_QUERY(p_generation_json, '$.change_summary' RETURNING CLOB NULL ON ERROR),
+      TO_CLOB('[]')
+    ));
+    clob_app(l_out, ',"semantic_risks":');
+    clob_app_clob(l_out, NVL(
+      JSON_QUERY(p_generation_json, '$.semantic_risks' RETURNING CLOB NULL ON ERROR),
+      TO_CLOB('[]')
+    ));
+    clob_app(l_out, ',"diagnosis":');
+    clob_app_clob(l_out, NVL(
+      JSON_QUERY(p_generation_json, '$.diagnosis' RETURNING CLOB NULL ON ERROR),
+      TO_CLOB('null')
+    ));
     clob_app(l_out, ',"generation":');
     clob_app_clob(l_out, NVL(p_generation_json, TO_CLOB('null')));
     clob_app(l_out, '}');
@@ -1590,11 +1608,25 @@ CREATE OR REPLACE PACKAGE BODY asta_pkg AS
         'VALIDATION_CANDIDATE', 'VALIDATION_CANDIDATE'
       );
     ELSIF l_history_candidate_sql IS NOT NULL THEN
+      -- A reused historical candidate is not evidence for the current SQL.
+      -- Run the normal Stage-1 diagnosis first so the report retains the
+      -- current XPLAN-backed dominant target, strategy, and semantic risks;
+      -- only the executable candidate itself is reused.
+      l_generation_json := asta_llm_pkg.generate_sql_only_tuning(
+        p_sql                  => l_sql,
+        p_llm_profile          => l_llm_profile,
+        p_workload_type        => l_workload_type,
+        p_source_evidence_json => l_source_json,
+        p_vector_json          => l_vector_json,
+        p_tuning_context_json  => l_context_json,
+        p_use_llm              => l_use_llm,
+        p_run_id               => l_run_id
+      );
       l_llm_json := llm_original_fallback_json(
         l_history_candidate_sql,
         NULL,
         NULL,
-        NULL,
+        l_generation_json,
         'VERIFIED_HISTORY_REUSE',
         'VERIFIED_HISTORY_REUSE'
       );

@@ -91,7 +91,7 @@ def test_llm_prompt_modes_separate_sql_metrics_and_full_evidence():
     assert "compact_vector_evidence(p_vector_json)" in llm
     assert ',\"prompt_mode\":' in llm
     main = _read("db/adb/asta_pkg.sql")
-    assert main.count("asta_llm_pkg.generate_sql_only_tuning(") == 1
+    assert main.count("asta_llm_pkg.generate_sql_only_tuning(") == 2
     assert "l_sql_only_llm_json" not in main
 
 
@@ -176,16 +176,15 @@ def test_report_and_main_carry_final_review_json_artifact():
     assert "p_vector_save_json     IN CLOB DEFAULT NULL" in report
     assert "# SQL 튜닝 결과서" in report
     for section in [
-        "## 결론",
+        "## 분석결과",
         "## 병목 진단",
+        "## Vector 검색·프롬프트 반영",
         "## 튜닝 전/후 수치 비교",
         "## 튜닝 전 SQL",
         "## 튜닝 전 XPLAN",
         "## 튜닝 후 SQL",
         "## 튜닝 후 XPLAN",
         "원본 재수행 XPLAN",
-        "## 상세 분석",
-        "### 유사 개선 사례를 LLM 프롬프트에 반영한 내용",
     ]:
         assert section in report
     assert "format_sql_basic(l_candidate_sql_vc)" in report
@@ -298,7 +297,7 @@ def test_vector_save_receives_report_ref_before_final_report_generation():
     assert save_pos < report_pos < response_pos
     assert "generate_sql_only_tuning" in src
     assert "sql_needs_sql_only_retry" in src
-    assert src.count("asta_llm_pkg.generate_sql_only_tuning(") == 1
+    assert src.count("asta_llm_pkg.generate_sql_only_tuning(") == 2
     assert "l_llm_json := l_sql_only_llm_json" not in src
     assert ',"tuning_context":' in src
     assert "p_report_markdown => TO_CLOB('/api/asta/runs/')" in src
@@ -468,10 +467,8 @@ def test_report_elapsed_judgement_and_original_rerun_xplan_wording():
     assert "WHEN l_elapsed_delta > 0 THEN '빨라짐'" in report
     assert "WHEN l_elapsed_delta < 0 THEN '느려짐'" in report
     assert "ELSE '동일'" in report
-    assert "- 실제 SQL 변경 내용: " in report
-    assert "- 변경 위치: " in report
+    assert "- 핵심 병목 설명: " in report
     assert "append_xplan_raw_section(l_report, '원본 재수행 XPLAN', p_after_evidence_json)" in report
-    assert "선택 메모가 아니라 명시적 튜닝 목표" in report
 
 
 def test_llm_report_explanations_are_requested_in_korean():
@@ -843,7 +840,7 @@ def test_vector_case_ux_is_summary_first_and_never_returns_full_artifacts():
     assert "'chunk_text' VALUE" not in search_json
     assert "REGEXP_REPLACE" in vector and "sql_preview" in vector
 
-    assert "### 유사 개선 사례를 LLM 프롬프트에 반영한 내용" in report
+    assert "## Vector 검색·프롬프트 반영" in report
     assert "동일 workload의 `IMPROVED / POSITIVE_VERIFIED` 사례" in report
     assert "CANDIDATE_ACCEPTANCE_CHECKLIST" in report
     assert "verified_history_reference_summary.cases" in report

@@ -6,11 +6,10 @@
   "use strict";
 
   const TAB_DEFINITIONS = Object.freeze([
-    { id: "overview", label: "요약" },
+    { id: "overview", label: "분석결과" },
     { id: "before", label: "튜닝 전" },
     { id: "changes", label: "SQL 변경" },
     { id: "after", label: "튜닝 후" },
-    { id: "details", label: "상세 분석" },
     { id: "objects", label: "객체 정보" },
   ]);
 
@@ -26,8 +25,10 @@
   const VERDICT_BY_CODE = new Map(VERDICT_GUIDE.map((item) => [item.code, item]));
 
   const SECTION_RULES = Object.freeze([
+    [2, "분석결과", "overview"],
     [2, "결론", "overview"],
     [2, "병목 진단", "overview"],
+    [2, "vector 검색·프롬프트 반영", "overview"],
     [2, "튜닝전/후 수치 비교", "overview"],
     [2, "oracle sql tuning advisor 요약", "overview"],
     [2, "튜닝전 sql", "before"],
@@ -36,12 +37,7 @@
     [2, "튜닝후 sql", "after"],
     [2, "튜닝후 xplan", "after"],
     [2, "튜닝후 예상 plan", "after"],
-    [3, "사용자 참고사항 반영", "details"],
-    [3, "과거 유사 튜닝 사례 - 참고 정보", "details"],
     [3, "oracle sql tuning advisor 요약", "overview"],
-    [3, "dba 검토 사항", "details"],
-    [2, "작업 수행 이력", "details"],
-    [2, "단계별 수행 체크", "details"],
     [2, "테이블 통계 및 인덱스 정보", "objects"],
     [3, "테이블 통계", "objects"],
   ]);
@@ -286,7 +282,8 @@
       }
       const heading = line.match(/^(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$/);
       if (heading) {
-        if (options?.verdict && !options.verdictRendered && heading[1].length === 2 && normalizeHeading(heading[2]) === "결론") {
+        if (options?.verdict && !options.verdictRendered && heading[1].length === 2
+          && ["분석결과", "결론"].includes(normalizeHeading(heading[2]))) {
           options.verdictRendered = true;
           const headingRow = document.createElement("div");
           headingRow.className = "tuning-verdict-heading";
@@ -344,10 +341,72 @@
     return "";
   }
 
+  const SQL_DIFF_BREAK_BEFORE = new Set([
+    "SELECT", "FROM", "WHERE", "GROUP", "HAVING", "ORDER", "UNION", "MINUS", "INTERSECT",
+    "JOIN", "LEFT", "RIGHT", "FULL", "INNER", "CROSS", "ON", "AND", "OR",
+  ]);
+
+  function tokenizeSqlForDiff(sql) {
+    const text = String(sql || "").replace(/\r\n?/g, "\n");
+    const tokens = [];
+    let index = 0;
+    while (index < text.length) {
+      const char = text[index];
+      if (/\s/.test(char)) { index += 1; continue; }
+      if (char === "'" || char === '"') {
+        const quote = char; let end = index + 1;
+        while (end < text.length) {
+          if (text[end] === quote) {
+            if (text[end + 1] === quote) { end += 2; continue; }
+            end += 1; break;
+          }
+          end += 1;
+        }
+        tokens.push(text.slice(index, end)); index = end; continue;
+      }
+      if (text.startsWith("--", index)) {
+        const end = text.indexOf("\n", index);
+        tokens.push(text.slice(index, end < 0 ? text.length : end).trim()); index = end < 0 ? text.length : end; continue;
+      }
+      if (text.startsWith("/*", index)) {
+        const end = text.indexOf("*/", index + 2);
+        const finish = end < 0 ? text.length : end + 2;
+        tokens.push(text.slice(index, finish)); index = finish; continue;
+      }
+      const word = text.slice(index).match(/^[A-Za-z_][A-Za-z0-9_$#]*/);
+      if (word) { tokens.push(word[0]); index += word[0].length; continue; }
+      const operator = text.slice(index).match(/^(?:<=|>=|<>|!=|:=|=>|\|\|)/);
+      if (operator) { tokens.push(operator[0]); index += operator[0].length; continue; }
+      tokens.push(char); index += 1;
+    }
+    return tokens;
+  }
+
+  /** Canonical display format so whitespace/wrapping never becomes a SQL change. */
+  function formatSqlForDiff(sql) {
+    const tokens = tokenizeSqlForDiff(sql);
+    const lines = []; let line = ""; let previous = "";
+    const append = (value, space = true) => { line += (!line || !space ? "" : " ") + value; };
+    const flush = () => { if (line.trim()) lines.push(line.trim()); line = ""; };
+    tokens.forEach((raw) => {
+      const upper = /^[A-Za-z_]/.test(raw) ? raw.toUpperCase() : raw;
+      if (raw.startsWith("--") || raw.startsWith("/*")) { flush(); append(raw, false); flush(); previous = raw; return; }
+      if (SQL_DIFF_BREAK_BEFORE.has(upper) && line && previous !== "(") flush();
+      if (raw === ",") { append(",", false); flush(); }
+      else if (raw === ")" || raw === "." || raw === ";") append(raw, false);
+      else if (raw === "(") append(raw, previous && !["IN", "EXISTS", "AS"].includes(String(previous).toUpperCase()) ? false : true);
+      else if (["=", "<", ">", "<=", ">=", "<>", "!=", ":=", "=>", "||"].includes(raw)) append(raw, true);
+      else append(upper, previous !== "." && previous !== "(");
+      previous = raw;
+    });
+    flush();
+    return lines.join("\n");
+  }
+
   /** Small-lookahead line diff: bounded for long customer SQL and deterministic. */
   function buildSqlLineDiff(beforeSql, afterSql) {
-    const before = String(beforeSql || "").replace(/\r\n?/g, "\n").split("\n");
-    const after = String(afterSql || "").replace(/\r\n?/g, "\n").split("\n");
+    const before = formatSqlForDiff(beforeSql).split("\n");
+    const after = formatSqlForDiff(afterSql).split("\n");
     const rows = [];
     let oldIndex = 0;
     let newIndex = 0;
@@ -470,8 +529,8 @@
       parent,
       "p",
       added || removed
-        ? `${added}줄 추가 · ${removed}줄 삭제 — +는 튜닝 SQL에 추가, -는 원본 SQL에서 제거된 줄입니다.`
-        : "원본 SQL과 튜닝 SQL 사이에 줄 단위 변경이 없습니다.",
+        ? `${added}줄 추가 · ${removed}줄 삭제 — 공백·줄바꿈·키워드 대소문자를 통일한 SQL 포맷 기준이며, +는 튜닝 SQL에 추가, -는 원본 SQL에서 제거된 줄입니다.`
+        : "공백·줄바꿈·키워드 대소문자를 통일한 SQL 포맷 기준으로 변경이 없습니다.",
       "tuning-sql-diff-summary",
     );
     const alignedRows = alignSqlDiffRows(rows);
@@ -553,5 +612,5 @@
     return { tabs, panels, reasonCodes: classified.reasonCodes };
   }
 
-  return { TAB_DEFINITIONS, VERDICT_GUIDE, normalizeHeading, extractReportVerdict, classifyReportSections, buildSqlLineDiff, alignSqlDiffRows, renderSafeMarkdown, renderReportTabs };
+  return { TAB_DEFINITIONS, VERDICT_GUIDE, normalizeHeading, extractReportVerdict, classifyReportSections, tokenizeSqlForDiff, formatSqlForDiff, buildSqlLineDiff, alignSqlDiffRows, renderSafeMarkdown, renderReportTabs };
 });

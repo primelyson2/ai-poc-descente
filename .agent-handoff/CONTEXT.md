@@ -1,5 +1,114 @@
 # Real ASTA 작업 인계
 
+## 운영 Vector KB 저장·검색 읽기 전용 점검 — 2026-07-15
+
+- 요청/결론: 운영 ADB를 읽기 전용으로 확인했다. Vector KB 저장은 정상이며 `ASTA_TUNING_CASES` 220건, `ASTA_TUNING_CASE_CHUNKS` 543건이 있다. 최근 5개 Run은 모두 `artifacts.vector_save.status=COMPLETED`, `chunks_saved=2`다.
+- 중요한 현재 동작: 검색 전략은 이름과 달리 임베딩 `VECTOR_DISTANCE`가 아니라 `FINGERPRINT_FIRST_CHUNK_SCAN`이다. 입력 SQL의 SHA-256 fingerprint가 같은 case를 우선 정렬하고, chunk가 존재하며 `metadata_json.learning_class=POSITIVE_VERIFIED`인 case만 최대 top-k(기본 3)로 반환한다.
+- 관찰: 현재 KB learning class는 `ANALYSIS_OBSERVATION` 11, `REJECTED_OBSERVATION` 179, legacy/NULL 30이고 `POSITIVE_VERIFIED`는 0이다. 따라서 현재 새 Run의 LLM 프롬프트에는 Vector 사례 요약이 실제 추가되지 않으며 결과서에는 `반영하지 않음` 사유가 표시된다. 저장 실패가 아니라 엄격한 검증 gate를 통과한 재사용 가능 사례가 아직 없다는 의미다.
+- 데이터 경계: case에는 run ID, source SQL fingerprint, verdict/workload/metric, 동등성·bind·측정 gate, 전후 Buffer Gets/Elapsed, plan hash, rewrite type 등의 안전 메타데이터와 chunk가 저장된다. 신규 코드 경로는 SQL 원문·literal을 chunk/prompt에 저장·전달하지 않는다.
+- 변경: 없음. `/tmp/inspect_asta_vector_storage_fast.py`로 read-only 조회만 수행했으며 customer SQL은 출력하지 않았다.
+
+## Vector 검색 프롬프트 반영 결과서 ADB 배포 — 2026-07-15
+
+- 요청/결론: 사용자 승인에 따라 Vector 검색의 실제 LLM 프롬프트 반영 내용을 표시하는 `ASTA_REPORT_PKG`를 실제 ADB에 배포했다. UI report tabs cache marker도 `20260715_vector_prompt_report1`로 갱신했다.
+- 사전 점검·배포: Scheduler 실행, QUEUED/RUNNING Run, RUNNING progress가 모두 0건인 것을 확인했다. 기존 `ASTA_REPORT_PKG` spec/body는 `reports/asta_report_vector_prompt_deploy/20260715T073048Z/backup/`에 백업했다. 새 PACKAGE/BODY 모두 `VALID`, `USER_ERRORS=0`이다.
+- 검증: 운영 package body에서 `## Vector 검색·프롬프트 반영` 및 `append_verified_history_prompt_summary(l_report, p_llm_json)` 반영을 읽기 전용으로 확인했다. 배포 전 UI/report focused 테스트 `72 passed`, `git diff --check` 통과.
+- artifact: `reports/asta_report_vector_prompt_deploy/20260715T073048Z/precheck.json`, `summary.json`.
+- 남은 문제/다음 단계: 이후 새 Run 결과서부터 적용된다. 기존 저장 Run 결과서는 재생성하지 않았으며, 필요 시 지정 Run 재생성은 별도 승인 후 수행한다.
+
+## Vector 검색 프롬프트 반영 결과서 표시 — 2026-07-15
+
+- 요청/결론: 결과서에 Vector 검색 후 LLM 프롬프트로 실제 전달한 추가 정보를 보이도록 `## Vector 검색·프롬프트 반영` 섹션을 추가했다. UI `분석결과` 탭에도 함께 분류된다.
+- 구현: 같은 workload의 `IMPROVED / POSITIVE_VERIFIED` 사례가 현재 SQL/XPLAN 조건을 만족해 전달되면, 저장된 `verified_history_reference_summary`에서 사례 ID·fingerprint 일치 여부·변경 요약·전후 Buffer Gets/Elapsed를 표로 표시한다. DIAGNOSIS와 후보 SQL 프롬프트에 함께 전달됐음과 현재 SQL/XPLAN 근거 우선·과거 SQL 복사 금지·독립 검증 조건도 명시한다. 전달되지 않은 경우에는 검색/안전성 판단 사유와 `반영하지 않음`을 표시한다. 과거 SQL 원문·identifier·literal·predicate·join은 결과서에 노출하지 않는다.
+- 변경 파일: `db/adb/asta_report_pkg.sql`, `static/js/extensions/asta_report_tabs.js`, report history/ADB-ORDS contract 테스트, 이 handoff.
+- 테스트: `node --check static/js/extensions/asta_report_tabs.js`, `node tests/js/asta_report_tabs_dom_test.cjs` PASS; focused pytest `87 passed in 0.25s`; `git diff --check` 통과.
+- 남은 문제/다음 단계: workspace 구현만 완료했고 ADB package·정적 UI 배포 및 기존 Run 결과서 재생성은 수행하지 않았다. 운영 반영에는 `ASTA_REPORT_PKG` 배포가 필요하다.
+
+## `분석결과`·SQL 변경 주석 순번 ADB 배포 — 2026-07-15
+
+- 요청/결론: 사용자 승인에 따라 `ASTA_LLM_PKG`와 `ASTA_REPORT_PKG`를 실제 ADB에 배포했다.
+- 사전 점검: `ASTA_RUN_%` Scheduler 실행 0건, `ASTA_RUNS`의 QUEUED/RUNNING 0건, `ASTA_RUN_PROGRESS` RUNNING 0건을 확인했다.
+- 배포·검증: 기존 두 package의 spec/body를 `reports/asta_analysis_result_change_number_deploy/20260715T072206Z/backup/`에 보관한 뒤 반영했다. `ASTA_LLM_PKG` PACKAGE/BODY 및 `ASTA_REPORT_PKG` PACKAGE/BODY 모두 `VALID`, `USER_ERRORS=0`이다. 운영 소스에서 연속 주석 번호 지시·불완전 헤더 교체·`## 분석결과` 마커를 읽기 전용으로 확인했다.
+- artifact: `reports/asta_analysis_result_change_number_deploy/20260715T072206Z/precheck.json`, `summary.json`.
+- 남은 문제/다음 단계: 이후 새 Run부터 적용된다. 기존 저장 Run/후보 SQL의 헤더와 결과서는 자동 변경하지 않았으며, 필요 시 지정 Run 결과서 재생성은 별도 승인 후 수행한다.
+
+## 결과서 `분석결과` 표기·SQL 변경 주석 순번 보정 — 2026-07-15
+
+- 요청/결론: UI/결과서의 `요약`을 `분석결과`로 통일하고, SQL 변경 주석이 항상 `ASTA_TUNING_CHANGE_1`로 보이던 생성 규칙을 보정했다. 새 결과서는 `## 분석결과`를 사용하며 UI는 기존 `## 결론` 결과서도 계속 읽는다.
+- 변경 파일: `static/js/extensions/asta_report_tabs.js`, `static/index.html`, `db/adb/asta_report_pkg.sql`, `db/adb/asta_llm_pkg.sql`, 관련 tab/inline annotation/static contract 테스트, 이 handoff. report tabs cache marker는 `20260715_analysis_result_change_no1`이다.
+- 구현: 후보 생성 프롬프트가 독립 구조 변경마다 선두 `ASTA_TUNING_CHANGE_n` 헤더를 source 순서대로 `1, 2, 3...` 연속 부여하도록 명시한다. 단일 통합 변경은 정상적으로 `1`이다. 서버가 누락·불완전 헤더를 보완할 때는 기존 ASTA 헤더를 제거한 뒤 순번을 계산하여 새 상세 헤더를 붙이므로 중복 번호나 SQL Guard의 순번 위반을 만들지 않는다.
+- 테스트: `node --check static/js/extensions/asta_report_tabs.js`, `node tests/js/asta_report_tabs_dom_test.cjs` PASS; inline annotation/report tabs/ADB-ORDS/static cache focused pytest `98 passed in 0.17s`; `git diff --check` 통과.
+- 남은 문제/다음 단계: workspace 구현만 완료했다. 새 결과서/주석 생성 규칙을 운영에 반영하려면 `ASTA_REPORT_PKG`와 `ASTA_LLM_PKG` 배포가 필요하다. 기존 Run의 저장된 SQL 주석은 자동 변경되지 않는다.
+
+## 결과서 핵심 병목 형식 ADB 배포·지정 Run 재생성 — 2026-07-15
+
+- 요청/결론: `ASTA_REPORT_PKG`를 실제 ADB에 배포하고 `OADT2-ASTA-3387ca692c1947968ba91c9e196dfa2f`의 결과서/response를 새 핵심 병목 형식으로 재생성했다.
+- 배포·검증: active Run/Scheduler/progress 모두 0건 확인 후 기존 package spec/body를 `reports/asta_report_core_deploy/20260715T052255Z/backup/`에 백업하고 반영했다. PACKAGE/BODY 모두 `VALID`; 재생성 결과서는 `핵심 병목 설명`을 포함하며 지배 병목 대상·진단 요약/전략·의미 보존 위험·상세 분석 heading을 포함하지 않음을 확인했다.
+- artifact: `reports/asta_report_core_deploy/20260715T052255Z/summary.json`, `precheck.json`.
+- 남은 문제/다음 단계: 새 결과서 형식은 이후 Run에도 적용된다. UI 상세 분석 탭 제거는 새 static cache marker를 받는 브라우저에서 표시된다.
+
+## 결과서 병목 진단 핵심화·상세 분석 제거 — 2026-07-15
+
+- 요청/결론: 결과서를 핵심 병목 설명 중심으로 간소화했다. `## 병목 진단`은 분석 범위·원본 evidence/실측·`핵심 병목 설명`만 남기고 지배 병목 대상 표, 진단 요약과 변경 전략, 의미 보존 위험과 확인 사항을 제거했다. `## 상세 분석` 본문(사용자 참고사항·유사 사례 설명)과 UI 상단 `상세 분석` 탭도 제거했다.
+- 변경 파일: `db/adb/asta_report_pkg.sql`, `static/js/extensions/asta_report_tabs.js`, `static/index.html`, report/tab 계약 및 DOM 테스트, 이 handoff. report tabs cache marker는 `20260715_report_core1`이다.
+- 테스트: `node tests/js/asta_report_tabs_dom_test.cjs` PASS; report/history/plain-text/tabs/ADB-ORDS focused pytest `60 passed in 0.22s`; `git diff --check` 통과.
+- 남은 문제/다음 단계: workspace 구현만 완료했다. 새 결과서 형식을 운영 Run과 기존 저장 결과서에 적용하려면 `ASTA_REPORT_PKG` 배포와 원하는 기존 Run의 report/response 재생성이 필요하다. UI 정적 파일은 새 cache marker로 제공된다.
+
+## SQL 변경 비교 공통 포맷 정규화 — 2026-07-15
+
+- 요청/결론: UI의 `SQL 변경 비교`가 원본/후보 SQL의 줄바꿈·공백·키워드 대소문자 차이 때문에 전체를 `- / +`로 표시하던 문제를 수정했다. 두 SQL을 동일한 토큰 기반 표시 포맷(키워드 대문자, clause·comma·logical condition 경계 줄 분리)으로 만든 뒤 diff한다. 따라서 포맷만 다른 SQL은 전부 context로 표시되고, 실제 구조/토큰 변경만 추가·삭제로 보인다.
+- 변경 파일: `static/js/extensions/asta_report_tabs.js`, `static/index.html`, `tests/test_asta_report_tabs.py`, `tests/js/asta_report_tabs_dom_test.cjs`, cache contract 테스트 2개, 이 handoff. report tabs cache marker는 `20260715_sql_diff_format1`이다.
+- 테스트: `node --check static/js/extensions/asta_report_tabs.js` 통과; `node tests/js/asta_report_tabs_dom_test.cjs` PASS(동일 SQL의 다른 layout이 모두 context인지 포함); `uv run --with pytest pytest -q tests/test_asta_report_tabs.py` → `7 passed`; `git diff --check` 통과.
+- 남은 문제/다음 단계: 정적 파일 변경만 수행했으며 DB/ORDS/서비스 재시작·Run 데이터 변경은 하지 않았다. 로컬 `127.0.0.1:8000`은 현재 listen하지 않아 HTTP asset smoke는 수행하지 못했다. 서비스가 정적 파일을 직접 제공하는 구성에서는 새 cache marker로 브라우저가 최신 비교 스크립트를 받는다.
+
+## Verified History Run 병목 설명 보정 배포·결과서 재생성 — 2026-07-15
+
+- 요청/결론: `OADT2-ASTA-3387ca692c1947968ba91c9e196dfa2f`의 지배 병목 대상과 특수문자 표시를 보정했다. `ASTA_PKG`와 `ASTA_REPORT_PKG` 배포 뒤 지정 Run의 기존 후보 SQL·판정·성능 evidence는 유지하고 report/response만 재생성했다.
+- 진단 결과: 이 Run은 `VERIFIED_HISTORY_REUSE`라 당시 current SQL/XPLAN diagnosis를 건너뛴 경로였다. 승인된 재진단 LLM 호출은 `target_operations=[]`를 반환해 실측 Operation ID/Buffer/A-Time/Starts를 안전하게 확정할 수 없었다. 따라서 값을 추정하지 않고 지배 병목 표에 `후보 SQL 변경 주석` 행을 표시했다. 행은 변경 위치 `EXISTS (SELECT ... UNION ...)`, 반복 `Starts=75` 상관 EXISTS/HASH JOIN SEMI의 단일 조인 변환 설명을 보이되, 해당 Starts를 현재 XPLAN 실측 target으로 주장하지 않는다는 주의를 함께 표시한다.
+- 배포·검증: 활성 Run/Scheduler/progress 0건 precheck 후 `ASTA_PKG`·`ASTA_REPORT_PKG`를 backup/compile했다. 최종 `ASTA_REPORT_PKG` PACKAGE/BODY `VALID`; 지정 Run 결과서에 후보 SQL 변경 주석·보조 정보 주의가 있고 `&#40;`, `-&gt;`가 없음을 확인했다. artifact는 `reports/asta_history_diagnosis_rebuild/20260715T033005Z/summary.json` 및 backup/precheck다.
+- 테스트: report/history fallback focused pytest `7 passed`; `git diff --check` 통과.
+- 남은 문제/다음 단계: 새로운 History-reuse Run은 current XPLAN diagnosis를 먼저 생성하도록 `ASTA_PKG`를 변경했다. 모델이 evidence-backed target을 비우면 결과서는 보조 변경 경계와 불확실성만 표시하며 실측값을 만들어 내지 않는다. 실제 single-target contract 출력은 근거 필드가 모두 확인될 때만 가능하다.
+
+## Verified History 재사용 Run의 병목 진단 누락·표시 entity 수정 구현 — 2026-07-15
+
+- 요청/결론: `OADT2-ASTA-3387ca692c1947968ba91c9e196dfa2f`를 읽기 전용으로 확인한 결과, `candidate_source/repair_status=VERIFIED_HISTORY_REUSE`가 원인이었다. 이 분기는 과거 후보 SQL을 즉시 재사용하여 current SQL/XPLAN의 diagnosis를 생성하지 않았으므로 지배 target 표가 빈 상태였다. 또한 report text의 사전 HTML entity 인코딩으로 `EXISTS &#40;...&#41;`, `-&gt;`가 그대로 보였다.
+- 변경 파일: `db/adb/asta_pkg.sql`, `db/adb/asta_report_pkg.sql`, `tests/test_asta_fallback_diagnosis_artifact.py`, 신규 `tests/test_asta_report_plain_change_text.py`, 이 handoff.
+- 구현: history 후보를 재사용하더라도 먼저 기존 two-stage generation을 호출해 현재 evidence 기반 `diagnosis/change_summary/semantic_risks`를 만들고, 후보만 history SQL로 선택해 fallback artifact에 보존한다. report의 `safe_vector_text`는 제어문자만 제거하고 HTML 안전성은 이미 textContent/UI 및 `html.escape` report view에 맡겨 일반 SQL 변경 표기를 원문으로 보인다.
+- 테스트: fallback/history/report/dominant-target focused pytest `8 passed in 0.03s`; `git diff --check` 통과.
+- 남은 문제/다음 단계: workspace 수정만 완료했고 ADB `ASTA_PKG`·`ASTA_REPORT_PKG` 배포 및 서비스 재시작은 하지 않았다. 지정 과거 Run에는 당시 diagnosis가 저장되지 않아 package 배포만으로 표가 채워지지 않는다. 사용자 승인 시 active work precheck → 두 package backup/deploy/VALID → 현재 SQL/XPLAN으로 diagnosis 생성 및 지정 Run report/response 보정 → HTTP/UI 확인 순서로 수행한다.
+
+## 자동 repair Run 병목 진단 artifact 보존 ADB 배포 — 2026-07-15
+
+- 요청/결론: 자동 repair/fallback 경로가 Stage-1 병목 진단을 top-level artifact에서 잃지 않도록 한 `ASTA_PKG` 수정본을 실제 ADB에 배포했다. 이로써 향후 repair 성공 Run도 결과서가 `diagnosis.target_operations`·전략·위험을 읽을 수 있다.
+- 배포: active Run, ASTA Scheduler, RUNNING/QUEUED progress가 모두 0인 상태를 확인했다. 기존 `ASTA_PKG` spec/body를 `reports/asta_fallback_diagnosis_deploy/20260715T031443Z/backup/`에 백업한 뒤 workspace `db/adb/asta_pkg.sql`만 반영했다. 실패 시 backup DDL을 자동 복원하도록 배포 스크립트를 구성했다.
+- 검증: `ASTA_PKG` PACKAGE/BODY 모두 `VALID`, `USER_ERRORS=0`; deployed body에서 fallback diagnosis preservation marker 1건을 확인했다. artifact는 `reports/asta_fallback_diagnosis_deploy/20260715T031443Z/deploy_summary.json` 및 `precheck.json`이다.
+- 테스트: 배포 전 focused pytest `6 passed`; 전체 `507 passed, 7 failed`는 기존 UI cache-marker 계약 불일치로 이번 package와 무관하다. `git diff --check` 통과.
+- 남은 문제/다음 단계: 지정 과거 Run `OADT2-ASTA-ec811b83323d4d9d880a00efe616dafc`의 누락된 Stage-1 artifact는 자동으로 복구되지 않는다. 새 Run 실행은 하지 않았으며, 향후 automatic repair가 실제로 발생한 Run에서 report target/strategy/risk가 출력되는 end-to-end 확인 또는 지정 Run의 별도 재진단·결과서 보정은 사용자 승인 시 수행한다.
+
+## 자동 repair Run의 병목 진단 artifact 보존 수정 — 2026-07-15
+
+- 요청/결론: 자동 repair/fallback을 거친 성공 Run에서도 `## 병목 진단`이 빠지지 않도록 `ASTA_PKG.llm_original_fallback_json`을 수정했다. 이제 원래 two-stage generation JSON의 `diagnosis`, `change_summary`, `semantic_risks`를 결과서가 읽는 top-level contract에도 보존하고, 원본 generation artifact도 감사용으로 유지한다.
+- 변경 파일: `db/adb/asta_pkg.sql`, `tests/test_asta_fallback_diagnosis_artifact.py`, 이 handoff.
+- 실행한 테스트와 실제 결과: 신규 fallback diagnosis + dominant target + report history focused pytest `6 passed in 0.02s`. 전체 `uv run --with pytest pytest -q`는 `507 passed, 7 failed`; 실패 7건은 기존 dirty `static/index.html`의 tuning assistant cache marker가 과거 테스트 기대값과 다른 UI 계약 불일치이며 이번 ADB package 변경과 무관하다. `git diff --check`는 별도 확인 필요.
+- 남은 문제/다음 단계: workspace 구현만 완료했고 ADB package 배포, 새 Run end-to-end 검증, 지정 Run 결과서 재생성은 하지 않았다. 배포 전 active Run/job/progress 0건 확인 후 `ASTA_PKG`를 compile/VALID 검증하고, 자동 repair 경로를 포함한 새 Run으로 병목 표의 target·전략·risk 출력까지 확인해야 한다.
+
+## 지정 Run 병목 진단 출력 누락 읽기 전용 진단 — 2026-07-15
+
+- 요청/결론: `OADT2-ASTA-ec811b83323d4d9d880a00efe616dafc`의 `## 병목 진단`이 비어 보이는 원인을 읽기 전용으로 확인했다. Run은 `COMPLETED / IMPROVED / OLTP_BUFFER_READS_IMPROVED`, 결과 동등성 `VERIFIED`이며 Buffer Gets는 `9,324,533 → 1,086,287`(88.35% 감소)이다. 그러나 저장 `response_json.artifacts.llm`에 `diagnosis`, `target_operations`, `rewrite_strategy`, `change_summary`가 전혀 없고 `generation`도 빈 object여서, 결과서가 계약상 안전한 빈 대상 문구를 출력한다.
+- 실제 출력: 병목 표는 `현재 evidence에서 계약 필드를 모두 갖춘 단일 지배 병목을 확정하지 못했습니다.`라고 표시되고, 요약·전략·위험도 fallback 문구만 표시된다. 이는 보고서 렌더링 오류가 아니라 과거 Run artifact의 진단 데이터 부재다. 이 Run의 `ASTA_LLM_CALL_LOG`도 0건이다.
+- 변경 파일: 이 handoff만 갱신. DB·서비스·package·Run 데이터 변경, 재실행, 결과서 재생성은 하지 않았다.
+- 실행한 확인: `/tmp/inspect_asta_prompt_run.py`와 `/tmp/inspect_asta_bottleneck_artifact.py`의 ADB read-only 조회로 상태·comparison·artifact 구조·보고서 병목 섹션을 확인했다. 인증정보·SQL 원문은 출력 또는 기록하지 않았다.
+- 남은 문제/다음 단계: 단순 결과서 재생성으로는 누락된 diagnosis artifact가 복원되지 않는다. 사용자 승인 후 (1) 현재 SQL/XPLAN으로 진단 artifact만 안전하게 재생성해 이 Run의 report/response를 갱신하거나, (2) 새 Run을 실행해 최신 two-stage diagnosis를 생성하는 방안을 선택해야 한다.
+- 추가 원인 확인: 운영 `ASTA_LLM_PKG`는 `VALID`이며 dominant-target 및 diagnosis 저장 marker가 배포되어 있다. 누락의 실제 재발 경로는 `ASTA_PKG.llm_original_fallback_json`이다. 후보가 Source 오류 뒤 자동 repair에 성공하면 이 helper가 top-level diagnosis를 보존하지 않고 원본 generation JSON을 `generation` 하위로 감싼다. 결과서는 top-level `$.diagnosis.*`만 읽으므로 성공한 repair Run도 병목 표가 비게 된다. 재발 방지는 fallback helper가 `diagnosis`, `change_summary`, `semantic_risks`를 top-level으로 보존하도록 수정하고, repair-success 회귀 테스트를 추가한 뒤 신규 Run으로 end-to-end 검증하는 것이다.
+
+## Tuning History 검색 진행 아이콘 추가 — 2026-07-15
+
+- 요청/결론: Tuning History에서 조회 또는 새로고침을 실행할 때 목록 영역에 진행 상태가 보이도록 공통 회전 spinner와 `튜닝 이력을 검색 중입니다.` 문구를 추가했다. 요청 시작 시 즉시 표시되고, 성공·빈 결과·오류 후에는 `aria-busy` 상태와 입력 controls가 정상 해제된다.
+- 변경 파일: `static/js/extensions/tuning_assistant.js`, `static/index.html`, `tests/test_asta_tuning_history_contract.py`, 이 handoff. 정적 JS cache marker는 `20260715_tuning_history_loading1`이다.
+- 실행한 테스트와 실제 결과: `node --check static/js/extensions/tuning_assistant.js` 통과. `uv run --with pytest pytest -q tests/test_asta_tuning_history_contract.py` → `4 passed in 0.03s`; `git diff --check` 통과.
+- 남은 문제/다음 단계: 정적 파일 변경만 수행했으며 서비스 재시작, ADB/ORDS 배포, DB 변경은 하지 않았다.
+- 관련 커밋: 없음.
+
 ## ASTA × Codex 바이브 코딩 쇼케이스 영문 스크린샷 — 2026-07-14
 
 - 요청/결론: `reports/asta_codex_vibe_coding_showcase_20260714/`의 기존 발표용 이미지 6장을 영문화했다. `screenshots_en/`에 즉시 삽입 가능한 1600×900 PNG 6장, `svg_sources_en/`에 편집 가능한 영문 SVG 6장을 추가했다.
