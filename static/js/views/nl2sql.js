@@ -443,6 +443,13 @@
           <div class="stack-sm">
             <label>User Prompt</label>
             <textarea id="cfg-prompt" rows="10" style="font-family:var(--font-mono); font-size:var(--fs-sm);"></textarea>
+            <span class="muted" style="font-size:var(--fs-sm); line-height:1.7;">
+              자리표시자 — 실행 시 자동 치환됩니다:<br>
+              · <code>##기준일##</code> : 실행 시점의 오늘 날짜(YYYYMMDD)<br>
+              · <code>##조회할 컬럼##</code> : 화면의 <b>조회할 컬럼</b> 입력값<br>
+              · <code>##정렬기준##</code> : 화면의 <b>정렬기준</b> 입력값<br>
+              · <code>##메시지##</code> : 화면의 <b>질문</b> 입력값 <span class="muted">(필수 — 프롬프트에 반드시 포함)</span>
+            </span>
           </div>
         </div>
         <div class="modal-footer row" style="justify-content:space-between; align-items:center; gap:var(--space-2);">

@@ -324,3 +324,93 @@ WHERE  m.mapped_sql_id IS NOT NULL;
 > 정리: **`v$mapped_sql` 은 "어떤 질문이 어떤 SQL 로 실행됐는지"의 출처**로서 Positive 피드백의 `sql_id` 를 제공하고, **`v$sql` 은 그 `MAPPED_SQL_ID` 로 실제 실행문·통계를 확인**하는 용도입니다. 같은 `sql_id` 에 대한 피드백은 1건만 유지됩니다(`operation => 'add'` 가 곧 update).
 
 > 권한: `v$mapped_sql`·`v$sql` 조회에는 각각 `GRANT READ ON SYS.V_$MAPPED_SQL`, `GRANT SELECT ON V_$SQL`(또는 ADMIN 권한)이 필요할 수 있습니다.
+
+## 4. VPD(행 수준 보안) × 3-tier 커넥션 풀 — Application Context 주의
+
+SELECT AI 결과에 **행 수준 보안(VPD, `DBMS_RLS`)** 을 걸 때, 정책 함수는 보통 **Application Context**(`DBMS_SESSION.SET_CONTEXT` 로 세팅하고 `SYS_CONTEXT` 로 읽는 값)를 기준으로 WHERE 술어를 만듭니다. 그런데 **3-tier 앱이 커넥션 풀로 하나의 DB 계정을 여러 최종사용자가 공유**하면, 로컬(세션) 컨텍스트가 **다음 사용자에게 새어나가** VPD 가 오작동/정보누수할 수 있습니다.
+
+### 4.1 왜 위험한가 — 세션 스코프 × 풀 재사용
+
+- `SET_CONTEXT` 로 만든 **로컬(세션) 컨텍스트는 "그 DB 세션이 살아있는 동안"만 유효**하고, `SYS_CONTEXT` 는 그 세션에 세팅된 값을 봅니다.
+- 3-tier 는 보통 **하나의 DB 계정(APP_USER 등)으로 만든 커넥션 풀**을 여러 최종사용자가 **물리 세션을 돌려쓰기** 때문에 아래 누수가 생깁니다.
+
+```text
+[요청1] 사용자 A → 풀에서 세션 #7 대여 → SET_CONTEXT(EMPLID='2') → 조회 → 반납(컨텍스트 안 지움)
+[요청2] 사용자 B → 하필 세션 #7 대여 → (컨텍스트 세팅 안 함) → 조회
+        → SYS_CONTEXT 는 여전히 '2'(A의 값) → B가 A의 데이터를 봄  ❌
+```
+
+> **로그온 트리거로 컨텍스트를 세팅하는 방식은 풀에서 깨집니다** — 트리거는 물리 세션이 "생성"될 때만 돌지, 최종사용자 "요청"마다 돌지 않습니다.
+
+### 4.2 해결책 (권장순)
+
+> **먼저: 해결책이 막아야 하는 건 "동시 공유"가 아니라 "순차 재사용 누수"다.**
+>
+> 로컬 Application Context 는 **세션 사설(private) 메모리**에 저장되고, 커넥션 풀은 한 세션을 **한 순간에 한 요청에만** 빌려준다(직렬 점유). 그래서 두 종류를 구분해야 한다.
+>
+> | 구분 | 일반 3-tier 풀에서 | 이유 |
+> |---|---|---|
+> | **동시 공유** (두 사용자가 같은 순간 같은 세션에 set) | **발생 안 함** | 풀이 커넥션을 직렬 점유시킴 — 한 커넥션=한 요청. `SET_CONTEXT(A)` 도중 다른 요청이 그 세션에 끼어들 수 없다. |
+> | **순차 재사용 누수** (앞 사용자 값이 남아 다음 사용자가 봄) | **발생할 수 있음** | 컨텍스트는 물리 세션이 살아있는 동안 유지되고, 논리 커넥션을 반납해도 물리 세션·컨텍스트는 안 지워진다. 풀이 자동으로 청소하지 않는다. |
+>
+> ```text
+> [동시 공유는 안 남] A가 세션#7 독점 중이면 B는 #7을 못 받음 → B는 세션#9 → 서로 격리
+> [순차 누수는 남]    A: #7 SET_CONTEXT(A) → 조회 → 반납(‼️ #7에 A값 잔존)
+>                    B: #7 대여 → (set 생략 시) 조회 → SYS_CONTEXT 가 여전히 A값 → B가 A 데이터 열람 ❌
+> ```
+>
+> 즉 **"풀만 쓰면 자동으로 안전"은 아니다.** 동시 충돌은 풀이 막아주지만, 사용자 간 잔존값 누수는 **앱이 (A) 요청마다 재설정 / 반납 시 클리어로 직접 막아야** 한다. 아래 해결책은 바로 이 순차 누수를 막기 위한 것이다.
+>
+> (레이스가 실제로 나려면 **한 세션을 여러 동시 요청이 공유**하거나 **set 한 커넥션과 조회 한 커넥션이 다른** 경우인데, 둘 다 풀 사용 규칙 위반이다.)
+
+#### (A) 최소 — "요청마다 세팅 + 반납 시 클리어" (현재 PoC 구조 유지)
+로컬 컨텍스트를 계속 쓰되:
+1. **모든 요청 시작 시** 인증된 최종사용자 기준으로 세터 프로시저(예: `PRC_OAC_SETINFO_*`) 호출.
+2. **커넥션 반납 직전 반드시 클리어**:
+   ```sql
+   DBMS_SESSION.CLEAR_CONTEXT('OAC_MANAGER');       -- 특정 네임스페이스
+   -- 또는 DBMS_SESSION.CLEAR_ALL_CONTEXT('OAC_MANAGER');
+   ```
+   - 드라이버 세션 풀의 **반납/획득 콜백**(python-oracledb `sessionCallback`, UCP connection labeling 등)에서 자동 정리하도록 걸어두면 사람 실수를 막을 수 있습니다.
+- 장점: 함수/구조 그대로. 단점: **규율 의존** — 한 경로라도 세팅/정리를 빠뜨리면 누수.
+
+#### (B) 권장 — CLIENT_IDENTIFIER + **Global Application Context**
+풀에 훨씬 안전한 Oracle 표준 패턴입니다.
+```sql
+-- 미들티어가 요청마다 최종사용자 식별자를 세션에 심음
+BEGIN DBMS_SESSION.SET_IDENTIFIER('empid:2'); END;   -- SYS_CONTEXT('USERENV','CLIENT_IDENTIFIER')
+
+-- 컨텍스트를 전역(SGA)으로 선언하고 client_id 로 키잉
+CREATE OR REPLACE CONTEXT OAC_MANAGER USING PKG_OAC_MANAGER ACCESSED GLOBALLY;
+-- 세팅 시 client_id 로 귀속 (SET_CONTEXT 의 username/client_id 인자)
+-- DBMS_SESSION.SET_CONTEXT('OAC_MANAGER','EMPLID','2', username=>..., client_id=>'empid:2');
+```
+- 이후 **어떤 풀 세션이든 자기 `CLIENT_IDENTIFIER` 에 맞는 값**을 SGA 에서 자동으로 봄 → 세션이 바뀌어도 값이 사용자와 함께 따라다님. 반납 시 `DBMS_SESSION.CLEAR_IDENTIFIER` 만 하면 됨.
+- 정책 함수는 그대로 `SYS_CONTEXT` 를 읽으면 됩니다.
+
+#### (C) 정석(12c+) — **Real Application Security(RAS)**
+"여러 앱 사용자 + 공유 풀 + 행/열 보안"을 위해 Oracle 이 만든 기능. **애플리케이션 세션**(app user·role·namespace)을 물리 DB 세션에 **attach/detach** 하며 ACL 기반 데이터 보안을 커넥션 풀과 네이티브로 연동합니다. 설계 변경 비용은 크지만 3-tier 다중 사용자에 근본적으로 적합.
+
+#### (D) 가능하면 — **`USERENV` 내장 컨텍스트**를 기준값으로
+사용자 정체성을 커스텀 `SET_CONTEXT` 없이 얻을 수 있으면 누수 위험이 원천적으로 낮습니다.
+```sql
+SYS_CONTEXT('USERENV','SESSION_USER')          -- 접속 계정
+SYS_CONTEXT('USERENV','CLIENT_IDENTIFIER')     -- 미들티어가 심은 최종사용자
+```
+정책 함수가 이 값만 기준으로 술어를 만들면, "요청마다 세팅"이 세터 프로시저 대신 **`SET_IDENTIFIER` 한 줄**로 줄어 실수 여지가 작아집니다.
+
+### 4.3 SELECT AI 특유의 주의점
+SELECT AI(`DBMS_CLOUD_AI.GENERATE … runsql`)는 **생성된 SQL 을 그 DB 세션에서 실행**합니다. 그 실행 세션에 최종사용자 컨텍스트가 심겨 있어야 VPD 가 맞게 필터합니다.
+- `showsql` 은 SQL **텍스트만** 만들므로 컨텍스트와 무관하지만, **실제 행 필터는 "실행 세션의 컨텍스트"** 에서 결정됩니다.
+- SELECT AI 실행 경로가 별도 워커/공유 프로파일로 돈다면, **그 실행 세션에도 동일하게 컨텍스트(또는 CLIENT_IDENTIFIER)를 전파**해야 합니다.
+
+### 4.4 정리
+
+| 상황 | 권장 |
+|---|---|
+| 지금 PoC 구조 유지 | **(A)** 요청마다 세팅 + **반납 콜백에서 `CLEAR_CONTEXT`** (필수) |
+| 실서비스로 승격 | **(B)** `CLIENT_IDENTIFIER` + **Global Application Context** |
+| 사용자·역할·행/열 보안을 제대로 | **(C)** Real Application Security |
+| 정체성이 `CLIENT_IDENTIFIER` 로 충분 | **(D)** `USERENV` 기준 정책 함수 |
+
+> **한 줄 요약:** VPD 자체는 3-tier 에서도 잘 동작하지만, **"컨텍스트를 요청마다 세팅하고 커넥션 반납 시 반드시 정리"** 하지 않으면 풀 재사용으로 **다른 사용자 데이터가 새어나갑니다.** 로컬 컨텍스트를 유지하려면 (A)의 정리 콜백을 필수로 넣고, 안전하게 가려면 **(B) `CLIENT_IDENTIFIER` + Global Application Context** 로 전환하세요.

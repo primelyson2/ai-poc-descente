@@ -4,7 +4,10 @@
   · POST /vpd/run-script      : 화면에서 편집한 1·2·3단계 스크립트를 그대로 실행(문장 단위)
   · POST /vpd/policy/enable   : DBMS_RLS.ENABLE_POLICY (사용중지/재개)
   · POST /vpd/policy/drop     : DBMS_RLS.DROP_POLICY (삭제)
-  · POST /vpd/test            : 컨텍스트 값 세팅 → select ai showsql 생성 → 그 SQL 실행(VPD 적용 확인)
+  · GET  /vpd/contexts        : DBA_CONTEXT 조회(정의된 Application Context, SCHEMA 필터)
+  · POST /vpd/set-context     : 세터 호출 블록 실행 → 같은 세션 SESSION_CONTEXT 조회(설정 확인)
+  · POST /vpd/showsql         : select ai showsql 로 SQL 만 생성(실행 안 함)
+  · POST /vpd/exec-sql        : set_block 으로 컨텍스트 세팅 후 같은 세션에서 SQL 실행(VPD 적용)
 
 식별자(스키마/객체/정책/함수/컨텍스트명)는 bind 불가 → 화이트리스트 검증 후 보간.
 값·프롬프트 등 자유 문자열은 bind. 오류는 first_line 으로 한 줄 노출(프로젝트 관례).
@@ -90,6 +93,27 @@ async def list_policies(database: str = Depends(current_db)) -> list[dict]:
     )
 
 
+@router.get("/contexts")
+async def list_contexts(schema: str = "", database: str = Depends(current_db)) -> list[dict]:
+    """정의된 Application Context 네임스페이스(DBA_CONTEXT).
+    namespace / schema / package(= CREATE CONTEXT … USING 유닛) 를 반환한다.
+    schema 파라미터가 있으면 SCHEMA 부분일치(대소문자 무시)로 필터한다(값은 bind).
+    (DBA_CONTEXT 는 세션 활성 여부와 무관하게 '정의된' 컨텍스트 전체를 보여준다 —
+     조회에는 접속 계정에 DBA_CONTEXT SELECT 권한이 필요하다.)"""
+    schema = (schema or "").strip()
+    if schema:
+        return await db.fetch_all(
+            database,
+            "SELECT namespace, schema, package FROM dba_context "
+            "WHERE UPPER(schema) LIKE '%' || UPPER(:s) || '%' ORDER BY namespace",
+            s=schema,
+        )
+    return await db.fetch_all(
+        database,
+        "SELECT namespace, schema, package FROM dba_context ORDER BY namespace",
+    )
+
+
 @router.post("/run-script")
 async def run_script(payload: dict, database: str = Depends(current_db)) -> dict:
     """편집 스크립트를 문장 단위로 순차 실행. 오류가 나도 계속 진행하고 문장별 결과를 반환."""
@@ -139,6 +163,9 @@ async def policy_enable(payload: dict, database: str = Depends(current_db)) -> d
 
 @router.post("/policy/drop")
 async def policy_drop(payload: dict, database: str = Depends(current_db)) -> dict:
+    """정책 삭제. drop_function=true 이면 정책 삭제 후 정책 함수(또는 패키지)도 삭제한다.
+    body: { object_schema, object_name, policy_name,
+            drop_function?, function_schema?, function_name?, function_is_package? }"""
     o = _ident((payload.get("object_schema") or "").strip(), "object_schema")
     t = _ident((payload.get("object_name") or "").strip(), "object_name")
     p = _ident((payload.get("policy_name") or "").strip(), "policy_name")
@@ -150,49 +177,121 @@ async def policy_drop(payload: dict, database: str = Depends(current_db)) -> dic
         )
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=400, detail={"error": first_line(exc)})
-    return {"ok": True}
+
+    result = {"ok": True, "function_dropped": False, "function_error": None}
+    if payload.get("drop_function"):
+        # 정책이 먼저 제거된 뒤라 함수 참조가 없어 DROP 가능. 함수 삭제 실패는 결과에 실어 반환
+        # (정책은 이미 삭제됨). 식별자는 화이트리스트 검증 후 보간.
+        fo = _ident((payload.get("function_schema") or "").strip(), "function_schema")
+        fn = _ident((payload.get("function_name") or "").strip(), "function_name")
+        kind = "PACKAGE" if payload.get("function_is_package") else "FUNCTION"
+        try:
+            await db.execute(database, f"DROP {kind} {fo}.{fn}")
+            result["function_dropped"] = True
+        except Exception as exc:  # noqa: BLE001
+            result["function_error"] = first_line(exc)
+    return result
 
 
-@router.post("/test")
-async def vpd_test(payload: dict, database: str = Depends(current_db)) -> dict:
-    """같은 세션에서: 컨텍스트 값 세팅 → GENERATE(showsql) → 생성 SQL 실행(VPD 적용).
-    body: { schema, name, value, question, profile }.
-    context_name(name) 로 패키지 PKG_OAC_<name>.SET_OBJECT 를 호출한다."""
-    schema = _ident((payload.get("schema") or "").strip(), "schema")
-    name = _ident((payload.get("name") or "").strip(), "name")
-    profile = _ident((payload.get("profile") or "").strip(), "profile")
-    value = payload.get("value") or ""
-    question = (payload.get("question") or "").strip()
-    if not question:
-        raise HTTPException(status_code=400, detail={"error": "질문을 입력하세요"})
+@router.post("/context/drop")
+async def context_drop(payload: dict, database: str = Depends(current_db)) -> dict:
+    """Application Context 삭제(DROP CONTEXT). drop_package=true 이면 USING 객체도 삭제한다.
+    USING 객체는 항상 프로시저로 가정한다(템플릿 규약 — PRC_OAC_SETINFO_*).
+    body: { namespace, drop_package?, schema?, package? }"""
+    ns = _ident((payload.get("namespace") or "").strip(), "namespace")
+    try:
+        await db.execute(database, f"DROP CONTEXT {ns}")  # 컨텍스트는 스키마 소유가 아님(전역)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail={"error": first_line(exc)})
 
-    def result(**kw):
-        base = {"sql": None, "columns": [], "rows": [], "error": None, "stage": None}
-        base.update(kw)
-        return base
+    result = {"ok": True, "package_dropped": False, "package_error": None}
+    if payload.get("drop_package"):
+        o = _ident((payload.get("schema") or "").strip(), "schema")
+        n = _ident((payload.get("package") or "").strip(), "package")
+        try:
+            await db.execute(database, f"DROP PROCEDURE {o}.{n}")
+            result["package_dropped"] = True
+        except Exception as exc:  # noqa: BLE001
+            result["package_error"] = first_line(exc)
+    return result
 
+
+def _strip_slash(block: str) -> str:
+    """SQL*Plus 종결자 '/' 를 제거해 anonymous block 을 execute 가능하게 한다."""
+    b = (block or "").strip()
+    if b.endswith("/"):
+        b = b[: b.rfind("/")].rstrip()
+    return b
+
+
+@router.post("/set-context")
+async def set_context(payload: dict, database: str = Depends(current_db)) -> dict:
+    """편집한 세터 호출 블록을 실행한 뒤, 같은 세션의 SESSION_CONTEXT 를 조회해 반환.
+    body: { block }.  VPD 컨텍스트 세터가 정상 동작하는지 확인용."""
+    block = _strip_slash(payload.get("block") or "")
+    if not block:
+        raise HTTPException(status_code=400, detail={"error": "실행할 코드가 없습니다"})
     pool = db.get_pool(database)
     async with pool.acquire() as conn:
-        # 1) 컨텍스트 값 세팅 (같은 세션이라야 VPD 가 이 값을 본다)
+        try:
+            with conn.cursor() as cur:
+                await cur.execute(block)
+        except Exception as exc:  # noqa: BLE001
+            return {"error": first_line(exc), "session_context": []}
         try:
             with conn.cursor() as cur:
                 await cur.execute(
-                    f"BEGIN {schema}.PKG_OAC_{name}.SET_OBJECT(:v); END;", {"v": value})
+                    "SELECT namespace, attribute, value FROM session_context "
+                    "ORDER BY namespace, attribute")
+                cols = [d[0].lower() for d in (cur.description or [])]
+                rows = await cur.fetchall()
+            data = [dict(zip(cols, r)) for r in rows]
         except Exception as exc:  # noqa: BLE001
-            return result(error=first_line(exc), stage="set_context")
-        # 2) showsql 로 SQL 생성
+            return {"error": first_line(exc), "session_context": []}
+    return {"error": None, "session_context": data}
+
+
+@router.post("/showsql")
+async def showsql(payload: dict, database: str = Depends(current_db)) -> dict:
+    """select ai showsql 로 SQL 만 생성(실행하지 않음). body: { profile, question }."""
+    profile = _ident((payload.get("profile") or "").strip(), "profile")
+    question = (payload.get("question") or "").strip()
+    if not question:
+        raise HTTPException(status_code=400, detail={"error": "질문을 입력하세요"})
+    pool = db.get_pool(database)
+    async with pool.acquire() as conn:
         try:
             with conn.cursor() as cur:
                 await cur.execute(_GENERATE_SQL, {"p": question, "pn": profile, "a": "showsql"})
                 row = await cur.fetchone()
             sql = _clean_sql((row[0] if row else "") or "")
         except Exception as exc:  # noqa: BLE001
-            return result(error=first_line(exc), stage="generate")
-        if not sql:
-            return result(error="모델이 SQL 을 생성하지 못했습니다(빈 응답)", stage="empty")
-        if not _is_read_only(sql):
-            return result(sql=sql, error="생성 문장이 조회(SELECT/WITH)가 아니라 실행을 건너뜁니다", stage="validate")
-        # 3) 생성 SQL 실행 — 같은 세션이므로 VPD 술어가 자동 적용됨
+            return {"sql": None, "error": first_line(exc)}
+    if not sql:
+        return {"sql": None, "error": "모델이 SQL 을 생성하지 못했습니다(빈 응답)"}
+    return {"sql": sql, "error": None}
+
+
+@router.post("/exec-sql")
+async def exec_sql(payload: dict, database: str = Depends(current_db)) -> dict:
+    """set_block(있으면)으로 컨텍스트를 세팅한 뒤 같은 세션에서 sql 을 실행(VPD 적용).
+    body: { sql, set_block? }.  VPD 는 세션 스코프라 세팅과 실행이 같은 커넥션이어야 한다."""
+    sql = _clean_sql((payload.get("sql") or "").strip())
+    set_block = _strip_slash(payload.get("set_block") or "")
+    if not sql:
+        raise HTTPException(status_code=400, detail={"error": "실행할 SQL 이 없습니다"})
+    if not _is_read_only(sql):
+        return {"columns": [], "rows": [], "truncated": False,
+                "error": "조회(SELECT/WITH) 문장만 실행합니다"}
+    pool = db.get_pool(database)
+    async with pool.acquire() as conn:
+        if set_block:
+            try:
+                with conn.cursor() as cur:
+                    await cur.execute(set_block)
+            except Exception as exc:  # noqa: BLE001
+                return {"columns": [], "rows": [], "truncated": False,
+                        "error": f"컨텍스트 설정 실패: {first_line(exc)}"}
         try:
             with conn.cursor() as cur:
                 await cur.execute(sql)
@@ -200,6 +299,5 @@ async def vpd_test(payload: dict, database: str = Depends(current_db)) -> dict:
                 fetched = await cur.fetchmany(ROW_LIMIT)
             rows = [[_normalize_cell(v) for v in r] for r in fetched]
         except Exception as exc:  # noqa: BLE001
-            return result(sql=sql, error=first_line(exc), stage="execute")
-    return result(sql=sql, columns=columns, rows=rows,
-                  truncated=len(rows) == ROW_LIMIT)
+            return {"columns": [], "rows": [], "truncated": False, "error": first_line(exc)}
+    return {"columns": columns, "rows": rows, "truncated": len(rows) == ROW_LIMIT, "error": None}
