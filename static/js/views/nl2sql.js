@@ -660,6 +660,7 @@
     const message = qInput.value.trim();
     if (!message) { window.Toast.show("질문을 입력하세요", "error"); return null; }
     const columns = colInput.value;
+    if (!columns.trim()) { window.Toast.show("조회할 컬럼을 입력하세요", "error"); return null; }
     const sort_by = sortInput.value;
 
     const runBtn = document.getElementById("nl-run");
