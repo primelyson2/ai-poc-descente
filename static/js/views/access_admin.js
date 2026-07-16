@@ -233,13 +233,18 @@
             <strong>${m.label}</strong>
           </label>`;
               if (m.route !== "nl2sql") return parent;
-              // Select AI Test - Table list 하위 옵션: AI분석 버튼 노출 여부(자식 체크박스)
+              // Select AI Test - Table list 하위 옵션(자식 체크박스)
               const analyzeOn = !window.MenuConfig || !window.MenuConfig.isAnalyzeOn || window.MenuConfig.isAnalyzeOn();
+              const colEvalOn = !!(window.MenuConfig && window.MenuConfig.isColEvalOn && window.MenuConfig.isColEvalOn());
               const parentVisible = !hiddenMenus.includes("nl2sql");
               return parent + `
           <label class="row" style="gap:8px; align-items:center; cursor:pointer; margin-left:26px;">
             <input type="checkbox" data-menu-child="analyze" ${analyzeOn ? "checked" : ""} ${parentVisible ? "" : "disabled"} />
             <span>AI분석 <span class="muted" style="font-size:var(--fs-sm);">— AI분석·페르소나 관리 버튼 노출</span></span>
+          </label>
+          <label class="row" style="gap:8px; align-items:center; cursor:pointer; margin-left:26px;">
+            <input type="checkbox" data-menu-child="coleval" ${colEvalOn ? "checked" : ""} ${parentVisible ? "" : "disabled"} />
+            <span>질문-조회컬럼 관련성평가 <span class="muted" style="font-size:var(--fs-sm);">— 컬럼 선택 팝업의 관련성 평가 노출</span></span>
           </label>`;
             })
             .join("")}
@@ -275,12 +280,14 @@
     bindActionToggle("act-narrate", "narrate");
 
     const analyzeChildCb = menuPanel.querySelector('input[data-menu-child="analyze"]');
+    const colEvalChildCb = menuPanel.querySelector('input[data-menu-child="coleval"]');
     menuPanel.querySelectorAll("input[data-menu-route]").forEach((cb) => {
       cb.addEventListener("change", () => {
         const route = cb.dataset.menuRoute;
         if (window.MenuConfig) window.MenuConfig.setHidden(route, !cb.checked);
-        // nl2sql 을 숨기면 하위 AI분석 옵션도 비활성화(무의미).
+        // nl2sql 을 숨기면 하위 옵션(AI분석·관련성평가)도 비활성화(무의미).
         if (route === "nl2sql" && analyzeChildCb) analyzeChildCb.disabled = !cb.checked;
+        if (route === "nl2sql" && colEvalChildCb) colEvalChildCb.disabled = !cb.checked;
         const label = (managed.find((m) => m.route === route) || {}).label || route;
         window.Toast.show(`메뉴 '${label}' ${cb.checked ? "노출" : "숨김"}`, "success");
       });
@@ -290,6 +297,13 @@
       analyzeChildCb.addEventListener("change", () => {
         if (window.MenuConfig && window.MenuConfig.setAnalyzeOn) window.MenuConfig.setAnalyzeOn(analyzeChildCb.checked);
         window.Toast.show(`AI분석 버튼 ${analyzeChildCb.checked ? "노출" : "숨김"}`, "success");
+      });
+    }
+    // 하위 옵션: 질문-조회컬럼 관련성평가 노출 여부
+    if (colEvalChildCb) {
+      colEvalChildCb.addEventListener("change", () => {
+        if (window.MenuConfig && window.MenuConfig.setColEvalOn) window.MenuConfig.setColEvalOn(colEvalChildCb.checked);
+        window.Toast.show(`관련성 평가 ${colEvalChildCb.checked ? "노출" : "숨김"}`, "success");
       });
     }
 

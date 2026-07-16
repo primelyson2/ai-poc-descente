@@ -27,8 +27,6 @@ router = APIRouter(prefix="/objects", tags=["objects"])
 
 # Oracle unquoted identifier: 영문자로 시작, A-Z 0-9 _ $ # 만 허용 (대문자 변환 후 검증)
 IDENT_RE = re.compile(r"^[A-Z][A-Z0-9_$#]*$")
-# Annotation 이름은 mixed-case 허용
-ANNOT_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_$#]*$")
 # 프로시저 이름(뷰 재정의용) — 선택적 package/schema 한정자(1단계) 허용. 대문자 정규화 후 검증.
 PROC_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_$#]*(\.[A-Z][A-Z0-9_$#]*)?$")
 
@@ -44,10 +42,12 @@ def _ident(name: str, label: str) -> str:
 
 
 def _annot_name(name: str) -> str:
-    """annotation 이름 검증 + 정규화한 '논리 이름' 반환 (응답/표시용).
+    """annotation 이름 검증 + '논리 이름' 반환 (응답/표시/DDL 공용).
 
-    표준 ASCII 식별자(영문 시작)는 Oracle unquoted 관례대로 **대문자로 정규화**하고,
-    그 외(한글 등)는 **원문 보존**한다. DDL 보간은 _annot_sql 로 따로 처리.
+    Oracle 23ai annotation 이름은 **대소문자 구분(case-sensitive)** 이다. 외부 도구
+    (예: Data Tools ingest 의 DATA_TOOLS_INGEST_fieldName)가 mixed-case 로 만든 이름도
+    있으므로 **대문자 정규화하지 않고 원문 그대로 보존**한다(그래야 DROP/수정이 매칭됨).
+    DDL 은 _annot_sql 에서 항상 quoted 로 보간한다.
     """
     n = (name or "").strip()
     if not n or len(n.encode("utf-8")) > 128:
@@ -55,17 +55,16 @@ def _annot_name(name: str) -> str:
     # quoted identifier 안전 — 큰따옴표/제어문자 금지
     if '"' in n or any(ord(ch) < 0x20 for ch in n):
         raise HTTPException(status_code=400, detail={"error": f"invalid annotation name: {name}"})
-    return n.upper() if ANNOT_NAME_RE.match(n) else n
+    return n
 
 
 def _annot_sql(name: str) -> str:
-    """검증된 annotation 논리 이름을 DDL 식별자 표현으로 변환.
+    """검증된 annotation 이름을 DDL 식별자로 — **항상 quoted**(대소문자 구분 보존).
 
-    ASCII 식별자(대문자 정규화됨)는 그대로(unquoted), 그 외(한글 등)는 큰따옴표로 감싼
-    quoted identifier 로 보간한다(내부 " 는 "" 로 이스케이프). DB 캐릭터셋이 유니코드면 한글 키 가능.
+    annotation 이름은 case-sensitive 라 unquoted(=Oracle 이 대문자로 해석)로 보간하면
+    mixed-case 로 저장된 이름과 매칭되지 않아 ORA-11561 이 난다. 내부 " 는 "" 로 이스케이프.
+    (대문자 이름도 "MYTAG" == 저장된 MYTAG 로 매칭되어 안전.)
     """
-    if IDENT_RE.match(name):
-        return name
     return '"' + name.replace('"', '""') + '"'
 
 

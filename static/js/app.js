@@ -28,6 +28,8 @@
   const MENU_KEY = "oai.menu.hidden";
   // nl2sql(Table list) 하위 옵션 — AI분석/페르소나 관리 버튼 노출 여부. 기본 ON(기존 동작 유지).
   const ANALYZE_KEY = "oai.menu.nl2sql.analyze";
+  // nl2sql 하위 옵션 — 질문-조회컬럼 관련성평가(컬럼 선택 팝업) 노출 여부. 기본 OFF(체크 시에만).
+  const COLEVAL_KEY = "oai.menu.nl2sql.coleval";
   const ALWAYS_ON = new Set(["databases", "access"]);
   // nav 순서(index.html)와 동일한 순서로 관리 대상 메뉴를 정의한다.
   const MANAGED_MENUS = [
@@ -54,6 +56,9 @@
   function isAnalyzeOn() {
     const v = localStorage.getItem(ANALYZE_KEY);
     return v === null ? true : v === "1"; // 기본 ON
+  }
+  function isColEvalOn() {
+    return localStorage.getItem(COLEVAL_KEY) === "1"; // 기본 OFF — 체크할 때만 노출
   }
   function firstVisibleRoute() {
     const hidden = getHiddenMenus();
@@ -150,6 +155,11 @@
     isAnalyzeOn,
     setAnalyzeOn(on) {
       localStorage.setItem(ANALYZE_KEY, on ? "1" : "0");
+    },
+    // nl2sql 하위 옵션(질문-조회컬럼 관련성평가 노출) — Tool관리 체크박스와 nl2sql 컬럼선택 팝업이 함께 사용.
+    isColEvalOn,
+    setColEvalOn(on) {
+      localStorage.setItem(COLEVAL_KEY, on ? "1" : "0");
     },
     setHidden(route, hidden) {
       if (ALWAYS_ON.has(route)) return; // 항상 노출 메뉴는 무시
