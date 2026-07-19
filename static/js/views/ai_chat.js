@@ -42,6 +42,68 @@
     return issues;
   }
 
+  // AI Chat 전송 시 백엔드가 실행하는 RUN_TEAM 익명블록을 재현(미리보기용).
+  // app/plsql.py:build_run_team_block + app/routers/chat.py:_user_prompt_expr 와 동일 규칙:
+  //   ##메시지## → ' || :msg || ' (메시지만 바인드), :team_name 바인드, 신규 conversation 기준.
+  function buildChatScript(team, variables, userPrompt) {
+    const MSG_PH = "##메시지##";
+    const up = userPrompt || "";
+    const useMsg = up.includes(MSG_PH);
+    const src = useMsg ? up.split(MSG_PH).join("' || :msg || '") : up;
+    const userPromptSql = "'" + src + "'";
+    const decls = (variables || "").trim();
+    const declLine = decls ? "\n  " + decls : "";
+    return (
+      "DECLARE\n" +
+      "  l_conv_id     VARCHAR2(256);\n" +
+      "  l_answer      CLOB;\n" +
+      "  l_user_prompt CLOB;" + declLine + "\n" +
+      "BEGIN\n" +
+      "  l_conv_id := DBMS_CLOUD_AI.CREATE_CONVERSATION();  -- Multi Turn 재사용 시 :in_conv\n" +
+      "  l_user_prompt := " + userPromptSql + ";\n" +
+      "  l_answer := DBMS_CLOUD_AI_AGENT.RUN_TEAM(\n" +
+      "    team_name   => :team_name,\n" +
+      "    user_prompt => l_user_prompt,\n" +
+      "    params      => '{\"conversation_id\":\"' || l_conv_id || '\"}'\n" +
+      "  );\n" +
+      "  :out_conv := l_conv_id;\n" +
+      "  :out_answer := l_answer;\n" +
+      "END;"
+    );
+  }
+
+  // 스크립트 조회 팝업 — 실행 스크립트를 읽기전용으로 보여주고 복사 제공.
+  function openScriptModal(title, team, script) {
+    const esc = window.escapeHtml || ((v) => String(v == null ? "" : v));
+    const bd = document.createElement("div");
+    bd.className = "modal-backdrop";
+    bd.innerHTML = `
+      <div class="modal" style="width:720px; max-width:94vw;">
+        <div class="modal-header">
+          <h2>${esc(title)}</h2>
+          <button class="btn btn-ghost" id="sc-close" type="button">✕</button>
+        </div>
+        <div class="modal-body stack">
+          <label class="muted" style="font-size:var(--fs-sm);">AI Chat 전송 시 실행되는 스크립트입니다. 바인드: <code>:team_name</code> = '${esc(team || "")}', <code>:msg</code> = 입력 메시지.</label>
+          <textarea readonly rows="16" style="font-family:var(--font-mono); font-size:var(--fs-sm); width:100%;">${esc(script)}</textarea>
+        </div>
+        <div class="modal-footer row end" style="gap:var(--space-2);">
+          <button class="btn" id="sc-copy" type="button">복사</button>
+          <button class="btn btn-primary" id="sc-ok" type="button">닫기</button>
+        </div>
+      </div>`;
+    const close = () => bd.remove();
+    document.body.appendChild(bd);
+    // 바깥(어두운 영역) 클릭 시 닫기 — 미리보기라 실수 닫힘 허용
+    bd.addEventListener("click", (e) => { if (e.target === bd) close(); });
+    bd.querySelector("#sc-close").addEventListener("click", close);
+    bd.querySelector("#sc-ok").addEventListener("click", close);
+    bd.querySelector("#sc-copy").addEventListener("click", async () => {
+      try { await navigator.clipboard.writeText(script); window.Toast.show("스크립트를 복사했습니다", "success"); }
+      catch (_) { window.Toast.show("복사 실패 — 텍스트를 직접 선택해 복사하세요", "error"); }
+    });
+  }
+
   // 현재 시각 HH:MM
   function nowLabel() {
     const d = new Date();
@@ -563,6 +625,9 @@
               <label>User Prompt</label>
               <textarea id="cfg-prompt" rows="8" style="font-family:var(--font-mono); font-size:var(--fs-sm);"></textarea>
             </div>
+            <div class="row" style="justify-content:flex-start;">
+              <a id="cfg-script" role="button" tabindex="0" style="color:#0066cc; text-decoration:underline; cursor:pointer; font-size:var(--fs-sm);">실행 스크립트 보기</a>
+            </div>
           </div>
           <div class="modal-footer row end" style="gap:var(--space-2);">
             <button class="btn" id="cfg-cancel" type="button">취소</button>
@@ -596,6 +661,15 @@
 
       backdrop.querySelector("#cfg-close").addEventListener("click", close);
       backdrop.querySelector("#cfg-cancel").addEventListener("click", close);
+      // 하단 링크 — 현재 입력값(Team/변수/User Prompt) 기준 실행 스크립트를 팝업으로 조회
+      const showScript = () => {
+        const team = teamSel.value;
+        if (!promptEl.value.trim()) { window.Toast.show("User Prompt 를 입력하면 스크립트를 볼 수 있습니다", "warn"); return; }
+        openScriptModal("실행 스크립트 — RUN_TEAM", team, buildChatScript(team, varsEl.value, promptEl.value));
+      };
+      const scriptLink = backdrop.querySelector("#cfg-script");
+      scriptLink.addEventListener("click", showScript);
+      scriptLink.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); showScript(); } });
       backdrop.querySelector("#cfg-save").addEventListener("click", () => {
         const name = nameEl.value.trim();
         if (!name) { window.Toast.show("설정 이름을 입력하세요", "error"); nameEl.focus(); return; }

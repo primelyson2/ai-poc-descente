@@ -7,6 +7,7 @@
     profiles:  { render: () => window.Views.profileTest(),    label: "AI Profile Test" },
     agents:    { render: () => window.Views.agentTest(),      label: "AI Agent Team Test" },
     chat:      { render: () => window.Views.aiChat(),         label: "AI Chat" },
+    nl2sql_admin: { render: () => window.Views.nl2sqlAdmin(), label: "Select AI Test - 질문관리" },
     nl2sql:    { render: () => window.Views.nl2sql(),         label: "Select AI Test - Table list" },
     history:   { render: () => window.Views.history(),        label: "Select AI Test - History" },
     predefined:{ render: () => window.Views.predefinedQuery(), label: "Select AI Test - Predefined Query" },
@@ -41,6 +42,7 @@
     { route: "profiles",   label: "AI Profile Test" },
     { route: "agents",     label: "AI Agent Team Test" },
     { route: "objects",    label: "AI Profile Object Meta" },
+    { route: "nl2sql_admin", label: "Select AI Test - 질문관리" },
     { route: "nl2sql",     label: "Select AI Test - Table list" },
     { route: "history",    label: "Select AI Test - History" },
     { route: "predefined", label: "Select AI Test - Predefined Query" },
@@ -49,14 +51,49 @@
     { route: "chat",       label: "AI Chat" },
     { route: "api",        label: "API관리(개발중)" },
   ];
+  // ── 고객별 메뉴 프리셋 (URL ?customer=<key>) ────────────────────
+  // static/menu_presets.json 에 { <key>: { title, menus:[route,…] } } 로 정의.
+  // 파라미터가 있고 정의된 key 면: menus 화이트리스트만 노출(ALWAYS_ON 무시 →
+  // databases·access 도 목록에 없으면 숨김) + 헤더 타이틀 교체.
+  // 파라미터가 없거나 미정의 key 면 기존 동작(ALWAYS_ON + localStorage 숨김) 유지.
+  let PRESETS = {};
+  function activeCustomer() {
+    try { return new URLSearchParams(window.location.search).get("customer"); }
+    catch (_) { return null; }
+  }
+  function activePreset() {
+    const c = activeCustomer();
+    return c && PRESETS[c] ? PRESETS[c] : null;
+  }
+  async function loadPresets() {
+    try {
+      const res = await fetch("/static/menu_presets.json", { cache: "no-store" });
+      if (res.ok) PRESETS = (await res.json()) || {};
+    } catch (_) { PRESETS = {}; }
+  }
+  function applyBrandTitle() {
+    const preset = activePreset();
+    if (!preset || !preset.title) return; // 프리셋 없으면 index.html 기본값 유지
+    const el = document.getElementById("brand-title");
+    if (el) el.textContent = preset.title;
+    document.title = preset.title;
+  }
+
   function getHiddenMenus() {
     try {
       const arr = JSON.parse(localStorage.getItem(MENU_KEY) || "[]");
       return Array.isArray(arr) ? arr.filter((r) => !ALWAYS_ON.has(r)) : [];
     } catch (_) { return []; }
   }
+  // 라우트 노출 여부 — 프리셋 활성 시 화이트리스트만, 아니면 ALWAYS_ON+localStorage.
+  function isRouteVisible(route) {
+    const preset = activePreset();
+    if (preset) return Array.isArray(preset.menus) && preset.menus.includes(route);
+    if (ALWAYS_ON.has(route)) return true;
+    return !getHiddenMenus().includes(route);
+  }
   function isMenuHidden(route) {
-    return !ALWAYS_ON.has(route) && getHiddenMenus().includes(route);
+    return !isRouteVisible(route);
   }
   function isAnalyzeOn() {
     const v = localStorage.getItem(ANALYZE_KEY);
@@ -66,15 +103,19 @@
     return localStorage.getItem(COLEVAL_KEY) === "1"; // 기본 OFF — 체크할 때만 노출
   }
   function firstVisibleRoute() {
+    const preset = activePreset();
+    if (preset && Array.isArray(preset.menus)) {
+      const r = preset.menus.find((x) => ROUTES[x]);
+      return r || "databases";
+    }
     const hidden = getHiddenMenus();
     const m = MANAGED_MENUS.find((x) => !hidden.includes(x.route));
     return m ? m.route : "databases"; // 모두 숨겨도 항상 노출되는 관리 메뉴로 폴백
   }
   function applyMenuVisibility() {
-    const hidden = getHiddenMenus();
     document.querySelectorAll(".nav-item").forEach((el) => {
       const r = el.dataset.route;
-      el.style.display = r && hidden.includes(r) && !ALWAYS_ON.has(r) ? "none" : "";
+      el.style.display = r && !isRouteVisible(r) ? "none" : "";
     });
   }
 
@@ -182,6 +223,9 @@
     getHidden: getHiddenMenus,
     isHidden: isMenuHidden,
     apply: applyMenuVisibility,
+    // 고객 프리셋(URL ?customer=) — access_admin 이 안내·비활성화 판단에 사용.
+    activeCustomer,
+    activePreset,
     // nl2sql 하위 옵션(AI분석 버튼 노출) — Tool관리 메뉴관리의 자식 체크박스와 nl2sql 뷰가 함께 사용.
     isAnalyzeOn,
     setAnalyzeOn(on) {
@@ -204,7 +248,9 @@
     },
   };
 
-  function init() {
+  async function init() {
+    await loadPresets();     // 프리셋 로드 후에 메뉴 노출·타이틀을 결정한다.
+    applyBrandTitle();
     initNavToggle();
     applyMenuVisibility();
     document.querySelectorAll(".nav-item").forEach((el) => {
