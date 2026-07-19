@@ -221,6 +221,12 @@
     menuPanel.className = "panel";
     const managed = (window.MenuConfig && window.MenuConfig.MANAGED) || [];
     const hiddenMenus = (window.MenuConfig && window.MenuConfig.getHidden()) || [];
+    // 고객 프리셋(URL ?customer=) 활성 시엔 menu_presets.json 이 노출을 결정하므로
+    // 이 화면의 토글은 비활성화하고 안내만 보여준다.
+    const preset = (window.MenuConfig && window.MenuConfig.activePreset && window.MenuConfig.activePreset()) || null;
+    const presetKey = (window.MenuConfig && window.MenuConfig.activeCustomer && window.MenuConfig.activeCustomer()) || "";
+    const menuHidden = (route) =>
+      window.MenuConfig && window.MenuConfig.isHidden ? window.MenuConfig.isHidden(route) : hiddenMenus.includes(route);
     menuPanel.innerHTML = `
       <div class="panel-header"><h2>메뉴 관리</h2></div>
       <div class="panel-body">
@@ -229,27 +235,30 @@
             .map((m) => {
               const parent = `
           <label class="row" style="gap:8px; align-items:center; cursor:pointer;">
-            <input type="checkbox" data-menu-route="${m.route}" ${hiddenMenus.includes(m.route) ? "" : "checked"} />
+            <input type="checkbox" data-menu-route="${m.route}" ${menuHidden(m.route) ? "" : "checked"} ${preset ? "disabled" : ""} />
             <strong>${m.label}</strong>
           </label>`;
               if (m.route !== "nl2sql") return parent;
               // Select AI Test - Table list 하위 옵션(자식 체크박스)
               const analyzeOn = !window.MenuConfig || !window.MenuConfig.isAnalyzeOn || window.MenuConfig.isAnalyzeOn();
               const colEvalOn = !!(window.MenuConfig && window.MenuConfig.isColEvalOn && window.MenuConfig.isColEvalOn());
-              const parentVisible = !hiddenMenus.includes("nl2sql");
+              const parentVisible = !menuHidden("nl2sql");
+              const childDisabled = preset || !parentVisible ? "disabled" : "";
               return parent + `
           <label class="row" style="gap:8px; align-items:center; cursor:pointer; margin-left:26px;">
-            <input type="checkbox" data-menu-child="analyze" ${analyzeOn ? "checked" : ""} ${parentVisible ? "" : "disabled"} />
+            <input type="checkbox" data-menu-child="analyze" ${analyzeOn ? "checked" : ""} ${childDisabled} />
             <span>AI분석 <span class="muted" style="font-size:var(--fs-sm);">— AI분석·페르소나 관리 버튼 노출</span></span>
           </label>
           <label class="row" style="gap:8px; align-items:center; cursor:pointer; margin-left:26px;">
-            <input type="checkbox" data-menu-child="coleval" ${colEvalOn ? "checked" : ""} ${parentVisible ? "" : "disabled"} />
+            <input type="checkbox" data-menu-child="coleval" ${colEvalOn ? "checked" : ""} ${childDisabled} />
             <span>질문-조회컬럼 관련성평가 <span class="muted" style="font-size:var(--fs-sm);">— 컬럼 선택 팝업의 관련성 평가 노출</span></span>
           </label>`;
             })
             .join("")}
         </div>
-        <span class="field-hint">체크한 메뉴만 좌측 메뉴에 노출됩니다. <strong>Database 관리·Tool관리</strong> 는 항상 노출됩니다. (이 설정은 이 브라우저에 저장됩니다.)</span>
+        <span class="field-hint">${preset
+          ? `URL 고객 프리셋 <strong>'${escapeHtml(presetKey)}'</strong> 적용 중 — 좌측 메뉴는 <strong>menu_presets.json</strong> 에서 관리되며 이 화면에서는 변경할 수 없습니다.`
+          : "체크한 메뉴만 좌측 메뉴에 노출됩니다. <strong>Database 관리·Tool관리</strong> 는 항상 노출됩니다. (이 설정은 이 브라우저에 저장됩니다.)"}</span>
       </div>`;
     wrap.appendChild(menuPanel);
 

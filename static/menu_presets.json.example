@@ -1,0 +1,10 @@
+{
+  "company1": {
+    "title": "Company1 AI PoC",
+    "menus": ["profiles", "objects", "nl2sql", "history", "vpd", "chat"]
+  },
+  "demo": {
+    "title": "Oracle SELECT AI Demo",
+    "menus": ["profiles", "agents", "nl2sql", "chat"]
+  }
+}
