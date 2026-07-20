@@ -62,6 +62,13 @@ async def nl2sql_run(payload: dict, database: str = Depends(current_db)) -> dict
     columns_in = payload.get("columns") or ""
     sort_by = payload.get("sort_by") or ""
     mode = (payload.get("mode") or "dbms_cloud_ai").strip()
+    # 대화보관기간(일) — 7(기본)이 아니면 CREATE_CONVERSATION 에 retention_days 지정. 최소 7.
+    try:
+        retention_days = int(payload.get("retention_days"))
+    except (TypeError, ValueError):
+        retention_days = None
+    if retention_days is not None and retention_days < 7:
+        retention_days = 7
 
     if not profile_name:
         raise HTTPException(status_code=400, detail={"error": "profile_name required"})
@@ -88,38 +95,62 @@ async def nl2sql_run(payload: dict, database: str = Depends(current_db)) -> dict
         return {"sql": None, "columns": [], "rows": [],
                 "error": "profile_name 형식이 올바르지 않습니다 (select ai 모드)", "stage": "generate",
                 "gen_ms": 0, "exec_ms": None, "total_ms": 0}
+    # 두 모드 모두 한 커넥션에서 새 conversation 을 만들어 세션에 연결한 뒤 showsql 을 실행한다.
+    # → 질의/생성SQL 이 USER_CLOUD_AI_CONVERSATION_PROMPTS 에 영구 기록된다(Guide_Select-AI-History.md).
+    # conversation 설정은 best-effort — 미지원/권한없음이면 기록만 생략하고 생성은 계속(회귀 없음).
+    conversation_id = None
     t0 = time.perf_counter()
     try:
-        if mode == "select_ai":
-            # SET_PROFILE(세션) 후 'select ai showsql "<prompt>"' 실행 — 프롬프트는 free text 라 bind 불가.
-            # 같은 커넥션에서 SET_PROFILE→select ai 를 순서대로 실행해야 세션 프로파일이 적용된다.
-            pool = db.get_pool(database)
-            async with pool.acquire() as conn:
-                with conn.cursor() as cur:
-                    await cur.execute(f"BEGIN DBMS_CLOUD_AI.SET_PROFILE('{profile_name}'); END;")
+        pool = db.get_pool(database)
+        async with pool.acquire() as conn:
+            with conn.cursor() as cur:
+                try:
+                    cidv = cur.var(str)
+                    if retention_days is not None and retention_days != 7:
+                        # retention_days 는 int 로만 보간(%d) → 주입 없음.
+                        await cur.execute(
+                            "BEGIN :cid := DBMS_CLOUD_AI.CREATE_CONVERSATION(attributes => :attrs); END;",
+                            cid=cidv, attrs='{"retention_days":%d}' % retention_days,
+                        )
+                    else:
+                        await cur.execute("BEGIN :cid := DBMS_CLOUD_AI.CREATE_CONVERSATION(); END;", cid=cidv)
+                    conversation_id = cidv.getvalue()
+                    await cur.execute(
+                        "BEGIN DBMS_CLOUD_AI.SET_PROFILE(:pn); DBMS_CLOUD_AI.SET_CONVERSATION_ID(:cid); END;",
+                        pn=profile_name, cid=conversation_id,
+                    )
+                except Exception:  # noqa: BLE001 — 이력 기록 불가 환경(생성은 계속)
+                    conversation_id = None
+                if mode == "select_ai":
+                    # 'select ai showsql "<prompt>"' — 프롬프트는 free text 라 bind 불가. 세션 프로파일 필요.
+                    if not conversation_id:  # conversation 실패 시 세션 프로파일이 안 잡혔을 수 있어 보장.
+                        await cur.execute("BEGIN DBMS_CLOUD_AI.SET_PROFILE(:pn); END;", pn=profile_name)
                     await cur.execute('select ai showsql "' + merged + '"')
-                    r = await cur.fetchone()
-            raw = (r[0] if r else "") or ""
-        else:
-            row = await db.fetch_one(database, _GENERATE_SQL, p=merged, pn=profile_name, a="showsql")
-            raw = (row or {}).get("r") or ""
+                else:
+                    await cur.execute(
+                        "SELECT DBMS_CLOUD_AI.GENERATE(prompt=>:p, profile_name=>:pn, action=>'showsql') FROM dual",
+                        p=merged, pn=profile_name,
+                    )
+                r = await cur.fetchone()
+        raw = (r[0] if r else "") or ""
     except Exception as exc:
         gen_ms = int((time.perf_counter() - t0) * 1000)
         msg = first_line(exc)
         logger.warning("nl2sql generate failed: db=%s profile=%s mode=%s: %s", database, profile_name, mode, msg)
         return {"sql": None, "columns": [], "rows": [], "error": msg, "stage": "generate",
-                "gen_ms": gen_ms, "exec_ms": None, "total_ms": gen_ms}
+                "gen_ms": gen_ms, "exec_ms": None, "total_ms": gen_ms, "conversation_id": conversation_id}
     gen_ms = int((time.perf_counter() - t0) * 1000)
 
     sql = _clean_sql(raw)
     if not sql:
         return {"sql": None, "columns": [], "rows": [],
                 "error": "모델이 SQL 을 생성하지 못했습니다 (빈 응답)", "stage": "empty",
-                "gen_ms": gen_ms, "exec_ms": None, "total_ms": gen_ms}
+                "gen_ms": gen_ms, "exec_ms": None, "total_ms": gen_ms, "conversation_id": conversation_id}
     if not _is_read_only(sql):
         return {"sql": sql, "columns": [], "rows": [],
                 "error": "생성된 문장이 조회(SELECT/WITH) 가 아니라 실행을 거부했습니다",
-                "stage": "validate", "gen_ms": gen_ms, "exec_ms": None, "total_ms": gen_ms}
+                "stage": "validate", "gen_ms": gen_ms, "exec_ms": None, "total_ms": gen_ms,
+                "conversation_id": conversation_id}
 
     # 3) 생성된 SELECT 실행 — 정렬 컬럼 + 위치 기반 행. fetchmany 로 ROW_LIMIT 제한. (실행 시간 측정)
     t1 = time.perf_counter()
@@ -136,12 +167,14 @@ async def nl2sql_run(payload: dict, database: str = Depends(current_db)) -> dict
         msg = first_line(exc)
         logger.warning("nl2sql exec failed: db=%s profile=%s: %s", database, profile_name, msg)
         return {"sql": sql, "columns": [], "rows": [], "error": msg, "stage": "execute",
-                "gen_ms": gen_ms, "exec_ms": exec_ms, "total_ms": gen_ms + exec_ms}
+                "gen_ms": gen_ms, "exec_ms": exec_ms, "total_ms": gen_ms + exec_ms,
+                "conversation_id": conversation_id}
     exec_ms = int((time.perf_counter() - t1) * 1000)
 
     return {"sql": sql, "columns": columns, "rows": rows, "error": None,
             "truncated": len(rows) == ROW_LIMIT,
-            "gen_ms": gen_ms, "exec_ms": exec_ms, "total_ms": gen_ms + exec_ms}
+            "gen_ms": gen_ms, "exec_ms": exec_ms, "total_ms": gen_ms + exec_ms,
+            "conversation_id": conversation_id}
 
 
 # AI분석 — 조회 데이터를 프롬프트에 직렬화할 때의 문자수 상한(초과분은 행 단위로 절단).
