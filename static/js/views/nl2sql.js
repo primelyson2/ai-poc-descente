@@ -523,7 +523,7 @@
     refreshConfigs();
 
     panel.querySelector("#nl-config-add").addEventListener("click", () => {
-      openConfigModal("add", { name: "", profile: "", userPrompt: DEFAULT_USER_PROMPT, mode: "dbms_cloud_ai" }, refreshConfigs);
+      openConfigModal("add", { name: "", profile: "", userPrompt: DEFAULT_USER_PROMPT, mode: "dbms_cloud_ai", retentionDays: 7 }, refreshConfigs);
     });
     panel.querySelector("#nl-config-update").addEventListener("click", () => {
       const name = configSel.value;
@@ -673,6 +673,7 @@
       res = await window.API.post("/api/nl2sql/run", {
         profile_name: cfg.profile, user_prompt: cfg.userPrompt || "",
         message, columns, sort_by, mode: cfg.mode || "dbms_cloud_ai",
+        retention_days: cfg.retentionDays || 7,
       });
     } catch (err) {
       resultArea.innerHTML = "";
@@ -798,6 +799,13 @@
             </div>
           </div>
           <div class="stack-sm">
+            <label>대화보관기간</label>
+            <div class="row" style="gap:6px; align-items:center;">
+              <input type="number" id="cfg-retention" min="7" step="1" style="width:100px;"> <span>일</span>
+              <span class="muted" style="font-size:var(--fs-sm);">기본 7일. 7 이상만. 7이 아니면 CREATE_CONVERSATION 에 retention_days 지정.</span>
+            </div>
+          </div>
+          <div class="stack-sm">
             <label>User Prompt</label>
             <textarea id="cfg-prompt" rows="10" style="font-family:var(--font-mono); font-size:var(--fs-sm);"></textarea>
             <span class="muted" style="font-size:var(--fs-sm); line-height:1.7;">
@@ -826,8 +834,10 @@
     const nameEl = backdrop.querySelector("#cfg-name");
     const profileSel = backdrop.querySelector("#cfg-profile");
     const promptEl = backdrop.querySelector("#cfg-prompt");
+    const retEl = backdrop.querySelector("#cfg-retention");
     nameEl.value = cfg.name || "";
     promptEl.value = cfg.userPrompt || "";
+    retEl.value = (cfg.retentionDays != null ? cfg.retentionDays : 7);
 
     // 호출Mode 라디오 — 저장값(없으면 dbms_cloud_ai) 반영. getMode()로 현재 선택 읽음.
     const initMode = cfg.mode === "select_ai" ? "select_ai" : "dbms_cloud_ai";
@@ -872,40 +882,63 @@
       const commonNote =
         "-- ##조회할 컬럼##, ##정렬기준##, ##메시지## 는 실행 시 화면 입력값으로 치환됩니다.\n" +
         "-- ##기준일## 은 실행 시 오늘 날짜(YYYYMMDD)로 자동 치환됩니다.\n";
+      // 이력 기록 머리말 — 새 conversation 을 만들어 세션에 연결하면 질의/생성SQL 이
+      // USER_CLOUD_AI_CONVERSATION_PROMPTS 에 영구 기록된다(앱 [실행]과 동일 방식).
+      // 대화보관기간이 7일(기본)이 아니면 CREATE_CONVERSATION 에 retention_days 를 지정.
+      const rd = parseInt(retEl.value, 10);
+      const createConv = (Number.isFinite(rd) && rd !== 7)
+        ? "  :cid := DBMS_CLOUD_AI.CREATE_CONVERSATION(attributes => '{\"retention_days\":" + rd + "}');\n"
+        : "  :cid := DBMS_CLOUD_AI.CREATE_CONVERSATION();\n";
+      const convHead =
+        "-- 실행 이력 기록: 새 conversation 생성 후 세션에 연결\n" +
+        "VAR cid VARCHAR2(100)\n" +
+        "BEGIN\n" +
+        createConv +
+        "  DBMS_CLOUD_AI.SET_PROFILE('" + profile + "');\n" +
+        "  DBMS_CLOUD_AI.SET_CONVERSATION_ID(:cid);\n" +
+        "END;\n" +
+        "/\n";
+      const convTail =
+        "\n-- 기록 확인:\n" +
+        "-- SELECT prompt, prompt_response, created FROM user_cloud_ai_conversation_prompts\n" +
+        "--  WHERE conversation_id = :cid ORDER BY created;";
       let script;
       if (getMode() === "select_ai") {
         script =
           "-- Select AI Test - Table list 실행 스크립트 (호출Mode: select ai)\n" +
-          commonNote +
-          "EXEC DBMS_CLOUD_AI.SET_PROFILE('" + profile + "');\n" +
+          commonNote + convHead +
           "select ai showsql \n" +
-          '"' + (promptEl.value || "") + '"\n' +
-          "-- 위 select ai showsql 이 생성한 SELECT 문을 앱이 실행해 결과(최대 100행)를 표시합니다.";
+          '"' + (promptEl.value || "") + '";\n' +
+          "-- 위 select ai showsql 이 생성한 SELECT 문을 앱이 실행해 결과(최대 100행)를 표시합니다." +
+          convTail;
       } else {
         // q-quote 리터럴(q'~ … ~') — 내부 작은따옴표를 '' 로 이스케이프할 필요가 없다.
         const lit = "q'~" + (promptEl.value || "") + "~'";
         script =
           "-- Select AI Test - Table list 실행 스크립트 (호출Mode: dbms_cloud_ai)\n" +
-          commonNote +
+          commonNote + convHead +
           "SELECT DBMS_CLOUD_AI.GENERATE(\n" +
           "         prompt       => " + lit + ",\n" +
           "         profile_name => '" + profile + "',\n" +
           "         action       => 'showsql'\n" +
           "       ) AS r\n" +
           "FROM dual;\n" +
-          "-- 위에서 생성된 SELECT 문을 앱이 실행해 결과(최대 100행)를 표시합니다.";
+          "-- 위에서 생성된 SELECT 문을 앱이 실행해 결과(최대 100행)를 표시합니다." +
+          convTail;
       }
       openScriptModal(script);
     });
     backdrop.querySelector("#cfg-save").addEventListener("click", () => {
       const name = nameEl.value.trim();
       if (!name) { window.Toast.show("설정 이름을 입력하세요", "error"); nameEl.focus(); return; }
+      const rd = parseInt(retEl.value, 10);
+      if (!Number.isFinite(rd) || rd < 7) { window.Toast.show("대화보관기간은 7 이상이어야 합니다", "error"); retEl.focus(); return; }
       const list = loadConfigs();
       if (list.some((c) => c.name === name && c.name !== origName)) {
         window.Toast.show("이미 있는 이름입니다", "error");
         return;
       }
-      const entry = { name, profile: profileSel.value, userPrompt: promptEl.value, mode: getMode() };
+      const entry = { name, profile: profileSel.value, userPrompt: promptEl.value, mode: getMode(), retentionDays: rd };
       if (mode === "edit") {
         const idx = list.findIndex((c) => c.name === origName);
         if (idx >= 0) list[idx] = entry; else list.push(entry);
