@@ -139,7 +139,12 @@
         <div class="row" style="align-items:flex-start;">
           <label style="width:90px; padding-top:6px;">Annotation</label>
           <div id="om-tbl-annot-display" style="flex:1; display:flex; flex-direction:column; gap:4px; align-items:flex-start;"></div>
-          <button class="btn btn-primary" data-action="manage-tbl-annot" ${data.annotations_supported ? "" : "disabled"}>+ Annotation 추가</button>
+          <div style="display:flex; flex-direction:column; gap:var(--space-2); align-items:stretch;">
+            <button class="btn btn-primary" data-action="manage-tbl-annot" ${data.annotations_supported ? "" : "disabled"}>+ Annotation 추가</button>
+            <button class="btn" data-action="download-tbl-annotations" title="테이블 레벨 Annotation 을 Key, Value 로 xlsx 다운로드" ${data.annotations_supported ? "" : "disabled"}>Annotation Download</button>
+            <input type="file" id="om-tbl-annot-upload-file" accept=".xlsx,.xls" style="display:none;" />
+            <button class="btn" data-action="upload-tbl-annotations" title="Key, Value xlsx 업로드 — 즉시 DB 반영(동일 키는 값 Update)" ${data.annotations_supported ? "" : "disabled"}>Annotation Upload</button>
+          </div>
         </div>
       `;
       body.appendChild(tableLvl);
@@ -224,6 +229,21 @@
           });
         });
       }
+      // 테이블 레벨 Annotation Download: Key/Value 2열 xlsx 로 내보낸다(템플릿 겸 백업).
+      const tblAnnDownBtn = tableLvl.querySelector('[data-action="download-tbl-annotations"]');
+      if (tblAnnDownBtn && !tblAnnDownBtn.disabled) {
+        tblAnnDownBtn.addEventListener("click",
+          () => handleTableAnnotationDownload(tableName, data.table.annotations || {}));
+      }
+      // 테이블 레벨 Annotation Upload: Key/Value xlsx 를 읽어 즉시 DB 반영(ADD OR REPLACE) 후 새로고침.
+      const tblAnnUploadFile = tableLvl.querySelector("#om-tbl-annot-upload-file");
+      const tblAnnUpBtn = tableLvl.querySelector('[data-action="upload-tbl-annotations"]');
+      if (tblAnnUpBtn && !tblAnnUpBtn.disabled) {
+        tblAnnUpBtn.addEventListener("click", () => tblAnnUploadFile.click());
+        tblAnnUploadFile.addEventListener("change", (ev) =>
+          handleTableAnnotationUpload(ev, owner, tableName, () => loadDetail(owner, tableName)));
+      }
+
       bulkRow.querySelector('[data-action="bulk-comment"]').addEventListener("click",
         () => bulkSaveComment(body, owner, tableName, dirty));
 
@@ -947,6 +967,103 @@
       } catch (e) {
         const d = e && e.payload && e.payload.detail;
         const at = d && d.failed_column ? ` (${d.failed_column} 에서 중단)` : "";
+        window.Toast.show(errMsg(e, "Annotation 업로드 실패") + at, "error");
+      } finally {
+        input.value = "";
+      }
+    };
+    reader.onerror = () => {
+      window.Toast.show("파일을 읽지 못했습니다", "error");
+      input.value = "";
+    };
+    reader.readAsArrayBuffer(file);
+  }
+
+  // ───── 테이블 레벨 Annotation xlsx 다운로드/업로드 ─────
+  // 테이블(객체) 레벨 Annotation 을 Key / Value 2열로 내보낸다(Upload 템플릿과 동일 형식).
+  function handleTableAnnotationDownload(tableName, annotations) {
+    if (typeof XLSX === "undefined") {
+      window.Toast.show("xlsx 라이브러리 로드 실패 — 새로고침 후 다시 시도하세요", "error");
+      return;
+    }
+    const aoa = [["Key", "Value"]];
+    Object.keys(annotations || {}).forEach((k) =>
+      aoa.push([k, annotations[k] == null ? "" : String(annotations[k])]));
+    try {
+      const ws = XLSX.utils.aoa_to_sheet(aoa);
+      ws["!cols"] = [{ wch: 24 }, { wch: 80 }];
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Sheet1");
+      XLSX.writeFile(wb, `table_annotation_${tableName}.xlsx`);
+      if (aoa.length === 1) {
+        window.Toast.show("테이블 Annotation 이 없어 헤더만 내보냈습니다(템플릿)", "warn");
+      } else {
+        window.Toast.show(`테이블 Annotation ${aoa.length - 1}건을 xlsx 로 내보냈습니다`, "success");
+      }
+    } catch (e) {
+      window.Toast.show("다운로드 실패: " + (e.message || ""), "error");
+    }
+  }
+
+  // Key / Value xlsx 를 읽어 행마다 테이블 레벨 Annotation 을 즉시 DB 에 반영한다.
+  // 기존 PUT /{owner}/{table}/annotation (ALTER ... ANNOTATIONS ADD OR REPLACE) 를
+  // 행 단위로 호출 → 동일 키는 값 Update. 실패 시 해당 Key 에서 중단하고 원인 노출.
+  async function handleTableAnnotationUpload(ev, owner, tableName, reload) {
+    const input = ev.target;
+    const file = input.files && input.files[0];
+    if (!file) return;
+    if (typeof XLSX === "undefined") {
+      window.Toast.show("xlsx 라이브러리 로드 실패 — 새로고침 후 다시 시도하세요", "error");
+      input.value = "";
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = async () => {
+      let curKey = "";
+      try {
+        const wb = XLSX.read(reader.result, { type: "array" });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        if (!ws) throw new Error("시트를 찾을 수 없습니다");
+        const rows = XLSX.utils.sheet_to_json(ws, { header: 1, blankrows: false });
+        if (!rows.length) throw new Error("빈 파일입니다");
+
+        const header = (rows[0] || []).map((h) => String(h == null ? "" : h).trim().toUpperCase());
+        const ki = header.indexOf("KEY");
+        const vi = header.indexOf("VALUE");
+        if (ki === -1 || vi === -1) {
+          window.Toast.show("헤더(Key, Value)를 찾을 수 없습니다", "error");
+          return;
+        }
+
+        const items = [];
+        const skipped = [];
+        for (let r = 1; r < rows.length; r++) {
+          const row = rows[r] || [];
+          const key = row[ki] == null ? "" : String(row[ki]).trim();
+          const val = row[vi] == null ? "" : String(row[vi]);
+          if (!key) { if (val) skipped.push(r + 1); continue; }
+          items.push({ name: key, value: val });
+        }
+        if (!items.length) {
+          window.Toast.show("반영할 Annotation 행이 없습니다(Key 필요)", "warn");
+          return;
+        }
+
+        // 행 단위 순차 반영 (테이블 레벨 annotation 은 소수라 순차 PUT 로 충분)
+        for (const it of items) {
+          curKey = it.name;
+          await window.API.put(
+            `/api/objects/${encodeURIComponent(owner)}/${encodeURIComponent(tableName)}/annotation`,
+            { name: it.name, value: it.value }
+          );
+        }
+        window.Toast.show(`테이블 Annotation ${items.length}건을 DB 에 반영했습니다`, "success");
+        if (skipped.length) {
+          window.Toast.show(`Key 누락으로 건너뛴 행: ${skipped.slice(0, 10).join(", ")}`, "warn");
+        }
+        if (typeof reload === "function") await reload();
+      } catch (e) {
+        const at = curKey ? ` ('${curKey}' 에서 중단)` : "";
         window.Toast.show(errMsg(e, "Annotation 업로드 실패") + at, "error");
       } finally {
         input.value = "";

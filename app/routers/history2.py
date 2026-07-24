@@ -42,6 +42,7 @@ async def prompts(
     text: str = "",
     profile: str = "",
     action: str = "",
+    limit: int = 20,
     database: str = Depends(current_db),
 ) -> list[dict]:
     """USER_CLOUD_AI_CONVERSATION_PROMPTS — SELECT AI 대화 질의/응답 이력.
@@ -51,10 +52,11 @@ async def prompts(
       · text      : prompt/prompt_response 부분일치(LIKE, 대소문자 무시).
       · profile   : profile_name 정확일치.
       · action    : prompt_action 정확일치(SHOWSQL/RUNSQL/CHAT/…).
+      · limit     : 최신순 반환 최대 건수(기본 20).
     뷰가 없거나 23ai 미만이면 ORA 오류가 그대로 전파된다.
     """
     conds: list[str] = []
-    binds: dict = {}
+    binds: dict = {"lim": limit}
 
     # created 는 TIMESTAMP WITH TIME ZONE — thin mode 회피 위해 CAST(... AS TIMESTAMP).
     # 바인드명 start/end 는 예약어(START/END) → ORA-01745. sdt/edt 사용.
@@ -93,7 +95,8 @@ async def prompts(
         "       prompt, prompt_response, CAST(created AS TIMESTAMP) AS created, "
         "       client_identifier, sid "
         "  FROM user_cloud_ai_conversation_prompts" + where +
-        " ORDER BY created DESC"
+        " ORDER BY created DESC "
+        " FETCH FIRST :lim ROWS ONLY"
     )
     return await db.fetch_all(database, sql, **binds)
 

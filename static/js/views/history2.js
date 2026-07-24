@@ -94,13 +94,13 @@
     const host = document.getElementById("h2-list");
     if (!host) return;
     const val = (id) => (document.getElementById(id)?.value || "").trim();
-    const qs = new URLSearchParams();
+    const qs = new URLSearchParams({ limit: "20" });
     if (val("h2-start")) qs.set("start", val("h2-start"));
     if (val("h2-end")) qs.set("end", val("h2-end"));
     if (val("h2-text")) qs.set("text", val("h2-text"));
     if (val("h2-profile")) qs.set("profile", val("h2-profile"));
     if (val("h2-action")) qs.set("action", val("h2-action"));
-    const url = "/api/history2/prompts" + (qs.toString() ? "?" + qs.toString() : "");
+    const url = "/api/history2/prompts?" + qs.toString();
     host.innerHTML = '<div class="empty-state"><span class="spinner"></span> 조회 중...</div>';
     let rows;
     try { rows = await window.API.get(url); }
