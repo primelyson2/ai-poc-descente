@@ -8,6 +8,7 @@
 실행:
 - POST /agents/teams/run                           CREATE_CONVERSATION + RUN_TEAM (CLOB OUT)
 - GET  /agents/conversations/{conv_id}/timeline    실행 이력 기반 단계별 타임라인 + raw 로그
+- GET  /agents/team-history                         Agent History 목록 (USER_AI_AGENT_TEAM_HISTORY 최근순)
 
 스키마 메모 (ailakehouse 실제 컬럼 기준):
   USER_AI_AGENT_TEAMS         AGENT_TEAM_ID, AGENT_TEAM_NAME, STATUS, DESCRIPTION (CLOB)
@@ -201,6 +202,92 @@ async def team_detail(name: str, database: str = Depends(current_db)) -> dict:
     }
 
 
+# 주의: 정적 경로는 반드시 아래 동적 /{name} 라우트보다 '먼저' 선언해야 한다.
+# 그렇지 않으면 /agents/team-history 가 /{name}(name='team-history')에 먼저 매칭된다.
+def _hist_ms(td) -> int | None:
+    return int(td.total_seconds() * 1000) if td is not None else None
+
+
+def _parse_dt(s: str):
+    """datetime-local(YYYY-MM-DDTHH:MM) 등 ISO 계열 문자열 → datetime. 빈값이면 None."""
+    from datetime import datetime
+    s = (s or "").strip()
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(s)
+    except ValueError:
+        for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"):
+            try:
+                return datetime.strptime(s, fmt)
+            except ValueError:
+                continue
+    return None
+
+
+@router.get("/team-history")
+async def team_history(
+    limit: int = 20,
+    question: str = "",
+    start: str = "",
+    end: str = "",
+    database: str = Depends(current_db),
+) -> list[dict]:
+    """Agent History 화면 목록 — USER_AI_AGENT_TEAM_HISTORY 를 최근순으로.
+    상세는 각 행의 conversation_id 로 /conversations/{cid}/timeline 을 재사용한다.
+    필터:
+      · question : 질문(해당 conversation 첫 user 프롬프트) 부분일치(LIKE, 대소문자 무시)
+      · start/end: start_date(UTC) 범위(양끝 포함). datetime-local ISO 문자열.
+    TIMESTAMP WITH TIME ZONE 은 thin mode 미지원 → CAST AS TIMESTAMP (UTC).
+    question 서브쿼리를 WHERE 와 SELECT 양쪽에서 쓰기 위해 인라인 뷰로 감쌌다.
+    바인드명 start/end 는 Oracle 예약어(START/END) → sdt/edt 사용."""
+    conds: list[str] = []
+    binds: dict = {"lim": limit}
+
+    q = (question or "").strip()
+    if q:
+        conds.append("UPPER(question) LIKE UPPER(:qpat)")
+        binds["qpat"] = f"%{q}%"
+
+    s_dt = _parse_dt(start)
+    if start.strip() and s_dt is None:
+        raise HTTPException(status_code=400, detail={"error": f"시작일시 형식 오류: {start}"})
+    if s_dt is not None:
+        conds.append("start_date >= :sdt")
+        binds["sdt"] = s_dt
+
+    e_dt = _parse_dt(end)
+    if end.strip() and e_dt is None:
+        raise HTTPException(status_code=400, detail={"error": f"종료일시 형식 오류: {end}"})
+    if e_dt is not None:
+        conds.append("start_date <= :edt")
+        binds["edt"] = e_dt
+
+    where = (" WHERE " + " AND ".join(conds)) if conds else ""
+    rows = await db.fetch_all(
+        database,
+        "SELECT * FROM ("
+        "  SELECT h.team_exec_id, h.team_name, h.state, h.conversation_id, "
+        "         CAST(SYS_EXTRACT_UTC(h.start_date) AS TIMESTAMP) AS start_date, "
+        "         CAST(SYS_EXTRACT_UTC(h.end_date)   AS TIMESTAMP) AS end_date, "
+        "         (SELECT prompt FROM ("
+        "            SELECT prompt FROM USER_CLOUD_AI_CONVERSATION_PROMPTS p "
+        "             WHERE p.conversation_id = h.conversation_id AND p.prompt IS NOT NULL "
+        "             ORDER BY created) WHERE ROWNUM = 1) AS question "
+        "    FROM USER_AI_AGENT_TEAM_HISTORY h "
+        ")" + where +
+        " ORDER BY start_date DESC "
+        " FETCH FIRST :lim ROWS ONLY",
+        **binds,
+    )
+    for r in rows:  # elapsed_ms 파생 (thin mode: 이미 naive TIMESTAMP → timedelta)
+        s, e = r.get("start_date"), r.get("end_date")
+        r["elapsed_ms"] = _hist_ms(e - s) if s and e else None
+        r["start_date"] = str(s) if s else ""
+        r["end_date"] = str(e) if e else ""
+    return rows
+
+
 @router.get("/{name}")
 async def agent_detail(name: str, database: str = Depends(current_db)) -> dict:
     head_rows, attrs = await asyncio.gather(
@@ -362,6 +449,90 @@ async def _pick_profile(database: str, prefer: str | None) -> str | None:
     return rows[0]["profile_name"] if rows else None
 
 
+# ====================================================================
+# Tool History [SQL조회] — runsql/narrate 로 실행된 tool 호출의 QUERY 를
+#   그 tool 의 AI profile 로 action=showsql 재실행해 "생성 SQL" 을 돌려준다.
+#   (실행 결과가 아니라 지금 이 profile 로 생성되는 SQL — 참고용)
+# ====================================================================
+_GENERATE_SHOWSQL = (
+    "SELECT DBMS_CLOUD_AI.GENERATE(prompt => :p, profile_name => :pn, action => 'showsql') AS r "
+    "FROM dual"
+)
+
+
+def _clean_sql(raw: str) -> str:
+    """showsql 반환값 정리 — 마크다운 펜스/후행 세미콜론·공백 제거. (chat_tl._clean_sql 동일)"""
+    s = (raw or "").strip()
+    if s.startswith("```"):
+        s = s.strip("`").strip()
+        if s[:3].lower() == "sql":
+            s = s[3:].lstrip()
+    return s.rstrip().rstrip(";").rstrip()
+
+
+def _showsql_script(query: str, profile_name: str) -> str:
+    """DB 에서 그대로 실행 가능한 showsql 호출 스크립트 — 값의 작은따옴표는 '' 로 이스케이프."""
+    q = (query or "").replace("'", "''")
+    pn = (profile_name or "").replace("'", "''")
+    return (
+        "SELECT DBMS_CLOUD_AI.GENERATE(\n"
+        "    prompt       => '" + q + "',\n"
+        "    profile_name => '" + pn + "',\n"
+        "    action       => 'showsql') AS sql_text\n"
+        "FROM dual;"
+    )
+
+
+@router.post("/tool-showsql")
+async def tool_showsql(payload: dict, database: str = Depends(current_db)) -> dict:
+    tool_name = (payload.get("tool_name") or "").strip()
+    query = (payload.get("query") or "").strip()
+    if not tool_name:
+        raise HTTPException(status_code=400, detail={"error": "tool_name required"})
+    if not query:
+        raise HTTPException(status_code=400, detail={"error": "query required"})
+
+    # 1) tool 의 AI profile 해석 — tool_params JSON 의 profile_name (chat_tl 선례)
+    row = await db.fetch_one(
+        database,
+        "SELECT attribute_value FROM USER_AI_AGENT_TOOL_ATTRIBUTES "
+        "WHERE tool_name = :name AND attribute_name = 'tool_params'",
+        name=tool_name,
+    )
+    profile_name = ""
+    if row and row.get("attribute_value"):
+        try:
+            profile_name = str(json.loads(row["attribute_value"]).get("profile_name") or "").strip()
+        except Exception:
+            profile_name = ""
+    if not profile_name:
+        return {"tool_name": tool_name, "profile_name": None, "query": query,
+                "sql": None, "script": None,
+                "error": f"tool '{tool_name}' 의 profile 을 찾지 못했습니다"}
+
+    # DB 에서 그대로 실행 가능한 호출 스크립트 (실행 여부와 무관하게 항상 제공)
+    script = _showsql_script(query, profile_name)
+
+    # 2) 그 profile 로 showsql 재실행 (vpd.showsql 형태 — 스칼라 GENERATE + CLOB(str) 읽기)
+    try:
+        pool = db.get_pool(database)
+        async with pool.acquire() as conn:
+            with conn.cursor() as cur:
+                await cur.execute(_GENERATE_SHOWSQL, {"p": query, "pn": profile_name})
+                r = await cur.fetchone()
+        sql = _clean_sql((r[0] if r else "") or "")
+    except Exception as exc:
+        msg = _first_line(exc)
+        logger.warning("tool-showsql GENERATE failed: db=%s tool=%s profile=%s: %s",
+                       database, tool_name, profile_name, msg)
+        return {"tool_name": tool_name, "profile_name": profile_name, "query": query,
+                "sql": None, "script": script, "error": msg}
+
+    return {"tool_name": tool_name, "profile_name": profile_name, "query": query,
+            "sql": sql, "script": script,
+            "error": None if sql else "생성된 SQL 이 비어 있습니다"}
+
+
 @router.post("/suggest-attribute")
 async def suggest_attribute(payload: dict, database: str = Depends(current_db)) -> dict:
     kind = (payload.get("kind") or "").strip().lower()
@@ -435,6 +606,8 @@ async def analyze_thinking(payload: dict, database: str = Depends(current_db)) -
     if not profile_name:
         raise HTTPException(status_code=400, detail={"error": "사용 가능한 AI Profile 이 없습니다"})
 
+    # 주의: 아래 prompt 템플릿/절단(_ANALYZE_MAXLEN)을 바꾸면
+    # 프런트 미리보기(agent_test.js:buildAnalyzePromptPreview)도 함께 맞출 것.
     context_block = f"\n\n[팀 구성(Team / Agent / Task / Tool)]\n{context}" if context else ""
     prompt = (
         "당신은 Oracle AI Agent Team 의 실행 과정을 분석하는 전문가입니다.\n"

@@ -9,6 +9,11 @@
 
   // 숫자 천단위 콤마 (null/빈값은 그대로).
   const nf = (v) => (v == null || v === "") ? v : Number(v).toLocaleString();
+  // 표 셀 표시용 — 긴 값은 앞 n자까지만(기본 50) 보이고 나머지는 … 로 축약(복사는 원문 유지).
+  const truncCell = (v, n = 50) => {
+    const s = v == null ? "" : String(v);
+    return s.length > n ? s.slice(0, n) + "…" : s;
+  };
 
   async function render() {
     const main = document.getElementById("main");
@@ -304,32 +309,46 @@ END;
     return parts.join("\n\n");
   }
 
-  function showSqlModal(title, sql) {
+  // script(선택): 있으면 SQL 아래에 "showsql 호출 스크립트" 섹션을 함께 표시(각각 복사 버튼).
+  function showSqlModal(title, sql, script) {
+    const preStyle = "white-space:pre; margin:0; font-family:var(--font-mono); font-size:var(--fs-sm); background:var(--surface-alt); padding:var(--space-3); border-radius:var(--radius-md); overflow:auto;";
     const backdrop = document.createElement("div");
     backdrop.className = "modal-backdrop";
+    const labelStyle = "display:block; margin-bottom:var(--space-2); color:var(--text-muted); font-size:var(--fs-sm);";
+    const scriptSection = script ? `
+          <label style="${labelStyle} margin-top:var(--space-3);">호출 스크립트 (DB 에서 실행 가능)
+            <button class="btn btn-ghost btn-mini" id="at-sql-script-copy" style="float:right;">copy</button>
+          </label>
+          <pre id="at-sql-script-pre" style="${preStyle}"></pre>` : "";
     backdrop.innerHTML = `
       <div class="modal" style="width:820px;">
         <div class="modal-header">
           <h2>${window.escapeHtml(title)}</h2>
           <div class="row">
-            <button class="btn btn-ghost" id="at-sql-copy">복사</button>
             <button class="btn btn-ghost" id="at-sql-close">✕</button>
           </div>
         </div>
         <div class="modal-body">
-          <pre id="at-sql-pre" style="white-space:pre; margin:0; font-family:var(--font-mono); font-size:var(--fs-sm); background:var(--surface-alt); padding:var(--space-3); border-radius:var(--radius-md); overflow:auto;"></pre>
+          <label style="${labelStyle}">생성 SQL
+            <button class="btn btn-ghost btn-mini" id="at-sql-copy" style="float:right;">copy</button>
+          </label>
+          <pre id="at-sql-pre" style="${preStyle}"></pre>
+          ${scriptSection}
         </div>
       </div>
     `;
     backdrop.querySelector("#at-sql-pre").textContent = sql;
+    if (script) backdrop.querySelector("#at-sql-script-pre").textContent = script;
     const close = () => { backdrop.remove(); document.removeEventListener("keydown", onKey); };
     const onKey = (e) => { if (e.key === "Escape") close(); };
     // 바깥 클릭으로는 닫지 않음 — 닫기는 X 버튼으로만 (실수 닫힘 방지)
     backdrop.querySelector("#at-sql-close").addEventListener("click", close);
-    backdrop.querySelector("#at-sql-copy").addEventListener("click", async () => {
-      const ok = await copyToClipboard(sql);
+    const copyWith = async (text) => {
+      const ok = await copyToClipboard(text);
       window.Toast.show(ok ? "클립보드에 복사됨" : "복사 실패 — 직접 선택해 복사하세요", ok ? "success" : "error");
-    });
+    };
+    backdrop.querySelector("#at-sql-copy").addEventListener("click", () => copyWith(sql));
+    if (script) backdrop.querySelector("#at-sql-script-copy").addEventListener("click", () => copyWith(script));
     document.addEventListener("keydown", onKey);
     document.body.appendChild(backdrop);
   }
@@ -1021,6 +1040,29 @@ END;
     return lines.join("\n");
   }
 
+  // 분석 Prompt 미리보기 — 백엔드 agents.py:analyze_thinking 의 prompt 조립과 동일 규칙.
+  // (백엔드 템플릿/절단 12000자 를 바꾸면 여기도 함께 맞출 것)
+  function buildAnalyzePromptPreview(teamName, contextText, thinkingText) {
+    const MAXLEN = 12000;
+    const cut = (s) => (s.length > MAXLEN ? s.slice(0, MAXLEN) + "\n…(생략)" : s);
+    const context = cut((contextText || "").trim());
+    const thinking = cut((thinkingText || "").trim());
+    const contextBlock = context ? `\n\n[팀 구성(Team / Agent / Task / Tool)]\n${context}` : "";
+    return (
+      "당신은 Oracle AI Agent Team 의 실행 과정을 분석하는 전문가입니다.\n" +
+      `아래는 팀 '${teamName || "(미상)"}' 의 구성 정보와 실제 실행 과정(Thinking) 입니다.\n` +
+      "다음 순서로 한국어로 분석해 주세요.\n" +
+      "1. 실행 과정 요약: 각 단계에서 어떤 Agent/Task/Tool 이 무엇을 시도했는지 단계별로 정리.\n" +
+      "2. 평가: 팀 구성(역할/지시문/도구)에 비추어 의도대로 동작했는지, 불필요·비효율 단계가 있었는지.\n" +
+      "3. 오류 분석: ORA-오류, 실패한 Tool 호출, 잘못된 SQL/입력 등 문제가 있으면 그 **원인**을 " +
+      "구체적으로 진단하고 수정 방향을 제시하세요. 오류가 없으면 '발견된 오류 없음' 이라고 명시.\n" +
+      "4. 개선 제안: 팀 구성이나 프롬프트를 어떻게 바꾸면 더 좋아질지 핵심만.\n" +
+      "마크다운 제목/목록을 사용해 가독성 있게 작성하세요." +
+      `${contextBlock}\n\n` +
+      `[실행 과정(Thinking)]\n${thinking}`
+    );
+  }
+
   async function openThinkingAnalyzeModal(teamName, thinkingText) {
     if (!teamName) { window.Toast.show("Team 을 선택하세요", "warn"); return; }
     if (!thinkingText) {
@@ -1043,6 +1085,10 @@ END;
             <button class="btn btn-primary" id="ata-run" disabled>분석 시작</button>
             <button class="btn btn-ghost btn-mini" id="ata-copy" disabled>복사</button>
           </div>
+          <details id="ata-prompt-wrap" style="margin-bottom:var(--space-3);">
+            <summary style="cursor:pointer; font-size:var(--fs-sm); color:var(--text-muted);">분석에 사용하는 Prompt 보기</summary>
+            <pre id="ata-prompt" style="white-space:pre-wrap; word-break:break-word; margin:var(--space-2) 0 0; font-family:var(--font-mono); font-size:var(--fs-sm); background:var(--surface-alt); padding:var(--space-2) var(--space-3); border-radius:var(--radius-md); max-height:40vh; overflow:auto;">(팀 구성 로딩 중…)</pre>
+          </details>
           <div class="muted" style="font-size:var(--fs-sm); margin-bottom:var(--space-3);">
             선택한 팀의 <b>Team / Agent / Task / Tool</b> 정보와 위 <b>Thinking 과정</b> 을 함께 분석합니다. 실행 중 오류가 있으면 원인까지 진단합니다. <b>SELECT AI(chat)</b> 로 수행됩니다.
           </div>
@@ -1088,6 +1134,10 @@ END;
 
     const contextText = team ? buildTeamContextText(team, tree.tools_meta || {}) : "";
     runBtn.disabled = !pool.length;
+
+    // 분석 Prompt 미리보기 채우기 (기본 접힘 — <details> 기본 상태)
+    const promptPre = backdrop.querySelector("#ata-prompt");
+    if (promptPre) promptPre.textContent = buildAnalyzePromptPreview(teamName, contextText, thinkingText);
 
     let lastAnalysis = "";
     runBtn.addEventListener("click", async () => {
@@ -1363,6 +1413,41 @@ END;
     }
   }
 
+  // Tool History 행의 [SQL조회] 셀 — input JSON 의 ACTION 이 runsql/narrate 면 버튼, 아니면 공란.
+  // 클릭 시 그 tool 의 AI profile 로 QUERY 를 showsql 재실행해 생성 SQL 을 팝업으로 보여준다.
+  function buildSqlLookupCell(row) {
+    let payload = null;
+    try { payload = JSON.parse(row && row.input); } catch (e) { payload = null; }
+    const action = payload && String(payload.ACTION || payload.action || "").toLowerCase();
+    if (!payload || (action !== "runsql" && action !== "narrate")) {
+      return document.createElement("span");  // 비대상 행 — 빈 셀
+    }
+    const toolName = String(payload.TOOL_NAME || payload.tool_name || row.tool_name || "").trim();
+    const query = String(payload.QUERY || payload.query || "").trim();
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "btn btn-ghost btn-mini";
+    btn.textContent = "SQL조회";
+    if (!toolName || !query) { btn.disabled = true; btn.title = "TOOL_NAME/QUERY 를 찾을 수 없습니다"; return btn; }
+    btn.addEventListener("click", async () => {
+      const orig = btn.textContent;
+      btn.disabled = true; btn.textContent = "조회 중…";
+      try {
+        const res = await window.API.post("/api/agents/tool-showsql", { tool_name: toolName, query });
+        if (res && res.sql) {
+          showSqlModal(`생성 SQL — ${toolName} (profile: ${res.profile_name || "?"})`, res.sql, res.script);
+        } else {
+          window.Toast.show((res && res.error) || "생성된 SQL 이 없습니다", "error");
+        }
+      } catch (e) {
+        window.Toast.show(errMsg(e, "SQL 조회 실패"), "error");
+      } finally {
+        btn.disabled = false; btn.textContent = orig;
+      }
+    });
+    return btn;
+  }
+
   function renderOutput(data) {
     const host = document.getElementById("at-output");
     host.innerHTML = "";
@@ -1382,17 +1467,19 @@ END;
           { key: "task_order", label: "Order", className: "metric" },
           { key: "task_name",  label: "Task" },
           { key: "status",     label: "Status" },
-          { key: "input",      label: "Input" },
-          { key: "output",     label: "Output" },
+          { key: "input",      label: "Input",  format: (v) => truncCell(v, 300) },
+          { key: "output",     label: "Output", format: (v) => truncCell(v, 300) },
           { key: "elapsed_ms", label: "Elapsed (ms)", className: "metric", format: nf },
         ] },
       { title: "Tool History", rows: logs.tool_history || [],
         columns: [
           { key: "task_order", label: "Order", className: "metric" },
           { key: "tool_name",  label: "Tool" },
-          { key: "input",      label: "Input" },
-          { key: "output",     label: "Output" },
+          { key: "input",      label: "Input",  format: (v) => truncCell(v, 300) },
+          { key: "output",     label: "Output", format: (v) => truncCell(v, 300) },
           { key: "elapsed_ms", label: "Elapsed (ms)", className: "metric", format: nf },
+          // SQL조회 — input.ACTION 이 runsql/narrate 인 행만 버튼 노출 (그 tool profile 로 showsql 재실행)
+          { key: "input", label: "", format: (raw, row) => buildSqlLookupCell(row) },
         ] },
     ];
     blocks.forEach((b) => {
@@ -1422,7 +1509,17 @@ END;
       summary.appendChild(copyBtn);
 
       details.appendChild(summary);
-      details.appendChild(window.SimpleTable.create(b.columns, b.rows, { className: "keep-case" }));
+      // 팝업 등 좁은 컨테이너에서 긴 셀이 표를 넘겨 레이아웃이 깨지지 않도록:
+      //  표를 가로 스크롤 박스로 감싸고, table-layout:fixed + width:100% 로 폭을 컨테이너에 고정한다.
+      const tbl = window.SimpleTable.create(b.columns, b.rows, { className: "keep-case" });
+      tbl.style.tableLayout = "fixed";
+      tbl.style.width = "100%";
+      tbl.style.wordBreak = "break-word";
+      const tblWrap = document.createElement("div");
+      tblWrap.style.overflowX = "auto";
+      tblWrap.style.maxWidth = "100%";
+      tblWrap.appendChild(tbl);
+      details.appendChild(tblWrap);
       host.appendChild(details);
     });
   }
@@ -1439,4 +1536,15 @@ END;
 
   window.Views = window.Views || {};
   window.Views.agentTest = render;
+
+  // Agent History 화면이 상세 팝업에서 재사용하도록 렌더 함수 노출.
+  // 세 함수는 at-thinking / at-timeline / at-output 고정 ID 컨테이너를 찾아 그린다.
+  // (선택 요소 at-think-count 등은 if 가드가 있어 없어도 동작. renderTimeline 의 노드클릭
+  //  팝업 showNodeModal 은 클로저로 자기완결적이라 함께 재사용됨.)
+  // buildThinkingText/openAgentSuggestModal/openThinkingAnalyzeModal 도 함께 노출 —
+  //  Agent History 팝업의 Thinking 헤더에서 [AI 추천]·[Thinking과정분석] 버튼을 동일하게 쓴다.
+  window.AgentTrace = {
+    renderThinking, renderTimeline, renderOutput,
+    buildThinkingText, openAgentSuggestModal, openThinkingAnalyzeModal,
+  };
 })();

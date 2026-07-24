@@ -1,18 +1,24 @@
-/** views/ai_chat.js — 메뉴 [AI Chat].
- * Chat설정(변수 / Team / User Prompt)을 골라 메시지를 보내면 백엔드(/api/chat/send)가
- * DBMS_CLOUD_AI_AGENT.RUN_TEAM 을 호출해 응답한다. Multi Turn ON 시 conversation_id 유지.
+/** views/ai_chat_tl.js — 메뉴 [Select AI Test - AI Chat for Table list] (prompt11).
+ * ai_chat.js 를 기반으로 하되(소스 분리 — 추후 기능 분리 대비 공유하지 않음),
+ * 백엔드(/api/chat_tl/send)가 RUN_TEAM 답변(JSON: answers[{title,sql}])의 SQL 들을
+ * 각각 실행해 주면 결과를 table 형태(5행 미리보기 + 전체 CSV 다운로드)로 표시한다.
  */
 (function () {
-  const GREETING = "안녕하세요! Oracle AI Chat 입니다. Chat설정을 선택하고 메시지를 입력하세요.";
+  const GREETING = "안녕하세요! AI Chat for Table list 입니다. Chat설정을 선택하고 질문을 입력하면 SQL 실행 결과를 표로 보여드립니다.";
   // Team 드롭다운(설정 팝업)용 폴백 — /api/agents/tree 실패 시 사용
   const MOCK_TEAMS = ["SALES_ANALYST_TEAM", "DATA_DISCOVERY_TEAM", "SUPPORT_TEAM"];
-  // 새 Chat설정 추가 시 기본값 (이미지 예시 기준)
+  // 새 Chat설정 추가 시 기본값 — agent 가 아래 JSON 형식만 반환하도록 지시한다.
+  // (PL/SQL 문자열 리터럴에 들어가므로 작은따옴표는 ' || 변수 || ' 연결 외에는 쓰지 않는다)
   const DEFAULT_VARIABLES = "l_base_date VARCHAR2(8) := TO_CHAR(SYSDATE, 'YYYYMMDD');";
   const DEFAULT_USER_PROMPT =
     "[INSTRUCTION]\n" +
     "기준일: ' || l_base_date || '\n" +
-    "action: showsql\n" +
-    "결과형식: 컬럼명 한글\n\n" +
+    "이 작업은 반드시 SQL Tool 호출로 시작합니다. Tool 호출 없이 답변을 작성하지 마세요.\n" +
+    "- SQL Tool 호출 시 ACTION 은 반드시 정확히 \"showsql\" 을 사용합니다 (SQL 생성만, 실행 금지).\n" +
+    "- 단순한 질문(하나의 SQL 로 답변 가능)은 1회, 복잡한 질문은 질문을 분해해 여러 번 호출합니다.\n" +
+    "- 테이블/컬럼 이름을 직접 추측해 만들지 마세요. SQL Tool 이 반환한 SQL 만 사용합니다.\n" +
+    "[최종 답변] 반드시 아래 JSON 형식만 반환합니다. JSON 외 다른 텍스트/마크다운/설명 금지.\n" +
+    '{"answers": [{"title": "이 SQL 이 조회하는 내용 한 줄 설명", "sql": "SELECT ..."}], "note": "여러 SQL 결과를 종합할 때 참고할 설명(선택, 없으면 생략)"}\n\n' +
     "[QUESTION]\n" +
     "##메시지##";
 
@@ -36,15 +42,12 @@
     if (((t.match(/'/g) || []).length) % 2 === 1) {
       issues.push("작은따옴표(') 개수가 홀수 — 문자열이 깨질 수 있습니다 (변수 연결은 ' || 변수 || ' 형태로)");
     }
-    if (/;/.test(t)) issues.push("세미콜론(;) 포함 — 프롬프트 안에서는 보통 불필요합니다");
-    if (/--/.test(t)) issues.push("주석(--) 포함");
     if (/execute\s+immediate/i.test(t)) issues.push("EXECUTE IMMEDIATE 포함 — 임의 PL/SQL 실행 위험");
     return issues;
   }
 
-  // AI Chat 전송 시 백엔드가 실행하는 RUN_TEAM 익명블록을 재현(미리보기용).
-  // app/plsql.py:build_run_team_block + app/routers/chat.py:_user_prompt_expr 와 동일 규칙:
-  //   ##메시지## → ' || :msg || ' (메시지만 바인드), :team_name 바인드, 신규 conversation 기준.
+  // 전송 시 백엔드가 실행하는 RUN_TEAM 익명블록을 재현(미리보기용).
+  // app/plsql.py:build_run_team_block + app/routers/chat_tl.py:_user_prompt_expr 와 동일 규칙.
   function buildChatScript(team, variables, userPrompt) {
     const MSG_PH = "##메시지##";
     const up = userPrompt || "";
@@ -68,7 +71,8 @@
       "  );\n" +
       "  :out_conv := l_conv_id;\n" +
       "  :out_answer := l_answer;\n" +
-      "END;"
+      "END;\n" +
+      "-- 이후 앱이 answer(JSON) 의 SQL 들을 각각 실행해 표로 표시합니다."
     );
   }
 
@@ -84,7 +88,7 @@
           <button class="btn btn-ghost" id="sc-close" type="button">✕</button>
         </div>
         <div class="modal-body stack">
-          <label class="muted" style="font-size:var(--fs-sm);">AI Chat 전송 시 실행되는 스크립트입니다. 바인드: <code>:team_name</code> = '${esc(team || "")}', <code>:msg</code> = 입력 메시지.</label>
+          <label class="muted" style="font-size:var(--fs-sm);">전송 시 실행되는 스크립트입니다. 바인드: <code>:team_name</code> = '${esc(team || "")}', <code>:msg</code> = 입력 메시지.</label>
           <textarea readonly rows="16" style="font-family:var(--font-mono); font-size:var(--fs-sm); width:100%;">${esc(script)}</textarea>
         </div>
         <div class="modal-footer row end" style="gap:var(--space-2);">
@@ -114,9 +118,28 @@
 
   const nf = (v) => (v == null || v === "") ? v : Number(v).toLocaleString();
 
+  // 결과 테이블 → CSV 다운로드 (Excel 호환 위해 BOM 추가) — nl2sql.js downloadCsv 와 동일 방식
+  function downloadCsv(columns, rows, baseName) {
+    const esc = (v) => {
+      const s = v === null || v === undefined ? "" : String(v);
+      return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+    };
+    const lines = [columns.map(esc).join(",")];
+    rows.forEach((r) => lines.push(r.map(esc).join(",")));
+    const csv = "﻿" + lines.join("\r\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = (baseName || "ai_chat_tl").replace(/[^\w가-힣.-]+/g, "_") + ".csv";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
   // ====================================================================
   // Thinking 과정 popup — AI Agent Team Test [2. Team 실행] 탭과 동일한 카드 UI.
-  // conversation_id 로 /api/agents/conversations/{id}/timeline 를 조회해 thinking 을 얻는다.
   // ====================================================================
 
   const THINK_CARET =
@@ -308,8 +331,8 @@
 
     const title = document.createElement("div");
     title.className = "view-title";
-    title.innerHTML = `<h1>AI Chat</h1>
-      <span class="sub">Chat설정의 Team 으로 <strong>RUN_TEAM</strong> 호출 · Multi Turn 시 대화 컨텍스트 유지</span>`;
+    title.innerHTML = `<h1>AI Chat for Table list</h1>
+      <span class="sub">Chat설정의 Team 으로 <strong>RUN_TEAM</strong> 호출(showsql) → 반환된 SQL 을 실행해 <strong>표</strong>로 답변 · 5행 미리보기 + 전체 CSV 다운로드</span>`;
     main.appendChild(title);
 
     // Team 드롭다운(설정 팝업 안)용 목록 — /api/agents/tree 실패 시 목업으로 진행.
@@ -322,7 +345,7 @@
       teams = MOCK_TEAMS.slice();
     }
 
-    let multiTurn = true;   // Multi Turn 활성/비활성 상태 (기본 ON)
+    let multiTurn = true;   // Multi Turn 활성/비활성 상태 (이 메뉴는 기본 ON)
     let convId = "";        // Multi Turn ON 시 유지되는 conversation_id
 
     const panel = document.createElement("div");
@@ -331,37 +354,37 @@
       <div class="panel-header chat-toolbar">
         <div class="row" style="gap:var(--space-3); align-items:center;">
           <label style="color:var(--text-muted); font-size:var(--fs-sm);">Chat설정</label>
-          <select id="chat-config" style="min-width:200px;"></select>
-          <button class="btn" id="chat-config-add" type="button">추가</button>
-          <button class="btn" id="chat-config-update" type="button">수정</button>
+          <select id="ctl-config" style="min-width:200px;"></select>
+          <button class="btn" id="ctl-config-add" type="button">추가</button>
+          <button class="btn" id="ctl-config-update" type="button">수정</button>
         </div>
         <div class="row" style="gap:var(--space-3); align-items:center;">
-          <button class="btn btn-ghost" id="chat-new">＋ 새 대화</button>
+          <button class="btn btn-ghost" id="ctl-new">＋ 새 대화</button>
           <label style="color:var(--text-muted); font-size:var(--fs-sm);">Multi Turn</label>
-          <button class="switch" id="chat-multiturn" type="button"
+          <button class="switch" id="ctl-multiturn" type="button"
             role="switch" aria-checked="false" title="Multi Turn 대화 컨텍스트 유지 여부">
             <span class="switch-knob"></span>
           </button>
         </div>
       </div>
-      <div class="chat-messages" id="chat-messages"></div>
+      <div class="chat-messages" id="ctl-messages"></div>
       <div class="chat-saved-row">
-        <input type="text" id="chat-save-title" placeholder="저장할 제목" />
-        <button class="btn" id="chat-save-add" type="button">추가</button>
-        <button class="btn" id="chat-save-update" type="button">수정</button>
-        <button class="btn" id="chat-save-delete" type="button">삭제</button>
-        <select id="chat-saved"></select>
+        <input type="text" id="ctl-save-title" placeholder="저장할 제목" />
+        <button class="btn" id="ctl-save-add" type="button">추가</button>
+        <button class="btn" id="ctl-save-update" type="button">수정</button>
+        <button class="btn" id="ctl-save-delete" type="button">삭제</button>
+        <select id="ctl-saved"></select>
       </div>
       <div class="chat-input-row">
-        <textarea id="chat-input" rows="1" placeholder="메시지를 입력하세요 (Enter 전송, Shift+Enter 줄바꿈)"></textarea>
-        <button class="btn btn-primary" id="chat-send">전송</button>
+        <textarea id="ctl-input" rows="1" placeholder="질문을 입력하세요 (Enter 전송, Shift+Enter 줄바꿈)"></textarea>
+        <button class="btn btn-primary" id="ctl-send">전송</button>
       </div>
     `;
     main.appendChild(panel);
 
-    const messagesEl = panel.querySelector("#chat-messages");
-    const inputEl = panel.querySelector("#chat-input");
-    const sendBtn = panel.querySelector("#chat-send");
+    const messagesEl = panel.querySelector("#ctl-messages");
+    const inputEl = panel.querySelector("#ctl-input");
+    const sendBtn = panel.querySelector("#ctl-send");
 
     let busy = false;
 
@@ -370,12 +393,14 @@
     }
 
     // debug: 디버깅용 메타 정보 객체 (conv_id, elapsed_ms, team, multi_turn 등). 있으면 말풍선 아래 표시.
-    function addMessage(role, text, debug) {
+    // content 가 DOM 노드면 그대로 삽입(표 답변), 문자열이면 텍스트로 삽입(XSS 방지).
+    function addMessage(role, content, debug) {
       const msg = document.createElement("div");
       msg.className = `chat-msg ${role}`;
       const bubble = document.createElement("div");
       bubble.className = "chat-bubble";
-      bubble.textContent = text;  // 텍스트로만 삽입 (XSS 방지, 줄바꿈은 CSS pre-wrap)
+      if (content instanceof Node) bubble.appendChild(content);
+      else bubble.textContent = content;
       const meta = document.createElement("div");
       meta.className = "chat-meta";
       const metaText = document.createElement("span");
@@ -398,12 +423,19 @@
       if (debug && debug.timeline && debug.timeline.length) {
         msg.appendChild(buildStepTimes(debug.timeline, debug.multi_turn));
       }
+      // 정상 답변으로 conversation 이 초기화된 경우 맨 아래 안내 1줄
+      if (debug && debug.conv_reset) {
+        const info = document.createElement("div");
+        info.className = "chat-debug";
+        info.textContent = "ℹ 오류없이 답변이 생성되어 프롬프트 초기화됩니다";
+        msg.appendChild(info);
+      }
       messagesEl.appendChild(msg);
       scrollToBottom();
       return msg;
     }
 
-    // 디버깅 정보 라인 — conversation_id / elapsed / team / multi turn.
+    // 디버깅 정보 라인 — conversation_id / elapsed / team / SQL수 / multi turn.
     function buildDebug(d) {
       const el = document.createElement("div");
       el.className = "chat-debug";
@@ -411,13 +443,13 @@
       if (d.conversation_id) parts.push(`conv_id: ${d.conversation_id}`);
       if (d.elapsed_ms != null) parts.push(`elapsed: ${Number(d.elapsed_ms).toLocaleString()} ms`);
       if (d.team) parts.push(`team: ${d.team}`);
+      if (d.sql_count != null) parts.push(`SQL: ${d.sql_count}건`);
       parts.push(`multi turn: ${d.multi_turn ? "ON" : "OFF"}`);
       el.textContent = "🛠 " + parts.join("  ·  ");
       return el;
     }
 
     // 단계별 소요시간 — Agent Team Test 2탭과 동일한 timeline 데이터를 접이식 목록으로.
-    // 트리 들여쓰기(level) + 타입 배지(TEAM/AGENT/TASK/TOOL) + 구간 ms.
     function buildStepTimes(timeline, multiTurnOn) {
       const details = document.createElement("details");
       details.className = "chat-steptimes";
@@ -455,6 +487,100 @@
       return details;
     }
 
+    // results([{title,sql,columns,rows,truncated,exec_ms,error,stage}]) + note → 표 답변 노드.
+    // baseName 은 다운로드 파일명의 접두(<설정명>_<순번>.csv).
+    function buildResultsNode(results, note, baseName) {
+      const wrap = document.createElement("div");
+      wrap.className = "stack";
+      wrap.style.minWidth = "0";
+      results.forEach((r, i) => {
+        const sec = document.createElement("div");
+        sec.className = "stack-sm";
+        // 소제목 — 여러 SQL 이면 번호 붙임
+        const head = document.createElement("div");
+        head.style.fontWeight = "600";
+        head.textContent = (results.length > 1 ? `${i + 1}. ` : "")
+          + (r.title || (results.length > 1 ? `조회 ${i + 1}` : "조회 결과"));
+        sec.appendChild(head);
+        // 생성 SQL (접힌 상태)
+        if (r.sql) {
+          const det = document.createElement("details");
+          const sum = document.createElement("summary");
+          sum.textContent = "생성 SQL 보기";
+          sum.style.cursor = "pointer";
+          sum.style.fontSize = "var(--fs-sm)";
+          sum.style.color = "var(--text-muted)";
+          const pre = document.createElement("pre");
+          pre.style.cssText = "font-family:var(--font-mono); font-size:var(--fs-sm); white-space:pre-wrap; margin:var(--space-2) 0 0; max-height:220px; overflow:auto;";
+          pre.textContent = r.sql;
+          det.appendChild(sum);
+          det.appendChild(pre);
+          sec.appendChild(det);
+        }
+        if (r.error) {
+          // 실패 항목 — 에러를 그 자리에 그대로 노출 (다른 항목은 정상 표시)
+          const err = document.createElement("div");
+          err.style.cssText = "color:var(--danger, #c74634); font-size:var(--fs-sm); white-space:pre-wrap;";
+          err.textContent = `실행 실패 (${r.stage || "error"}): ${r.error}`;
+          sec.appendChild(err);
+        } else {
+          const cols = (r.columns || []).map((c, ci) => ({ key: (row) => row[ci], label: c }));
+          const tblWrap = document.createElement("div");
+          tblWrap.style.overflowX = "auto";
+          tblWrap.appendChild(window.SimpleTable.create(cols, r.rows || [], { emptyText: "결과 없음 (0행)" }));
+          sec.appendChild(tblWrap);
+          // 하단: truncated 안내 · 실행시간 · 전체 다운로드 링크
+          const foot = document.createElement("div");
+          foot.className = "row";
+          foot.style.cssText = "gap:var(--space-3); align-items:center; font-size:var(--fs-sm); flex-wrap:wrap;";
+          const info = document.createElement("span");
+          info.className = "muted";
+          info.textContent = (r.truncated ? `처음 ${(r.rows || []).length}행만 표시` : `${(r.rows || []).length}행`)
+            + (r.exec_ms != null ? ` · SQL실행 ${nf(r.exec_ms)} ms` : "");
+          foot.appendChild(info);
+          if ((r.rows || []).length) {
+            const dl = document.createElement("a");
+            dl.setAttribute("role", "button");
+            dl.tabIndex = 0;
+            dl.style.cssText = "color:#0066cc; text-decoration:underline; cursor:pointer;";
+            dl.textContent = "전체 결과 다운로드 (CSV)";
+            const doDownload = async () => {
+              const orig = dl.textContent;
+              dl.textContent = "전체 조회 중…";
+              dl.style.pointerEvents = "none";
+              try {
+                const exp = await window.API.post("/api/chat_tl/export", { sql: r.sql });
+                if (!exp || !(exp.rows || []).length) {
+                  window.Toast.show("다운로드할 데이터가 없습니다", "error");
+                  return;
+                }
+                const suffix = results.length > 1 ? `_${i + 1}` : "";
+                downloadCsv(exp.columns, exp.rows, (baseName || "ai_chat_tl") + suffix);
+              } catch (err2) {
+                window.Toast.show(errMsg(err2, "다운로드 실패"), "error");
+              } finally {
+                dl.textContent = orig;
+                dl.style.pointerEvents = "";
+              }
+            };
+            dl.addEventListener("click", doDownload);
+            dl.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); doDownload(); } });
+            foot.appendChild(dl);
+          }
+          sec.appendChild(foot);
+        }
+        wrap.appendChild(sec);
+      });
+      // note — 여러 SQL 결과를 종합할 때 참고할 설명 (agent 가 제공했을 때만)
+      if (note) {
+        const p = document.createElement("div");
+        p.style.cssText = "font-size:var(--fs-sm); white-space:pre-wrap; border-top:1px solid var(--border, #e0e0e0); padding-top:var(--space-2);";
+        p.textContent = "📝 " + note;
+        wrap.appendChild(p);
+      }
+      return wrap;
+    }
+
     function addTyping() {
       const msg = document.createElement("div");
       msg.className = "chat-msg bot";
@@ -490,7 +616,7 @@
 
       const typing = addTyping();
       try {
-        const res = await window.API.post("/api/chat/send", {
+        const res = await window.API.post("/api/chat_tl/send", {
           team: cfg.team,
           variables: cfg.variables,
           user_prompt: cfg.userPrompt,
@@ -502,14 +628,31 @@
         typing.remove();
         if (multiTurn && res.conversation_id) convId = res.conversation_id;
         else if (!multiTurn) convId = "";
-        addMessage("bot", res.answer || "(빈 응답)", {
+        const debug = {
           conversation_id: res.conversation_id,
           elapsed_ms: res.elapsed_ms,
           team: cfg.team,
           multi_turn: multiTurn,
           timeline: res.timeline || [],
           thinking: res.thinking || { rows: [], error: null },
-        });
+        };
+        const results = res.results || [];
+        // 성공 판정(결과 있음 + 추출 실패 없음 + 모든 SQL 실행 무오류) → 자동 새 대화:
+        // 대화 누적이 다음 질문의 프롬프트를 오염시키지 않도록 conversation 만 초기화 (화면 메시지 유지).
+        // 오류가 있으면 conversation 을 유지해 후속 질문이 문맥을 이어받게 한다.
+        const allOk = results.length > 0 && !res.stage && results.every((r) => !r.error);
+        if (allOk) {
+          convId = "";
+          debug.conv_reset = true;
+        }
+        if (results.length) {
+          debug.sql_count = results.length;
+          addMessage("bot", buildResultsNode(results, res.note, cfgName), debug);
+        } else {
+          // stage=extract — SQL 을 못 찾음: answer 원문을 텍스트로 표시 (정보 손실 없음)
+          const prefix = res.error ? `⚠ ${res.error}\n\n` : "";
+          addMessage("bot", prefix + (res.answer || "(빈 응답)"), debug);
+        }
       } catch (e) {
         typing.remove();
         addMessage("bot", "오류: " + errMsg(e, "전송 실패"), {
@@ -538,7 +681,7 @@
       }
     });
     // Multi Turn 토글 — ON 이면 .on 클래스로 색상/노브 위치가 바뀐다.
-    const multiTurnBtn = panel.querySelector("#chat-multiturn");
+    const multiTurnBtn = panel.querySelector("#ctl-multiturn");
     function setMultiTurn(val) {
       multiTurn = !!val;
       multiTurnBtn.setAttribute("aria-checked", multiTurn ? "true" : "false");
@@ -550,14 +693,13 @@
     });
     setMultiTurn(multiTurn);  // 기본 ON — 토글 UI(색상/노브) 초기 상태 동기화
 
-    panel.querySelector("#chat-new").addEventListener("click", resetChat);
+    panel.querySelector("#ctl-new").addEventListener("click", resetChat);
 
-    // --- Chat설정 저장/불러오기 (localStorage, 세션 간 유지) ---
-    // 하나의 설정은 현재 채팅 구성(현재는 Multi Turn 상태)을 담는다.
-    const CONFIG_KEY = "aiChat.savedConfigs";
-    const configSel = panel.querySelector("#chat-config");
-    const configAddBtn = panel.querySelector("#chat-config-add");
-    const configUpdateBtn = panel.querySelector("#chat-config-update");
+    // --- Chat설정 저장/불러오기 (localStorage, 세션 간 유지) — AI Chat 과 키 분리 ---
+    const CONFIG_KEY = "aiChatTl.savedConfigs";
+    const configSel = panel.querySelector("#ctl-config");
+    const configAddBtn = panel.querySelector("#ctl-config-add");
+    const configUpdateBtn = panel.querySelector("#ctl-config-update");
 
     const loadConfigs = () => {
       try { return JSON.parse(window.Store.get(CONFIG_KEY)) || []; }
@@ -624,8 +766,8 @@
               <textarea id="cfg-variables" rows="3" style="font-family:var(--font-mono); font-size:var(--fs-sm);"></textarea>
             </div>
             <div class="stack-sm">
-              <label>User Prompt</label>
-              <textarea id="cfg-prompt" rows="8" style="font-family:var(--font-mono); font-size:var(--fs-sm);"></textarea>
+              <label>User Prompt <span class="muted" style="font-weight:400;">(agent 가 answers JSON 만 반환하도록 지시)</span></label>
+              <textarea id="cfg-prompt" rows="10" style="font-family:var(--font-mono); font-size:var(--fs-sm);"></textarea>
             </div>
             <div class="row" style="justify-content:flex-start;">
               <a id="cfg-script" role="button" tabindex="0" style="color:#0066cc; text-decoration:underline; cursor:pointer; font-size:var(--fs-sm);">실행 스크립트 보기</a>
@@ -703,13 +845,13 @@
       setTimeout(() => nameEl.focus(), 50);
     }
 
-    // --- 메시지 저장/불러오기 (localStorage, 세션 간 유지) ---
-    const SAVED_KEY = "aiChat.savedMessages";
-    const saveTitle = panel.querySelector("#chat-save-title");
-    const saveAddBtn = panel.querySelector("#chat-save-add");
-    const saveUpdateBtn = panel.querySelector("#chat-save-update");
-    const saveDeleteBtn = panel.querySelector("#chat-save-delete");
-    const savedSel = panel.querySelector("#chat-saved");
+    // --- 메시지 저장/불러오기 (localStorage, 세션 간 유지) — AI Chat 과 키 분리 ---
+    const SAVED_KEY = "aiChatTl.savedMessages";
+    const saveTitle = panel.querySelector("#ctl-save-title");
+    const saveAddBtn = panel.querySelector("#ctl-save-add");
+    const saveUpdateBtn = panel.querySelector("#ctl-save-update");
+    const saveDeleteBtn = panel.querySelector("#ctl-save-delete");
+    const savedSel = panel.querySelector("#ctl-saved");
 
     const loadSaved = () => {
       try { return JSON.parse(window.Store.get(SAVED_KEY)) || []; }
@@ -791,5 +933,5 @@
   }
 
   window.Views = window.Views || {};
-  window.Views.aiChat = render;
+  window.Views.aiChatTl = render;
 })();

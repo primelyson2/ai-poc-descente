@@ -64,14 +64,14 @@
         </div>
       </div>
       <div class="chat-messages" id="c2-messages"></div>
-      <div class="chat-input-area" style="padding:var(--space-3); border-top:1px solid var(--border); display:flex; flex-direction:column; gap:8px;">
-        <label style="font-size:var(--fs-sm); color:var(--text-muted);">질문</label>
-        <div style="display:flex; gap:8px; align-items:flex-end;">
-          <textarea id="c2-input" rows="1" placeholder="질문을 입력하세요 (Enter 전송, Shift+Enter 줄바꿈)" style="flex:1; font-family:inherit;"></textarea>
-          <button class="btn btn-primary" id="c2-send" type="button">전송</button>
+      <div class="chat-input-area" style="padding:var(--space-3); border-top:1px solid var(--border); display:flex; gap:8px; align-items:stretch;">
+        <div style="flex:1; min-width:0; display:flex; flex-direction:column; gap:8px;">
+          <label style="font-size:var(--fs-sm); color:var(--text-muted);">질문</label>
+          <textarea id="c2-input" rows="1" placeholder="질문을 입력하세요 (Enter 전송, Shift+Enter 줄바꿈)" style="font-family:inherit;"></textarea>
+          <label style="font-size:var(--fs-sm); color:var(--text-muted);">질문 답변을 위해 추출할 정보 <span class="muted">(선택)</span></label>
+          <textarea id="c2-extract" rows="2" placeholder="예: 조직코드, 조직명, 전시횟수 — 비우면 프롬프트에서 해당 안내가 제거됩니다" style="font-family:inherit;"></textarea>
         </div>
-        <label style="font-size:var(--fs-sm); color:var(--text-muted);">질문 답변을 위해 추출할 정보 <span class="muted">(선택)</span></label>
-        <textarea id="c2-extract" rows="2" placeholder="예: 조직코드, 조직명, 전시횟수 — 비우면 프롬프트에서 해당 안내가 제거됩니다" style="font-family:inherit;"></textarea>
+        <button class="btn btn-primary" id="c2-send" type="button" style="align-self:stretch; min-width:120px; font-size:2rem; font-weight:700; display:flex; align-items:center; justify-content:center; text-align:center;">전송</button>
       </div>`;
     main.appendChild(panel);
 

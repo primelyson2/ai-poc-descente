@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app import auth, db, deps
 from app.config import load_config
-from app.routers import agents, auth as auth_router, chat, chat2, databases, history, history2, nl2sql, objects, persona_analysis, personas, predefined, profiles, vpd
+from app.routers import agents, auth as auth_router, chat, chat2, chat_tl, databases, history, history2, nl2sql, objects, persona_analysis, personas, predefined, profiles, vpd
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s — %(message)s")
 
@@ -122,6 +122,7 @@ app.include_router(profiles.router, prefix="/api")
 app.include_router(agents.router, prefix="/api")
 app.include_router(chat.router, prefix="/api")
 app.include_router(chat2.router, prefix="/api")
+app.include_router(chat_tl.router, prefix="/api")
 app.include_router(objects.router, prefix="/api")
 app.include_router(nl2sql.router, prefix="/api")
 app.include_router(history.router, prefix="/api")
